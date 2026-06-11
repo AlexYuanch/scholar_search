@@ -1,0 +1,72 @@
+const zh: Record<string, string> = {
+  "app.title": "学者画像系统",
+  "app.subtitle": "输入学者姓名，自动生成学术成果统计、研究方向、论文列表与合作网络",
+  "search.placeholder": "请输入学者姓名",
+  "search.button": "搜索",
+  "search.loading": "搜索中",
+  "search.profile_loading": "正在生成学者画像...",
+  "search.empty": "输入学者姓名开始查询",
+  "search.new": "新搜索",
+  "search.error": "搜索失败",
+  "profile.loading": "加载画像中",
+  "profile.error": "画像生成失败",
+  "nav.new_search": "新搜索",
+
+  "candidate.title": "个候选学者 — 请选择",
+  "candidate.papers": "篇论文",
+  "candidate.citations": "次引用",
+  "candidate.unknown_inst": "未知机构",
+
+  "tab.overview": "概览",
+  "tab.papers": "论文",
+  "tab.network": "合作网络",
+
+  "metric.total_papers": "总论文数",
+  "metric.total_citations": "总引用数",
+  "metric.h_index": "h-index",
+
+  "section.research_directions": "研究方向",
+  "section.research_desc": "基于论文关键词和主题自动提取",
+  "section.repr_papers": "代表性论文",
+  "section.repr_desc": "高被引及近期发表",
+  "section.top_cited": "高被引论文",
+  "section.top_cited_desc": "按引用数排序",
+  "section.all_papers": "全部论文",
+  "section.collab_network": "合作网络",
+  "section.collab_desc": "以该学者为核心的合作关系",
+  "section.profile_summary": "学者总结",
+
+  "graph.center_author": "中心学者",
+  "graph.coauthor": "合作者",
+  "graph.papers_coauthored": "篇合作论文",
+  "graph.size_hint": "节点大小 ∝ 合作频次",
+  "graph.width_hint": "连线粗细 ∝ 合作频次",
+  "graph.edge_label": "篇合作",
+  "graph.operate_hint": "拖拽重排 · 滚轮缩放 · 点击连线查看合作论文",
+  "graph.coauthor_papers": "合作论文",
+  "graph.click_edge": "点击连线查看合作论文列表",
+  "graph.click_node": "点击节点查看详情",
+  "graph.view_profile": "查看画像",
+  "graph.open_alex": "打开 OpenAlex 主页",
+  "graph.all": "全部",
+
+  "panel.close": "关闭",
+  "panel.coauthored_papers": "合作论文",
+  "panel.coauthor_info": "合作者信息",
+  "panel.no_papers": "暂无论文数据",
+  "panel.papers_with": "与",
+
+  "theme.light": "浅色",
+  "theme.dark": "深色",
+  "theme.blue": "蓝色",
+  "theme.green": "绿色",
+  "theme.purple": "紫色",
+  "theme.orange": "橙色",
+
+  "lang.zh": "中文",
+  "lang.en": "English",
+
+  "api_docs": "API 文档",
+}
+
+export default zh

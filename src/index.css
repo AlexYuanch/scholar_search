@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ===== 动态主题变量（通过 JS 切换） ===== */
+:root {
+  --_background: hsl(0 0% 100%);
+  --_foreground: hsl(0 0% 3.9%);
+  --_card: hsl(0 0% 100%);
+  --_card-foreground: hsl(0 0% 3.9%);
+  --_primary: hsl(221.2 83.2% 53.3%);
+  --_primary-foreground: hsl(210 40% 98%);
+  --_secondary: hsl(210 40% 96.1%);
+  --_secondary-foreground: hsl(222.2 47.4% 11.2%);
+  --_muted: hsl(210 40% 96.1%);
+  --_muted-foreground: hsl(215.4 16.3% 46.9%);
+  --_border: hsl(214.3 31.8% 91.4%);
+  --radius: 0.625rem;
+}
+
+.dark {
+  --_background: hsl(222.2 84% 4.9%);
+  --_foreground: hsl(210 40% 98%);
+  --_card: hsl(222.2 84% 4.9%);
+  --_card-foreground: hsl(210 40% 98%);
+  --_primary: hsl(217.2 91.2% 59.8%);
+  --_primary-foreground: hsl(222.2 47.4% 11.2%);
+  --_secondary: hsl(217.2 32.6% 17.5%);
+  --_secondary-foreground: hsl(210 40% 98%);
+  --_muted: hsl(217.2 32.6% 17.5%);
+  --_muted-foreground: hsl(215 20.2% 65.1%);
+  --_border: hsl(217.2 32.6% 17.5%);
+}
+
+/* 强调色切换 */
+.theme-green {
+  --_primary: hsl(142.1 76.2% 36.3%);
+  --_primary-foreground: hsl(355.7 100% 97.3%);
+}
+:root.dark.theme-green {
+  --_primary: hsl(142.1 70.6% 45.3%);
+  --_primary-foreground: hsl(355.7 100% 97.3%);
+}
+
+.theme-purple {
+  --_primary: hsl(271.5 81.3% 55.9%);
+  --_primary-foreground: hsl(0 0% 100%);
+}
+:root.dark.theme-purple {
+  --_primary: hsl(271.5 91.3% 65.9%);
+  --_primary-foreground: hsl(0 0% 100%);
+}
+
+.theme-orange {
+  --_primary: hsl(24.6 95% 53.1%);
+  --_primary-foreground: hsl(0 0% 100%);
+}
+:root.dark.theme-orange {
+  --_primary: hsl(24.6 95% 63.1%);
+  --_primary-foreground: hsl(0 0% 100%);
+}
+
+/* ===== Tailwind 主题定义（间接引用，支持动态切换） ===== */
+@theme {
+  --color-background: var(--_background);
+  --color-foreground: var(--_foreground);
+  --color-card: var(--_card);
+  --color-card-foreground: var(--_card-foreground);
+  --color-popover: var(--_card);
+  --color-popover-foreground: var(--_card-foreground);
+  --color-primary: var(--_primary);
+  --color-primary-foreground: var(--_primary-foreground);
+  --color-secondary: var(--_secondary);
+  --color-secondary-foreground: var(--_secondary-foreground);
+  --color-muted: var(--_muted);
+  --color-muted-foreground: var(--_muted-foreground);
+  --color-accent: var(--_muted);
+  --color-accent-foreground: var(--_secondary-foreground);
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(210 40% 98%);
+  --color-border: var(--_border);
+  --color-input: var(--_border);
+  --color-ring: var(--_primary);
+  --color-chart-1: hsl(12 76% 61%);
+  --color-chart-2: hsl(173 58% 39%);
+  --color-chart-3: hsl(197 37% 24%);
+  --color-chart-4: hsl(43 74% 66%);
+  --color-chart-5: hsl(27 87% 67%);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: system-ui, -apple-system, sans-serif;
+}

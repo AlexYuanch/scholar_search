@@ -1,0 +1,723 @@
+import { useState, useEffect, useCallback, type ComponentType } from "react"
+import {
+  Search, BookOpen, Quote, BarChart3, Users,
+  ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink
+} from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Separator } from "@/components/ui/separator"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { useTranslation } from "./i18n"
+import type { Candidate, ScholarProfile } from "./types"
+import { searchAuthors, streamProfile } from "./api"
+import CollaborationGraph from "@/components/CollaborationGraph"
+import SidePanel from "@/components/SidePanel"
+
+interface WorkflowStage {
+  node: string
+  label: string
+  status: "pending" | "running" | "completed"
+}
+// 工作流 DAG 结构定义 — 决定进度面板的树状布局
+const dagTiers: Array<{
+  nodes: string[]
+  mode: "chain" | "parallel" | "fork" | "merge" | "single"
+}> = [
+  { nodes: ["resolve_author", "fetch_profile", "collect_works", "dedup_works"], mode: "chain" },
+  { nodes: ["analyze_citations", "agent_analyze_topics"], mode: "parallel" },
+  { nodes: ["analyze_evolution"], mode: "merge" },
+  { nodes: ["analyze_coauthors"], mode: "single" },
+  { nodes: ["build_graph", "generate_report", "format_payload"], mode: "chain" },
+]
+
+type Accent = "blue" | "green" | "purple" | "orange"
+type PanelPaper = string | { title: string; id?: string; topics?: string[] }
+
+// ── 指标卡片 ──────────────────────────────────────────────
+
+function MetricCard({ icon: Icon, label, value, sub }: {
+  icon: ComponentType<{ className?: string }>; label: string; value: string | number; sub?: string
+}) {
+  return (
+    <Card>
+      <CardContent className="p-6">
+        <div className="flex items-center gap-3">
+          <div className="rounded-lg bg-primary/10 p-2">
+            <Icon className="h-5 w-5 text-primary" />
+          </div>
+          <div className="flex flex-col">
+            <span className="text-sm text-muted-foreground">{label}</span>
+            <span className="text-2xl font-bold">{value}</span>
+            {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function TopicsSection({ topics }: { topics: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {topics.map((t) => (
+        <Badge key={t} variant="secondary" className="px-3 py-1 text-sm">{t}</Badge>
+      ))}
+    </div>
+  )
+}
+
+function PapersTable({ papers, showCitations = true }: {
+  papers: ScholarProfile["topCitedPapers"]
+  showCitations?: boolean
+}) {
+  if (!papers.length) {
+    return <p className="text-sm text-muted-foreground">No papers found.</p>
+  }
+  return (
+    <div className="space-y-3">
+      {papers.map((p, i) => (
+        <Card key={p.id ?? i}>
+          <CardContent className="flex items-start gap-3 p-4">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground">
+              {i + 1}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-start justify-between gap-2">
+                {p.id ? (
+                  <a
+                    href={p.id}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-medium leading-snug text-primary hover:underline flex items-start gap-1"
+                  >
+                    {p.title}
+                    <ExternalLink className="h-3 w-3 shrink-0 mt-0.5" />
+                  </a>
+                ) : (
+                  <p className="text-sm font-medium leading-snug">{p.title}</p>
+                )}
+                {showCitations && (
+                  <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground whitespace-nowrap">
+                    <Quote className="h-3 w-3" />
+                    {p.citations}
+                  </div>
+                )}
+              </div>
+              <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+                <span>{p.journal}</span>
+                <span>{p.year}</span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
+
+// ── 候选人列表 ──────────────────────────────────────────────
+
+function CandidateList({ candidates, onSelect, loading, t }: {
+  candidates: Candidate[]
+  onSelect: (id: string) => void
+  loading: boolean
+  t: (k: string) => string
+}) {
+  return (
+    <section className="mx-auto max-w-3xl px-6 py-6">
+      <h3 className="mb-4 text-sm font-medium text-muted-foreground">
+        {candidates.length} {t("candidate.title")}
+      </h3>
+      <div className="space-y-2">
+        {candidates.map((c) => (
+          <Card key={c.id}
+            className="cursor-pointer transition-colors hover:bg-muted/50"
+            onClick={() => onSelect(c.id)}
+          >
+            <CardContent className="flex items-center justify-between p-4">
+              <div className="flex items-center gap-3">
+                <Avatar className="h-10 w-10">
+                  <AvatarFallback className="text-xs bg-primary/10 text-primary">
+                    {c.name.split(" ").map(n => n[0]).join("")}
+                  </AvatarFallback>
+                </Avatar>
+                <div>
+                  <p className="font-medium text-sm">{c.name}</p>
+                  <p className="text-xs text-muted-foreground">{c.institution || t("candidate.unknown_inst")}</p>
+                  <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
+                    <span>{c.works_count} {t("candidate.papers")}</span>
+                    <span>{c.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
+                    <span>h-index {c.h_index}</span>
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-muted-foreground" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      {loading && (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      )}
+    </section>
+  )
+}
+
+
+// ── 学者画像内容 ────────────────────────────────────────────
+
+function ProfileSection({ profile, onEdgeClick, onNodeClick, onFullscreenChange, t }: {
+  profile: ScholarProfile
+  onEdgeClick?: (data: { sourceName: string; targetName: string; papers: PanelPaper[]; weight: number }) => void
+  onNodeClick?: (data: { id: string; name: string; type: string; papers: PanelPaper[]; weight: number }) => void
+  onFullscreenChange?: (fs: boolean) => void
+  t: (k: string) => string
+}) {
+  const totalCount = profile.totalPapers
+
+  return (
+    <section className="mx-auto max-w-5xl px-6 py-10">
+      <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-4">
+          <Avatar className="h-20 w-20 border-2">
+            <AvatarFallback className="text-2xl font-semibold bg-primary/10 text-primary">
+              {profile.name.split(" ").map(n => n[0]).join("")}
+            </AvatarFallback>
+          </Avatar>
+          <div>
+            <h2 className="text-2xl font-bold">{profile.name}</h2>
+            {profile.department && <p className="text-muted-foreground">{profile.department}</p>}
+            <p className="text-sm text-muted-foreground">{profile.institution}</p>
+          </div>
+        </div>
+      </div>
+
+      <Separator className="my-6" />
+
+      <Tabs defaultValue="overview">
+        <TabsList>
+          <TabsTrigger value="overview">{t("tab.overview")}</TabsTrigger>
+          <TabsTrigger value="papers">{t("tab.papers")}</TabsTrigger>
+          <TabsTrigger value="network">{t("tab.network")}</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <MetricCard icon={BookOpen} label={t("metric.total_papers")} value={profile.totalPapers} />
+            <MetricCard icon={Quote} label={t("metric.total_citations")} value={profile.totalCitations.toLocaleString()} />
+            <MetricCard icon={BarChart3} label={t("metric.h_index")} value={profile.hIndex} />
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">{t("section.research_directions")}</CardTitle>
+              <CardDescription>{t("section.research_desc")}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <TopicsSection topics={profile.topics} />
+            </CardContent>
+          </Card>
+
+          {profile.profileSummary && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">{t("section.profile_summary")}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground">{profile.profileSummary}</p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        <TabsContent value="papers" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
+              <CardDescription>{totalCount} {t("candidate.papers")}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-[600px]">
+                <PapersTable papers={profile.topCitedPapers} />
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="network" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">{t("section.collab_network")}</CardTitle>
+              <CardDescription>{t("section.collab_desc")}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CollaborationGraph
+                name={profile.name}
+                coauthors={profile.coauthors}
+                graphNodes={profile.graphNodes}
+                graphEdges={profile.graphEdges}
+                topics={profile.topics}
+                onEdgeClick={onEdgeClick}
+                onNodeClick={onNodeClick}
+                onFullscreenChange={onFullscreenChange}
+                t={t}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </section>
+  )
+}
+
+
+// ── 主应用 ─────────────────────────────────────────────────
+
+export default function App() {
+  const { t, lang, setLang } = useTranslation()
+
+  // 搜索状态
+  const [query, setQuery] = useState("")
+  const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [profile, setProfile] = useState<ScholarProfile | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [searched, setSearched] = useState(false)
+
+  // 图谱全屏状态
+  const [graphFullscreen, setGraphFullscreen] = useState(false)
+  const [workflowStages, setWorkflowStages] = useState<WorkflowStage[]>([])
+  const [workflowProgress, setWorkflowProgress] = useState(0)
+  const [workflowMessage, setWorkflowMessage] = useState("")
+
+  // 主题状态
+  const [dark, setDark] = useState(() => localStorage.getItem("dark") === "true")
+  const [accent, setAccent] = useState<Accent>(() =>
+    (localStorage.getItem("accent") as Accent) ?? "blue"
+  )
+
+  // 侧面板状态
+  const [panel, setPanel] = useState<{
+    type: "edge" | "coauthor" | "center"
+    sourceName?: string
+    targetName: string
+    papers: PanelPaper[]
+    weight: number
+    targetId?: string
+  } | null>(null)
+
+  // 应用主题到 <html>
+  useEffect(() => {
+    const root = document.documentElement
+    root.classList.toggle("dark", dark)
+    localStorage.setItem("dark", String(dark))
+  }, [dark])
+
+  useEffect(() => {
+    const root = document.documentElement
+    root.className = root.className.replace(/theme-\w+/g, "").trim()
+    if (accent !== "blue") root.classList.add(`theme-${accent}`)
+    localStorage.setItem("accent", accent)
+  }, [accent])
+
+  const loadProfile = useCallback(async (authorId: string) => {
+    setPanel(null)
+    setLoading(true)
+    setError(null)
+    setProfile(null)
+    setCandidates([])
+    setWorkflowStages([])
+    setWorkflowProgress(0)
+    setWorkflowMessage("")
+    streamProfile(authorId, {
+      onInit: (stages, labels) => {
+        setWorkflowStages(stages.map((s, i) => ({
+          node: s, label: labels[s],
+          status: i === 0 ? 'running' as const : 'pending' as const,
+        })))
+        setWorkflowProgress(1)
+        setWorkflowMessage(labels[stages[0]])
+      },
+      onStage: (node, status, label) => {
+        setWorkflowStages(prev => {
+          const idx = prev.findIndex(s => s.node === node)
+          if (idx < 0) return prev
+          const next = prev.map(s => ({ ...s }))
+          next[idx] = { ...next[idx], status: status === 'running' ? 'running' : 'completed' }
+          if (status === 'completed' && idx + 1 < next.length && next[idx + 1].status === 'pending') {
+            next[idx + 1] = { ...next[idx + 1], status: 'running' }
+          }
+          return next
+        })
+        setWorkflowMessage(label)
+      },
+      onProgress: (progress, message, node) => {
+        setWorkflowProgress(prev => Math.max(prev, Math.min(progress, 100)))
+        setWorkflowMessage(message)
+        if (node) {
+          setWorkflowStages(prev => prev.map(stage =>
+            stage.node === node && stage.status === "pending"
+              ? { ...stage, status: "running" }
+              : stage
+          ))
+        }
+      },
+      onCacheHit: (updatedAt) => {
+        setWorkflowProgress(100)
+        setWorkflowMessage(`已加载历史缓存：${updatedAt}`)
+      },
+      onResult: (data) => {
+        setProfile(data)
+        setLoading(false)
+        setTimeout(() => setWorkflowStages([]), 600)
+      },
+      onError: (err) => {
+        setError(err)
+        setLoading(false)
+        setWorkflowMessage("")
+      },
+    })
+  }, [])
+
+  // 搜索
+  const handleSearch = useCallback(async () => {
+    const q = query.trim()
+    if (!q) return
+    setLoading(true)
+    setError(null)
+    setProfile(null)
+    setCandidates([])
+    setPanel(null)
+    setSearched(true)
+    try {
+      const results = await searchAuthors(q)
+      if (results.length === 1) {
+        await loadProfile(results[0].id)
+      } else {
+        setCandidates(results)
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : t("search.error"))
+    } finally {
+      setLoading(false)
+    }
+  }, [loadProfile, query, t])
+
+  // 图谱交互
+  const handleEdgeClick = useCallback((data: {
+    sourceName: string; targetName: string; papers: PanelPaper[]; weight: number
+  }) => {
+    setPanel({ ...data, type: "edge" })
+  }, [])
+
+  const handleNodeClick = useCallback((data: {
+    id: string; name: string; type: string; papers: PanelPaper[]; weight: number
+  }) => {
+    setPanel({
+      type: data.type === "center" ? "center" : "coauthor",
+      targetName: data.name,
+      papers: data.papers,
+      weight: data.weight,
+      targetId: data.id,
+    })
+  }, [])
+
+  const handleViewProfile = useCallback(async (authorId: string) => {
+    await loadProfile(authorId)
+  }, [loadProfile])
+
+  const handleReset = useCallback(() => {
+    setQuery("")
+    setCandidates([])
+    setProfile(null)
+    setError(null)
+    setSearched(false)
+    setPanel(null)
+  }, [])
+
+  const accents: { key: Accent; label: string; color: string }[] = [
+    { key: "blue", label: t("theme.blue"), color: "bg-[#3b82f6]" },
+    { key: "green", label: t("theme.green"), color: "bg-[#22c55e]" },
+    { key: "purple", label: t("theme.purple"), color: "bg-[#a855f7]" },
+    { key: "orange", label: t("theme.orange"), color: "bg-[#f97316]" },
+  ]
+
+  return (
+    <div className="min-h-screen bg-background">
+
+      {/* Navbar */}
+      <header className={`sticky top-0 z-30 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 ${graphFullscreen ? "hidden" : ""}`}>
+        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+          <div className="flex items-center gap-2 font-semibold cursor-pointer" onClick={handleReset}>
+            <BarChart3 className="h-5 w-5 text-primary" />
+            ScholarProfile
+          </div>
+
+          <div className="flex items-center gap-1">
+            {/* 强调色切换 */}
+            <div className="hidden sm:flex items-center gap-0.5 mr-1 border rounded-md p-0.5">
+              {accents.map(a => (
+                <button
+                  key={a.key}
+                  onClick={() => setAccent(a.key)}
+                  className={`h-5 w-5 rounded-sm ${a.color} transition-transform hover:scale-125 ${
+                    accent === a.key ? "ring-2 ring-ring ring-offset-1" : "opacity-50"
+                  }`}
+                  title={a.label}
+                />
+              ))}
+            </div>
+
+            {/* 暗色模式 */}
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDark(!dark)}>
+              {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </Button>
+
+            {/* 语言切换 */}
+            <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs"
+              onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+            >
+              <Globe className="h-3.5 w-3.5" />
+              {lang === "zh" ? "EN" : "中"}
+            </Button>
+
+            {profile && (
+              <Button variant="ghost" size="sm" className="h-8 ml-1" onClick={handleReset}>
+                <Search className="h-4 w-4 mr-1" />
+                {t("nav.new_search")}
+              </Button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* 搜索区 */}
+      <section className={`relative overflow-hidden border-b bg-gradient-to-b from-background to-muted/30 ${graphFullscreen ? "hidden" : ""}`}>
+        <div className="mx-auto max-w-3xl px-6 py-12 sm:py-16 text-center">
+          {!profile && (
+            <>
+              <h1 className="mb-4 text-4xl font-bold tracking-tight sm:text-5xl">
+                {t("app.title")}
+              </h1>
+              <p className="mx-auto mb-8 max-w-2xl text-lg text-muted-foreground">
+                {t("app.subtitle")}
+              </p>
+            </>
+          )}
+          <div className="mx-auto flex max-w-xl gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                placeholder={t("search.placeholder")}
+                className="h-11 w-full rounded-md border bg-background pl-9 pr-4 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              />
+            </div>
+            <Button size="lg" className="h-11" onClick={handleSearch} disabled={loading || !query.trim()}>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+              {loading ? t("search.loading") : t("search.button")}
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      {/* 错误提示 */}
+      {error && (
+        <div className="mx-auto max-w-3xl px-6 pt-6">
+          <Card className="border-destructive/50 bg-destructive/5">
+            <CardContent className="flex items-center gap-3 p-4">
+              <AlertCircle className="h-5 w-5 text-destructive shrink-0" />
+              <div className="text-sm">
+                <p className="font-medium">{t("search.error")}</p>
+                <p className="text-muted-foreground">{error}</p>
+              </div>
+              <Button variant="outline" size="sm" className="ml-auto" onClick={handleSearch}>
+                Retry
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* 加载中 */}
+      {/* 工作流进度面板 — DAG 结构可视化 */}
+      {workflowStages.length > 0 && !profile && !error && (
+        <div className="mx-auto max-w-xl px-6 py-8">
+          <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+            {/* Header */}
+            <div className="border-b px-5 py-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  <span>生成学者画像</span>
+                </div>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {Math.round(workflowProgress)}%
+                </span>
+              </div>
+              <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
+                  style={{ width: `${workflowProgress}%` }}
+                />
+              </div>
+              {workflowMessage && (
+                <p className="mt-2 text-xs text-muted-foreground">{workflowMessage}</p>
+              )}
+            </div>
+
+            {/* DAG 结构体 */}
+            <div className="p-4 text-xs">
+              {dagTiers.map((tier, ti) => (
+                <div key={ti}>
+                  {/* 层间连接器 */}
+                  {ti > 0 && (
+                    <div className="flex justify-center py-0.5">
+                      <div className="h-3 w-0.5 rounded-full bg-muted-foreground/20" />
+                    </div>
+                  )}
+
+                  {/* 当前层 */}
+                  <div
+                    className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 ${
+                      tier.mode === "parallel"
+                        ? "justify-around"
+                        : tier.mode === "chain" || tier.mode === "fork"
+                          ? "justify-start flex-wrap"
+                          : ""
+                    }`}
+                  >
+                    {tier.nodes.map((nodeId, ni) => {
+                      const stage = workflowStages.find((s) => s.node === nodeId)
+                      if (!stage) return null
+
+                      const isRunning = stage.status === "running"
+                      const isDone = stage.status === "completed"
+                      const isPending = stage.status === "pending"
+
+                      // 箭头（serial chain 节点之间）
+                      const showArrow = tier.mode === "chain" && ni < tier.nodes.length - 1
+
+                      return (
+                        <div key={nodeId} className="flex items-center gap-1.5">
+                          {/* 节点卡片 */}
+                          <div
+                            className={`flex items-center gap-1.5 rounded-md px-2 py-1 transition-all ${
+                              isRunning
+                                ? "border-l-2 border-primary bg-primary/5 font-medium text-foreground"
+                                : isDone
+                                  ? "text-muted-foreground/70"
+                                  : "text-muted-foreground/40"
+                            }`}
+                          >
+                            {/* 状态图标 */}
+                            {isDone && (
+                              <div className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-green-500/10 text-green-500">
+                                <Check className="h-2.5 w-2.5" />
+                              </div>
+                            )}
+                            {isRunning && (
+                              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+                            )}
+                            {isPending && (
+                              <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/20" />
+                            )}
+                            <span>{stage.label.replace("...", "")}</span>
+                          </div>
+
+                          {/* 箭头（chain 模式） */}
+                          {showArrow && (
+                            <span className="text-muted-foreground/30 text-lg leading-none">→</span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* 并行分支提示 */}
+                  {tier.mode === "parallel" && (
+                    <div className="flex justify-center gap-6 text-[10px] text-muted-foreground/40">
+                      <span>┌─ 统计分支</span>
+                      <span>└─ AI 分支</span>
+                    </div>
+                  )}
+                  {(tier.mode === "fork" || tier.mode === "merge") && (
+                    <div className="flex justify-center gap-6 text-[10px] text-muted-foreground/30">
+                      <span>├ 两路汇聚</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Agent 子消息 */}
+              {workflowStages.some(
+                (s) => s.node === "agent_analyze_topics" && s.status === "running"
+              ) && (
+                <div className="mt-2 flex items-center gap-1 rounded-md bg-primary/5 px-3 py-1.5">
+                  <span className="inline-block h-1 w-1 animate-bounce rounded-full bg-primary/60"
+                    style={{ animationDelay: "0ms" }} />
+                  <span className="inline-block h-1 w-1 animate-bounce rounded-full bg-primary/60"
+                    style={{ animationDelay: "150ms" }} />
+                  <span className="inline-block h-1 w-1 animate-bounce rounded-full bg-primary/60"
+                    style={{ animationDelay: "300ms" }} />
+                  <span className="ml-1 text-xs text-muted-foreground/70">
+                    正在扫描论文标题与主题标签…
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 加载中（搜索阶段） */}
+      {loading && !candidates.length && !profile && !error && workflowStages.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+          <Loader2 className="h-8 w-8 animate-spin mb-4" />
+          <p className="text-sm">{searched ? t("search.profile_loading") : t("search.loading")}</p>
+        </div>
+      )}
+
+      {/* 候选人 */}
+      {candidates.length > 0 && (
+        <CandidateList candidates={candidates} onSelect={loadProfile} loading={loading} t={t} />
+      )}
+
+      {/* 画像 */}
+      {profile && (
+        <ProfileSection
+          profile={profile}
+          onEdgeClick={handleEdgeClick}
+          onNodeClick={handleNodeClick}
+          onFullscreenChange={setGraphFullscreen}
+          t={t}
+        />
+      )}
+
+      {/* 空状态 */}
+      {!searched && !loading && !error && !profile && !candidates.length && (
+        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+          <Users className="h-12 w-12 mb-4 opacity-30" />
+          <p className="text-sm">{t("search.empty")}</p>
+        </div>
+      )}
+
+      {/* 侧面板 */}
+      <SidePanel
+        data={panel}
+        onClose={() => setPanel(null)}
+        onViewProfile={handleViewProfile}
+        t={t}
+        fullscreen={graphFullscreen}
+      />
+    </div>
+  )
+}

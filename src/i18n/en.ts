@@ -1,0 +1,72 @@
+const en: Record<string, string> = {
+  "app.title": "Scholar Profile System",
+  "app.subtitle": "Enter a scholar's name to generate publications, citations, research directions, and collaboration network",
+  "search.placeholder": "Enter a scholar's name",
+  "search.button": "Search",
+  "search.loading": "Searching",
+  "search.profile_loading": "Generating scholar profile...",
+  "search.empty": "Enter a scholar name to get started",
+  "search.new": "New Search",
+  "search.error": "Search failed",
+  "profile.loading": "Loading profile",
+  "profile.error": "Profile generation failed",
+  "nav.new_search": "New Search",
+
+  "candidate.title": "candidate(s) found — select one",
+  "candidate.papers": "papers",
+  "candidate.citations": "citations",
+  "candidate.unknown_inst": "Unknown institution",
+
+  "tab.overview": "Overview",
+  "tab.papers": "Papers",
+  "tab.network": "Network",
+
+  "metric.total_papers": "Total Papers",
+  "metric.total_citations": "Total Citations",
+  "metric.h_index": "h-index",
+
+  "section.research_directions": "Research Directions",
+  "section.research_desc": "Extracted from publication keywords and topics",
+  "section.repr_papers": "Representative Papers",
+  "section.repr_desc": "Top-cited and recent publications",
+  "section.top_cited": "Top Cited Papers",
+  "section.top_cited_desc": "Sorted by citation count",
+  "section.all_papers": "All Papers",
+  "section.collab_network": "Collaboration Network",
+  "section.collab_desc": "Co-authors centered around the scholar",
+  "section.profile_summary": "Profile Summary",
+
+  "graph.center_author": "Center Author",
+  "graph.coauthor": "Co-author",
+  "graph.papers_coauthored": "papers co-authored",
+  "graph.size_hint": "Node size ∝ collaboration count",
+  "graph.width_hint": "Edge width ∝ collaboration count",
+  "graph.edge_label": "papers",
+  "graph.operate_hint": "Drag to reposition · Scroll to zoom · Click edge for papers",
+  "graph.coauthor_papers": "Co-authored Papers",
+  "graph.click_edge": "Click an edge to view co-authored papers",
+  "graph.click_node": "Click a node for details",
+  "graph.view_profile": "View Profile",
+  "graph.open_alex": "Open OpenAlex Page",
+  "graph.all": "All",
+
+  "panel.close": "Close",
+  "panel.coauthored_papers": "Co-authored Papers",
+  "panel.coauthor_info": "Co-author Info",
+  "panel.no_papers": "No paper data available",
+  "panel.papers_with": "with",
+
+  "theme.light": "Light",
+  "theme.dark": "Dark",
+  "theme.blue": "Blue",
+  "theme.green": "Green",
+  "theme.purple": "Purple",
+  "theme.orange": "Orange",
+
+  "lang.zh": "中文",
+  "lang.en": "English",
+
+  "api_docs": "API Docs",
+}
+
+export default en
