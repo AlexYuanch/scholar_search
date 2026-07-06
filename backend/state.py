@@ -38,6 +38,7 @@ class ScholarProfileState(TypedDict):
 
     # ── 最终输出 ──
     profile_summary: str
+    profile_evidence: List[Dict[str, Any]]
     web_payload: Dict[str, Any]
 
     # ── 运行信息 ──
@@ -63,6 +64,7 @@ def default_state() -> Dict[str, Any]:
         "graph_nodes": [],
         "graph_edges": [],
         "profile_summary": "",
+        "profile_evidence": [],
         "web_payload": {},
         "warnings": [],
         "errors": [],

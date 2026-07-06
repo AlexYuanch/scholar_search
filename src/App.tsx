@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, type ComponentType } from "react"
+import { Suspense, lazy, useState, useEffect, useCallback, useRef, type ComponentType } from "react"
 import {
   Search, BookOpen, Quote, BarChart3, Users,
-  ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink
+  ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink, RefreshCw
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,8 +13,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { useTranslation } from "./i18n"
 import type { Candidate, ScholarProfile } from "./types"
 import { searchAuthors, streamProfile } from "./api"
-import CollaborationGraph from "@/components/CollaborationGraph"
 import SidePanel from "@/components/SidePanel"
+
+const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
 interface WorkflowStage {
   node: string
@@ -35,6 +36,7 @@ const dagTiers: Array<{
 
 type Accent = "blue" | "green" | "purple" | "orange"
 type PanelPaper = string | { title: string; id?: string; topics?: string[] }
+type ProfileSource = "cache" | "live" | null
 
 // ── 指标卡片 ──────────────────────────────────────────────
 
@@ -118,6 +120,30 @@ function PapersTable({ papers, showCitations = true }: {
   )
 }
 
+function EvidenceList({ evidence, t }: { evidence: ScholarProfile["profileEvidence"]; t: (k: string) => string }) {
+  if (!evidence?.length) return null
+  return (
+    <div className="mt-4 space-y-2 border-t pt-4">
+      <h4 className="text-xs font-medium text-muted-foreground">{t("section.evidence")}</h4>
+      <div className="space-y-2">
+        {evidence.map((item) => (
+          <div key={item.id} className="flex items-start gap-2 text-xs text-muted-foreground">
+            <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">[{item.id}]</Badge>
+            {item.url ? (
+              <a href={item.url} target="_blank" rel="noopener noreferrer" className="flex items-start gap-1 text-primary hover:underline">
+                <span>{item.text}</span>
+                <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+              </a>
+            ) : (
+              <span>{item.text}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 
 // ── 候选人列表 ──────────────────────────────────────────────
 
@@ -152,6 +178,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                     <span>{c.works_count} {t("candidate.papers")}</span>
                     <span>{c.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
                     <span>h-index {c.h_index}</span>
+                    {(c.merged_count ?? 1) > 1 && <span>{c.merged_count} {t("candidate.merged")}</span>}
                   </div>
                 </div>
               </div>
@@ -172,8 +199,22 @@ function CandidateList({ candidates, onSelect, loading, t }: {
 
 // ── 学者画像内容 ────────────────────────────────────────────
 
-function ProfileSection({ profile, onEdgeClick, onNodeClick, onFullscreenChange, t }: {
+function ProfileSection({
+  profile,
+  source,
+  updatedAt,
+  refreshing,
+  onRefresh,
+  onEdgeClick,
+  onNodeClick,
+  onFullscreenChange,
+  t,
+}: {
   profile: ScholarProfile
+  source: ProfileSource
+  updatedAt: string
+  refreshing: boolean
+  onRefresh: () => void
   onEdgeClick?: (data: { sourceName: string; targetName: string; papers: PanelPaper[]; weight: number }) => void
   onNodeClick?: (data: { id: string; name: string; type: string; papers: PanelPaper[]; weight: number }) => void
   onFullscreenChange?: (fs: boolean) => void
@@ -195,6 +236,16 @@ function ProfileSection({ profile, onEdgeClick, onNodeClick, onFullscreenChange,
             {profile.department && <p className="text-muted-foreground">{profile.department}</p>}
             <p className="text-sm text-muted-foreground">{profile.institution}</p>
           </div>
+        </div>
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <Badge variant={source === "cache" ? "secondary" : "outline"}>
+            {source === "cache" ? t("cache.source_cache") : t("cache.source_live")}
+          </Badge>
+          {updatedAt && <span className="text-xs text-muted-foreground">{t("cache.updated_at")} {updatedAt}</span>}
+          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onRefresh} disabled={refreshing}>
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+            {t("cache.refresh")}
+          </Button>
         </div>
       </div>
 
@@ -231,6 +282,7 @@ function ProfileSection({ profile, onEdgeClick, onNodeClick, onFullscreenChange,
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground">{profile.profileSummary}</p>
+                <EvidenceList evidence={profile.profileEvidence} t={t} />
               </CardContent>
             </Card>
           )}
@@ -239,7 +291,7 @@ function ProfileSection({ profile, onEdgeClick, onNodeClick, onFullscreenChange,
         <TabsContent value="papers" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
+              <CardTitle className="text-base">{t("section.top_cited")}</CardTitle>
               <CardDescription>{totalCount} {t("candidate.papers")}</CardDescription>
             </CardHeader>
             <CardContent>
@@ -257,17 +309,19 @@ function ProfileSection({ profile, onEdgeClick, onNodeClick, onFullscreenChange,
               <CardDescription>{t("section.collab_desc")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <CollaborationGraph
-                name={profile.name}
-                coauthors={profile.coauthors}
-                graphNodes={profile.graphNodes}
-                graphEdges={profile.graphEdges}
-                topics={profile.topics}
-                onEdgeClick={onEdgeClick}
-                onNodeClick={onNodeClick}
-                onFullscreenChange={onFullscreenChange}
-                t={t}
-              />
+              <Suspense fallback={<div className="flex h-[520px] items-center justify-center text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" /></div>}>
+                <CollaborationGraph
+                  name={profile.name}
+                  coauthors={profile.coauthors}
+                  graphNodes={profile.graphNodes}
+                  graphEdges={profile.graphEdges}
+                  topics={profile.topics}
+                  onEdgeClick={onEdgeClick}
+                  onNodeClick={onNodeClick}
+                  onFullscreenChange={onFullscreenChange}
+                  t={t}
+                />
+              </Suspense>
             </CardContent>
           </Card>
         </TabsContent>
@@ -286,6 +340,8 @@ export default function App() {
   const [query, setQuery] = useState("")
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [profile, setProfile] = useState<ScholarProfile | null>(null)
+  const [profileSource, setProfileSource] = useState<ProfileSource>(null)
+  const [profileUpdatedAt, setProfileUpdatedAt] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searched, setSearched] = useState(false)
@@ -295,6 +351,8 @@ export default function App() {
   const [workflowStages, setWorkflowStages] = useState<WorkflowStage[]>([])
   const [workflowProgress, setWorkflowProgress] = useState(0)
   const [workflowMessage, setWorkflowMessage] = useState("")
+  const abortRef = useRef<AbortController | null>(null)
+  const requestSeqRef = useRef(0)
 
   // 主题状态
   const [dark, setDark] = useState(() => localStorage.getItem("dark") === "true")
@@ -326,17 +384,26 @@ export default function App() {
     localStorage.setItem("accent", accent)
   }, [accent])
 
-  const loadProfile = useCallback(async (authorId: string) => {
+  const loadProfile = useCallback(async (authorId: string, options: { refresh?: boolean } = {}) => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    const requestId = requestSeqRef.current + 1
+    requestSeqRef.current = requestId
+    const isCurrent = () => requestSeqRef.current === requestId && !controller.signal.aborted
     setPanel(null)
     setLoading(true)
     setError(null)
     setProfile(null)
+    setProfileSource(null)
+    setProfileUpdatedAt("")
     setCandidates([])
     setWorkflowStages([])
     setWorkflowProgress(0)
     setWorkflowMessage("")
-    streamProfile(authorId, {
+    await streamProfile(authorId, {
       onInit: (stages, labels) => {
+        if (!isCurrent()) return
         setWorkflowStages(stages.map((s, i) => ({
           node: s, label: labels[s],
           status: i === 0 ? 'running' as const : 'pending' as const,
@@ -345,6 +412,7 @@ export default function App() {
         setWorkflowMessage(labels[stages[0]])
       },
       onStage: (node, status, label) => {
+        if (!isCurrent()) return
         setWorkflowStages(prev => {
           const idx = prev.findIndex(s => s.node === node)
           if (idx < 0) return prev
@@ -358,6 +426,7 @@ export default function App() {
         setWorkflowMessage(label)
       },
       onProgress: (progress, message, node) => {
+        if (!isCurrent()) return
         setWorkflowProgress(prev => Math.max(prev, Math.min(progress, 100)))
         setWorkflowMessage(message)
         if (node) {
@@ -369,20 +438,27 @@ export default function App() {
         }
       },
       onCacheHit: (updatedAt) => {
+        if (!isCurrent()) return
         setWorkflowProgress(100)
         setWorkflowMessage(`已加载历史缓存：${updatedAt}`)
+        setProfileSource("cache")
+        setProfileUpdatedAt(updatedAt)
       },
-      onResult: (data) => {
+      onResult: (data, meta) => {
+        if (!isCurrent()) return
         setProfile(data)
+        setProfileSource((meta.source as ProfileSource) ?? "live")
+        setProfileUpdatedAt(meta.updatedAt ?? "")
         setLoading(false)
         setTimeout(() => setWorkflowStages([]), 600)
       },
       onError: (err) => {
+        if (!isCurrent()) return
         setError(err)
         setLoading(false)
         setWorkflowMessage("")
       },
-    })
+    }, { refresh: options.refresh, signal: controller.signal })
   }, [])
 
   // 搜索
@@ -433,12 +509,23 @@ export default function App() {
   }, [loadProfile])
 
   const handleReset = useCallback(() => {
+    abortRef.current?.abort()
     setQuery("")
     setCandidates([])
     setProfile(null)
+    setProfileSource(null)
+    setProfileUpdatedAt("")
     setError(null)
+    setLoading(false)
+    setWorkflowStages([])
+    setWorkflowProgress(0)
+    setWorkflowMessage("")
     setSearched(false)
     setPanel(null)
+  }, [])
+
+  useEffect(() => {
+    return () => abortRef.current?.abort()
   }, [])
 
   const accents: { key: Accent; label: string; color: string }[] = [
@@ -695,6 +782,10 @@ export default function App() {
       {profile && (
         <ProfileSection
           profile={profile}
+          source={profileSource}
+          updatedAt={profileUpdatedAt}
+          refreshing={loading}
+          onRefresh={() => loadProfile(profile.authorId, { refresh: true })}
           onEdgeClick={handleEdgeClick}
           onNodeClick={handleNodeClick}
           onFullscreenChange={setGraphFullscreen}

@@ -8,12 +8,17 @@ export interface Candidate {
   id: string
   name: string
   institution: string
+  institutions?: string[]
   works_count: number
   cited_by_count: number
   h_index: number
+  merged_count?: number
+  merged_ids?: string[]
+  disambiguation?: string
 }
 
 export interface ScholarProfile {
+  authorId: string
   name: string
   institution: string
   department: string
@@ -25,7 +30,7 @@ export interface ScholarProfile {
   topicDistribution: Array<{ name: string; value: number }>
   interestTimeline: Array<{
     year: number
-    topics: Array<{ topic: string; score: number }>
+    topics: Array<{ topic: string; count: number }>
   }>
   representativePapers: Array<{
     title: string
@@ -45,4 +50,10 @@ export interface ScholarProfile {
   graphNodes: Array<{ id: string; name: string; type: string }>
   graphEdges: Array<{ source: string; target: string; weight: number; papers?: EdgePaper[] }>
   profileSummary: string
+  profileEvidence: Array<{
+    id: string
+    type: "metric" | "paper" | "topic" | "coauthor"
+    text: string
+    url?: string
+  }>
 }

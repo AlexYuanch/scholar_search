@@ -12,19 +12,31 @@ from state import ScholarProfileState
 # ── 工具函数 ─────────────────────────────────────────────────
 
 def dedup_authors(candidates):
-    """按(归一化姓名, 主机构)合并同一人的多个 OpenAlex 实体。"""
+    """按归一化姓名合并 OpenAlex 作者实体，并保留消歧信息。"""
     groups = defaultdict(list)
     for a in candidates:
-        key = (a["display_name"].strip().lower(),
-               (a.get("last_known_institutions") or [{}])[0].get("display_name", "").strip().lower())
+        key = a["display_name"].strip().lower()
         groups[key].append(a)
     result = []
     for group in groups.values():
-        best = max(group, key=lambda a: a.get("works_count", 0))
+        best = dict(max(group, key=lambda a: a.get("works_count", 0)))
         best["works_count"] = max(a.get("works_count", 0) for a in group)
         best["cited_by_count"] = max(a.get("cited_by_count", 0) for a in group)
         hs = [a.get("summary_stats", {}).get("h_index", 0) or 0 for a in group]
         best["summary_stats"] = {"h_index": max(hs)}
+        institutions = []
+        for item in group:
+            for inst in item.get("last_known_institutions") or []:
+                name = inst.get("display_name", "").strip()
+                if name and name not in institutions:
+                    institutions.append(name)
+        best["institutions"] = institutions
+        best["merged_ids"] = sorted(a.get("id", "") for a in group if a.get("id"))
+        best["merged_count"] = len(best["merged_ids"])
+        if best["merged_count"] > 1:
+            best["disambiguation"] = f"已合并 {best['merged_count']} 个同名 OpenAlex 作者实体"
+        else:
+            best["disambiguation"] = ""
         result.append(best)
     return result
 
@@ -53,8 +65,13 @@ def fetch_author_profile(state: ScholarProfileState) -> dict:
 def collect_works(state: ScholarProfileState) -> dict:
     """获取作者全部论文（游标分页）。"""
     from openalex import get_works
-    works = get_works(state["target_author_id"])
     warnings = []
+    try:
+        works, fetch_warnings = get_works(state["target_author_id"])
+        warnings.extend(fetch_warnings)
+    except Exception as exc:
+        works = []
+        warnings.append(f"OpenAlex 论文获取失败，后续分析将基于空论文集: {exc}")
     if state["target_author_profile"]:
         expected = state["target_author_profile"].get("works_count", 0)
         if len(works) < expected:
@@ -268,14 +285,14 @@ def analyze_interest_evolution(state: ScholarProfileState) -> dict:
 # ── 阶段六: 合作网络 ────────────────────────────────────────
 
 def analyze_coauthors(state: ScholarProfileState) -> dict:
-    """统计合作作者并去重合并（同名作者汇总全部论文，而非分段计数）。"""
+    """按 OpenAlex author id 统计合作作者，避免同名不同人被混合。"""
     paper_agent_topics = defaultdict(list)
     for t in state["topic_clusters"]:
         topic_name = t["topic"]
         for idx in t.get("paper_indices", []):
             paper_agent_topics[idx].append(topic_name)
 
-    raw = defaultdict(lambda: {"names": set(), "ids": set(), "paper_ids": set(), "paper_details": []})
+    raw = defaultdict(lambda: {"names": set(), "paper_ids": set(), "paper_details": []})
 
     for i, w in enumerate(state["deduped_works"]):
         agent_topics = paper_agent_topics.get(
@@ -288,10 +305,8 @@ def analyze_coauthors(state: ScholarProfileState) -> dict:
             aid = (au.get("author") or {}).get("id")
             if aid and aid != state["target_author_id"]:
                 name = (au.get("author") or {}).get("display_name", "?")
-                name_key = name.strip().lower()
-                entry = raw[name_key]
+                entry = raw[aid]
                 entry["names"].add(name)
-                entry["ids"].add(aid)
 
                 if paper_id and paper_id not in entry["paper_ids"]:
                     entry["paper_ids"].add(paper_id)
@@ -302,10 +317,10 @@ def analyze_coauthors(state: ScholarProfileState) -> dict:
                     })
 
     coauthors = []
-    for entry in raw.values():
+    for aid, entry in raw.items():
         coauthors.append({
             "name": sorted(entry["names"])[0],
-            "id": sorted(entry["ids"])[0],
+            "id": aid,
             "papers": len(entry["paper_ids"]),
             "paper_titles": entry["paper_details"],
         })
@@ -334,6 +349,84 @@ def build_collaboration_graph(state: ScholarProfileState) -> dict:
 
 # ── 阶段七: 最终输出 ────────────────────────────────────────
 
+def _flatten_representative_papers(representative_papers: dict) -> list[dict]:
+    papers = []
+    seen = set()
+    for items in representative_papers.values():
+        for paper in items:
+            key = paper.get("doi") or paper.get("id") or paper.get("title")
+            if key and key not in seen:
+                seen.add(key)
+                papers.append(paper)
+    return papers
+
+
+def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[dict]:
+    cs = state["citation_summary"]
+    evidence = [{
+        "id": "1",
+        "type": "metric",
+        "text": (
+            f"OpenAlex 统计显示该学者在 {inst_name} 关联档案下共有 "
+            f"{cs.get('total_papers', 0)} 篇论文、{cs.get('total_citations', 0)} 次引用，"
+            f"h-index 为 {cs.get('h_index', 0)}。"
+        ),
+    }]
+    next_id = 2
+    topics = [t["topic"] for t in state["topic_clusters"][:5]]
+    if topics:
+        evidence.append({
+            "id": str(next_id),
+            "type": "topic",
+            "text": "核心研究方向来自论文标题与 OpenAlex concepts 聚合: " + "、".join(topics) + "。",
+        })
+        next_id += 1
+    for paper in _flatten_representative_papers(state["representative_papers"])[:3]:
+        evidence.append({
+            "id": str(next_id),
+            "type": "paper",
+            "text": (
+                f"代表论文《{paper.get('title', '')}》"
+                f"({paper.get('year', '未知年份')})，引用 {paper.get('citations', 0)} 次。"
+            ),
+            "url": paper.get("id") or paper.get("doi") or "",
+        })
+        next_id += 1
+    if state["coauthors"]:
+        names = [f"{c['name']}({c['papers']} 篇)" for c in state["coauthors"][:3]]
+        evidence.append({
+            "id": str(next_id),
+            "type": "coauthor",
+            "text": "高频合作者包括 " + "、".join(names) + "。",
+        })
+    return evidence
+
+
+def _summary_has_valid_evidence(summary: str, evidence: list[dict]) -> bool:
+    valid_ids = {item["id"] for item in evidence}
+    cited_ids = set(re.findall(r"\[(\d+)\]", summary or ""))
+    return bool(summary and len(summary.strip()) >= 20 and cited_ids & valid_ids)
+
+
+def _fallback_summary(profile: dict, inst_name: str, state: ScholarProfileState, evidence: list[dict]) -> str:
+    cs = state["citation_summary"]
+    topic_names = [t["topic"] for t in state["topic_clusters"][:5]]
+    topic_text = "、".join(topic_names) if topic_names else "暂未形成稳定方向标签"
+    metric_ref = "[1]" if evidence else ""
+    topic_ref = "[2]" if len(evidence) >= 2 and evidence[1]["type"] == "topic" else metric_ref
+    paper_refs = [f"[{item['id']}]" for item in evidence if item["type"] == "paper"]
+    paper_text = "，代表性论文可见" + "".join(paper_refs[:2]) if paper_refs else ""
+    coauthor_refs = [f"[{item['id']}]" for item in evidence if item["type"] == "coauthor"]
+    coauthor_text = " 合作网络依据可见" + coauthor_refs[0] + "。" if coauthor_refs else ""
+    return (
+        f"{profile.get('display_name', '')} 是 {inst_name} 的研究人员，"
+        f"OpenAlex 记录显示其发表 {cs.get('total_papers', 0)} 篇论文、"
+        f"累计引用 {cs.get('total_citations', 0):,} 次，h-index 为 {cs.get('h_index', 0)}{metric_ref}。"
+        f"其研究方向主要集中在 {topic_text}{topic_ref}{paper_text}。"
+        f"{coauthor_text}"
+    )
+
+
 def generate_profile_report(state: ScholarProfileState) -> dict:
     """使用 LLM Agent 生成学者的学术总结（回退模板）。"""
     profile = state["target_author_profile"] or {}
@@ -342,13 +435,13 @@ def generate_profile_report(state: ScholarProfileState) -> dict:
     cs = state["citation_summary"]
     topic_names = [t["topic"] for t in state["topic_clusters"][:5]]
     top_coauthors = [{"name": c["name"], "papers": c["papers"]} for c in state["coauthors"][:5]]
+    evidence = _build_profile_evidence(state, inst_name)
 
     # 尝试用 LLM 生成
     from llm import report_llm
-    from prompts import AGENT_PROFILE_REPORT
-    import json
 
     try:
+        representative = _flatten_representative_papers(state["representative_papers"])[:5]
         report_input = {
             "name": profile.get("display_name", ""),
             "institution": inst_name,
@@ -357,25 +450,22 @@ def generate_profile_report(state: ScholarProfileState) -> dict:
             "hIndex": cs.get("h_index", 0),
             "topics": topic_names,
             "top_coauthors": top_coauthors,
-            "representative_papers": [p.get("title", "") for p in list(state["representative_papers"].values())[:3]],
+            "representative_papers": [p.get("title", "") for p in representative],
+            "evidence": evidence,
             "trend": "活跃年份: " + ", ".join(str(t.get("year", "")) for t in cs.get("yearly_trend", [])[:5]),
         }
         summary = report_llm(report_input)
-        if summary:
-            return {"profile_summary": summary, "warnings": state.get("warnings", []) + ["Agent 生成总结 ✓"]}
+        if _summary_has_valid_evidence(summary, evidence):
+            return {
+                "profile_summary": summary,
+                "profile_evidence": evidence,
+                "warnings": ["Agent 生成总结 ✓"],
+            }
     except Exception as e:
         pass  # fallback to template
 
-    # 回退模板
-    top_topics = ", ".join(topic_names)
-    summary = (
-        f"{profile.get('display_name', '')} 是 {inst_name} 的研究人员。"
-        f"共发表 {cs.get('total_papers', 0)} 篇论文，"
-        f"总引用 {cs.get('total_citations', 0):,} 次，"
-        f"h-index 为 {cs.get('h_index', 0)}。"
-        f"研究方向涵盖 {top_topics} 等。"
-    )
-    return {"profile_summary": summary}
+    summary = _fallback_summary(profile, inst_name, state, evidence)
+    return {"profile_summary": summary, "profile_evidence": evidence}
 
 
 def format_web_payload(state: ScholarProfileState) -> dict:
@@ -385,7 +475,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
     cs = state["citation_summary"]
     ws = state["deduped_works"]
 
-    # top 10 高被引论文
+    # top 50 高被引论文，避免大作者 payload 过大
     top_cited = sorted(ws, key=lambda w: -(w.get("cited_by_count") or 0))
     top_cited_list = [{
         "id": w.get("id", ""),
@@ -393,7 +483,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "year": w.get("publication_year"),
         "citations": w.get("cited_by_count", 0),
         "journal": ((w.get("primary_location") or {}).get("source") or {}).get("display_name", ""),
-    } for w in top_cited]
+    } for w in top_cited[:50]]
 
     # 平铺所有 representative papers 并去重
     all_repr = []
@@ -409,6 +499,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
 
     payload = {
         "name": profile.get("display_name", ""),
+        "authorId": state["target_author_id"],
         "institution": insts[0] if insts else "",
         "department": "",
         "totalPapers": cs.get("total_papers", 0),
@@ -426,5 +517,6 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "graphNodes": state["graph_nodes"],
         "graphEdges": state["graph_edges"],
         "profileSummary": state["profile_summary"],
+        "profileEvidence": state["profile_evidence"],
     }
     return {"web_payload": payload}

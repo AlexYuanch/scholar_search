@@ -16,6 +16,7 @@ const en: Record<string, string> = {
   "candidate.papers": "papers",
   "candidate.citations": "citations",
   "candidate.unknown_inst": "Unknown institution",
+  "candidate.merged": "merged entities",
 
   "tab.overview": "Overview",
   "tab.papers": "Papers",
@@ -35,6 +36,12 @@ const en: Record<string, string> = {
   "section.collab_network": "Collaboration Network",
   "section.collab_desc": "Co-authors centered around the scholar",
   "section.profile_summary": "Profile Summary",
+  "section.evidence": "Evidence",
+
+  "cache.source_cache": "Cached",
+  "cache.source_live": "Live",
+  "cache.updated_at": "Updated",
+  "cache.refresh": "Refresh Profile",
 
   "graph.center_author": "Center Author",
   "graph.coauthor": "Co-author",

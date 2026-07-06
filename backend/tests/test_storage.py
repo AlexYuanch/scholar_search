@@ -1,4 +1,5 @@
 from storage import ProfileStore
+import sqlite3
 
 
 def test_profile_store_round_trips_scholar_history(tmp_path):
@@ -32,3 +33,24 @@ def test_profile_store_lists_recent_queries(tmp_path):
 
     assert [item["author_id"] for item in history] == ["A2", "A1"]
     assert history[0]["name"] == "Second"
+
+
+def test_profile_store_reports_cache_freshness(tmp_path):
+    db_path = tmp_path / "history.sqlite3"
+    store = ProfileStore(db_path)
+    store.save_profile("A1", "First", {"name": "First"}, warnings=[], errors=[])
+
+    fresh = store.get_profile("A1")
+    assert fresh is not None
+    assert store.is_fresh(fresh, max_age_days=7)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER scholar_profiles_updated_at")
+        conn.execute(
+            "UPDATE scholar_profiles SET updated_at = datetime('now', '-8 days') WHERE author_id = ?",
+            ("A1",),
+        )
+
+    stale = store.get_profile("A1")
+    assert stale is not None
+    assert not store.is_fresh(stale, max_age_days=7)

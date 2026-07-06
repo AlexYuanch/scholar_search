@@ -23,6 +23,11 @@ export async function getProfile(authorId: string): Promise<ScholarProfile> {
   return data.data
 }
 
+interface StreamOptions {
+  refresh?: boolean
+  signal?: AbortSignal
+}
+
 /** NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据 */
 export async function streamProfile(
   authorId: string,
@@ -31,16 +36,18 @@ export async function streamProfile(
     onStage: (node: string, status: string, label: string) => void
     onProgress?: (progress: number, message: string, node?: string) => void
     onCacheHit?: (updatedAt: string) => void
-    onResult: (data: ScholarProfile) => void
+    onResult: (data: ScholarProfile, meta: { source?: string; updatedAt?: string }) => void
     onError: (err: string) => void
-  }
+  },
+  options: StreamOptions = {},
 ): Promise<void> {
   const { onInit, onStage, onProgress, onCacheHit, onResult, onError } = callbacks
   try {
     const res = await fetch(`${API_BASE}/profile/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ author_id: authorId }),
+      body: JSON.stringify({ author_id: authorId, refresh: options.refresh ?? false }),
+      signal: options.signal,
     })
     if (!res.ok) {
       onError(`Profile request failed (${res.status})`)
@@ -64,12 +71,13 @@ export async function streamProfile(
           else if (msg.type === 'stage') onStage(msg.node, msg.status, msg.label)
           else if (msg.type === 'progress') onProgress?.(msg.progress, msg.message, msg.node)
           else if (msg.type === 'cache_hit') onCacheHit?.(msg.updated_at)
-          else if (msg.type === 'result') onResult(msg.data)
+          else if (msg.type === 'result') onResult(msg.data, { source: msg.source, updatedAt: msg.updated_at })
           else if (msg.type === 'error') onError(msg.message || 'Unknown error')
         } catch { /* skip malformed lines */ }
       }
     }
   } catch (e: unknown) {
+    if (e instanceof DOMException && e.name === 'AbortError') return
     onError(e instanceof Error ? e.message : 'Connection failed')
   }
 }

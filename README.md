@@ -41,12 +41,13 @@
 - 分析研究方向、代表论文和兴趣演化。
 - 构建合作作者网络，支持点击节点或边查看合作论文。
 - 画像生成时显示流式进度、百分比和阶段消息。
-- SQLite 缓存已查询过的画像，再次查询同一 author_id 可快速返回。
+- SQLite 缓存已查询过的画像，7 天内再次查询同一 author_id 可快速返回；支持强制刷新。
+- 学术总结带证据编号，页面展示对应统计指标、代表论文和合作依据。
 - 支持暗色模式、主题色切换和中英文切换。
 
 ## 工作流设计
 
-后端使用 LangGraph 编排画像生成流程。`/api/profile` 和 `/api/profile/stream` 在进入图之前会先检查 SQLite 历史缓存；缓存未命中时运行下方编译图。
+后端使用 LangGraph 编排画像生成流程。`/api/profile` 和 `/api/profile/stream` 在进入图之前会先检查 SQLite 历史缓存；缓存未命中、超过 7 天或请求传入 `refresh=true` 时运行下方编译图。
 
 ![LangGraph 工作流](img/langgraph-workflow.png)
 
@@ -63,7 +64,7 @@ LangGraph 使用 `ScholarProfileState` 作为全局状态。每个节点只返�
 | 研究方向 | `topic_clusters`, `representative_papers` | 方向聚类和每个方向的代表论文 |
 | 兴趣演化 | `interest_timeline` | 按年份统计的研究方向变化 |
 | 合作网络 | `coauthors`, `graph_nodes`, `graph_edges` | 合作者统计和前端网络图数据 |
-| 最终输出 | `profile_summary`, `web_payload` | 学术总结和前端最终渲染载荷 |
+| 最终输出 | `profile_summary`, `profile_evidence`, `web_payload` | 带证据编号的学术总结、证据列表和前端最终渲染载荷 |
 | 运行信息 | `warnings`, `errors` | 工作流警告和错误信息，其中 `warnings` 使用 LangGraph reducer 追加合并 |
 
 ### 节点职责
@@ -72,14 +73,14 @@ LangGraph 使用 `ScholarProfileState` 作为全局状态。每个节点只返�
 |------|------|------|------|
 | `resolve_author` | `query_name`, `target_author_id` | `candidate_authors` | 搜索候选学者；如果已传入 `target_author_id` 则跳过搜索 |
 | `fetch_profile` | `target_author_id` | `target_author_profile` | 获取 OpenAlex 作者详情 |
-| `collect_works` | `target_author_id`, `target_author_profile` | `raw_works`, `warnings` | 分页获取作者全部论文，并记录数量不足等警告 |
+| `collect_works` | `target_author_id`, `target_author_profile` | `raw_works`, `warnings` | 分页获取作者全部论文；OpenAlex 抖动时保留部分结果并记录警告 |
 | `dedup_works` | `raw_works` | `deduped_works`, `warnings` | 按 DOI 或 OpenAlex work id 去重 |
 | `analyze_citations` | `deduped_works` | `citation_summary` | 计算论文数、引用数、h-index 和年度趋势 |
 | `agent_analyze_topics` | `deduped_works` | `topic_clusters`, `representative_papers`, `warnings` | 调用 LLM Agent 分析研究方向和代表论文；失败时回退到 concepts 规则聚合 |
 | `analyze_evolution` | `deduped_works`, `topic_clusters` | `interest_timeline` | 根据方向聚类结果统计年度兴趣变化 |
-| `analyze_coauthors` | `deduped_works`, `topic_clusters`, `target_author_id` | `coauthors` | 汇总合作者、合作次数和合作论文 |
+| `analyze_coauthors` | `deduped_works`, `topic_clusters`, `target_author_id` | `coauthors` | 按 OpenAlex author id 汇总合作者、合作次数和合作论文 |
 | `build_graph` | `target_author_profile`, `coauthors` | `graph_nodes`, `graph_edges` | 构建前端合作网络图节点和边 |
-| `generate_report` | `target_author_profile`, `citation_summary`, `topic_clusters`, `coauthors`, `representative_papers` | `profile_summary`, `warnings` | 调用 LLM 生成画像总结；失败时使用模板总结 |
+| `generate_report` | `target_author_profile`, `citation_summary`, `topic_clusters`, `coauthors`, `representative_papers` | `profile_summary`, `profile_evidence`, `warnings` | 调用 LLM 生成带证据编号的画像总结；失败或缺少证据引用时使用模板总结 |
 | `format_payload` | 全部分析结果 | `web_payload` | 组装前端所需的最终 JSON 数据 |
 
 ### Agent 介入点
@@ -119,7 +120,8 @@ cd ..
 ### 3. 启动后端
 
 ```bash
-./start.sh backend
+cd backend
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 5800
 ```
 
 后端默认运行在 `http://127.0.0.1:5800`。
@@ -156,8 +158,8 @@ export SCHOLAR_PROFILE_DB=/absolute/path/scholar_history.sqlite3
 |------|------|------|
 | `/api/health` | GET | 健康检查 |
 | `/api/search?name=...` | GET | 搜索候选学者 |
-| `/api/profile` | POST | 返回画像数据，优先读取 SQLite 缓存 |
-| `/api/profile/stream` | POST | NDJSON 流式画像生成进度和结果 |
+| `/api/profile` | POST | 返回画像数据，7 天内优先读取 SQLite 缓存；支持 `refresh=true` |
+| `/api/profile/stream` | POST | NDJSON 流式画像生成进度和结果；异常时返回 `error` 事件 |
 | `/api/history?limit=20` | GET | 查询最近生成过的画像历史 |
 
 ## 验证

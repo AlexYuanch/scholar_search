@@ -16,6 +16,7 @@ const zh: Record<string, string> = {
   "candidate.papers": "篇论文",
   "candidate.citations": "次引用",
   "candidate.unknown_inst": "未知机构",
+  "candidate.merged": "个实体已合并",
 
   "tab.overview": "概览",
   "tab.papers": "论文",
@@ -35,6 +36,12 @@ const zh: Record<string, string> = {
   "section.collab_network": "合作网络",
   "section.collab_desc": "以该学者为核心的合作关系",
   "section.profile_summary": "学者总结",
+  "section.evidence": "依据",
+
+  "cache.source_cache": "历史缓存",
+  "cache.source_live": "实时生成",
+  "cache.updated_at": "更新于",
+  "cache.refresh": "刷新画像",
 
   "graph.center_author": "中心学者",
   "graph.coauthor": "合作者",

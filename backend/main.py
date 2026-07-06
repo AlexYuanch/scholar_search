@@ -90,22 +90,37 @@ PROGRESS_MESSAGES = {
 }
 
 profile_store = ProfileStore()
+CACHE_MAX_AGE_DAYS = 7
+
+
+def _cache_is_usable(cached: dict | None, refresh: bool) -> bool:
+    return bool(cached and not refresh and profile_store.is_fresh(cached, CACHE_MAX_AGE_DAYS))
+
+
+def _payload_with_defaults(author_id: str, payload: dict) -> dict:
+    data = dict(payload)
+    data.setdefault("authorId", author_id)
+    data.setdefault("profileEvidence", [])
+    return data
 
 
 def _run_graph_stream(state, ev_q, result):
     """Run graph.stream in a thread and push completed stage events."""
     seen = set()
     final = None
-    ev_q.put(("stage", "resolve_author"))
-    for snap in graph.stream(state, stream_mode="values"):
-        final = snap
-        for node_name, signal_field in NODE_SIGNAL.items():
-            if signal_field not in seen and snap.get(signal_field):
-                seen.add(signal_field)
-                ev_q.put(("stage", node_name))
-                break
-    ev_q.put(("done", None))
-    result.append(final)
+    try:
+        ev_q.put(("stage", "resolve_author"))
+        for snap in graph.stream(state, stream_mode="values"):
+            final = snap
+            for node_name, signal_field in NODE_SIGNAL.items():
+                if signal_field not in seen and snap.get(signal_field):
+                    seen.add(signal_field)
+                    ev_q.put(("stage", node_name))
+                    break
+        result.append(final or state)
+        ev_q.put(("done", None))
+    except Exception as exc:
+        ev_q.put(("error", str(exc)))
 
 
 app = FastAPI(title="Scholar Profile API", version="0.1.0")
@@ -121,6 +136,7 @@ app.add_middleware(
 class ProfileRequest(BaseModel):
     author_id: str
     query_name: str = ""
+    refresh: bool = False
 
 
 @app.get("/api/search")
@@ -132,11 +148,16 @@ def search(name: str = Query(..., description="学者姓名")):
         "candidates": [{
             "id": author["id"],
             "name": author["display_name"],
-            "institution": ((author.get("last_known_institutions") or [{}])[0]
-                            .get("display_name", "")),
-            "works_count": author["works_count"],
-            "cited_by_count": author["cited_by_count"],
+            "institution": (author.get("institutions") or [
+                ((author.get("last_known_institutions") or [{}])[0].get("display_name", ""))
+            ])[0],
+            "institutions": author.get("institutions", []),
+            "works_count": author.get("works_count", 0),
+            "cited_by_count": author.get("cited_by_count", 0),
             "h_index": (author.get("summary_stats") or {}).get("h_index", 0),
+            "merged_count": author.get("merged_count", 1),
+            "merged_ids": author.get("merged_ids", [author.get("id", "")]),
+            "disambiguation": author.get("disambiguation", ""),
         } for author in merged]
     }
 
@@ -145,13 +166,14 @@ def search(name: str = Query(..., description="学者姓名")):
 def profile(req: ProfileRequest):
     """为选定的学者运行完整 LangGraph 工作流，返回画像数据。"""
     cached = profile_store.get_profile(req.author_id)
-    if cached:
+    if _cache_is_usable(cached, req.refresh):
         return {
             "status": "success",
             "source": "cache",
+            "updated_at": cached["updated_at"],
             "warnings": cached["warnings"],
             "errors": cached["errors"],
-            "data": cached["payload"],
+            "data": _payload_with_defaults(req.author_id, cached["payload"]),
         }
 
     state = default_state()
@@ -169,10 +191,12 @@ def profile(req: ProfileRequest):
         warnings,
         errors,
     )
+    saved = profile_store.get_profile(req.author_id)
 
     return {
         "status": "success",
         "source": "live",
+        "updated_at": saved["updated_at"] if saved else "",
         "warnings": warnings,
         "errors": errors,
         "data": payload,
@@ -202,7 +226,7 @@ def history(limit: int = Query(20, ge=1, le=100)):
 async def profile_stream(req: ProfileRequest):
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
     cached = profile_store.get_profile(req.author_id)
-    if cached:
+    if _cache_is_usable(cached, req.refresh):
         async def cached_generate():
             yield json.dumps({"type": "init", "stages": STAGE_ORDER, "labels": STAGE_LABELS}) + "\n"
             yield json.dumps({
@@ -218,7 +242,7 @@ async def profile_stream(req: ProfileRequest):
             yield json.dumps({
                 "type": "result",
                 "source": "cache",
-                "data": cached["payload"],
+                "data": _payload_with_defaults(req.author_id, cached["payload"]),
             }, ensure_ascii=False) + "\n"
 
         return StreamingResponse(cached_generate(), media_type="application/x-ndjson")
@@ -263,6 +287,14 @@ async def profile_stream(req: ProfileRequest):
             msg_type, data = await loop.run_in_executor(None, poll)
             if msg_type == "done":
                 break
+            if msg_type == "error":
+                yield json.dumps({
+                    "type": "error",
+                    "message": data,
+                    "node": current_stage,
+                }, ensure_ascii=False) + "\n"
+                thread.join()
+                return
             if msg_type == "progress":
                 target = PROGRESS_ANCHORS.get(current_stage, 99)
                 if progress < target - 1:
@@ -304,6 +336,13 @@ async def profile_stream(req: ProfileRequest):
                 }, ensure_ascii=False) + "\n"
 
         thread.join()
+        if not result_holder:
+            yield json.dumps({
+                "type": "error",
+                "message": "画像生成失败，工作流未返回结果。",
+                "node": current_stage,
+            }, ensure_ascii=False) + "\n"
+            return
         final_state = result_holder[0]
         payload = final_state.get("web_payload", {})
         warnings = final_state.get("warnings", [])
@@ -315,12 +354,18 @@ async def profile_stream(req: ProfileRequest):
             warnings,
             errors,
         )
+        saved = profile_store.get_profile(req.author_id)
         yield json.dumps({
             "type": "progress",
             "progress": 100,
             "message": "画像生成完成，已写入本地历史缓存。",
         }, ensure_ascii=False) + "\n"
-        yield json.dumps({"type": "result", "source": "live", "data": payload}, ensure_ascii=False) + "\n"
+        yield json.dumps({
+            "type": "result",
+            "source": "live",
+            "updated_at": saved["updated_at"] if saved else "",
+            "data": payload,
+        }, ensure_ascii=False) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 

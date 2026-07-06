@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,19 @@ class ProfileStore:
         if row is None:
             return None
         return self._row_to_profile(row)
+
+    def is_fresh(self, profile: dict[str, Any], max_age_days: int = 7) -> bool:
+        """Return whether a cached profile is still inside the freshness window."""
+        updated_at = profile.get("updated_at")
+        if not updated_at:
+            return False
+        try:
+            updated = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - updated <= timedelta(days=max_age_days)
 
     def list_history(self, limit: int = 20) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 100))
