@@ -2,7 +2,7 @@
 
 DAG 结构（单数据源 + Agent 驱动）:
 
-  resolve_author (跳过) → fetch_profile → collect_works → dedup_works
+  fetch_profile → collect_works → dedup_works
                                                                 ↓
                                           ┌──────────────────────┴──────────────────────┐
                                           ↓                                             ↓
@@ -21,7 +21,6 @@ DAG 结构（单数据源 + Agent 驱动）:
 from langgraph.graph import StateGraph, END
 from state import ScholarProfileState, default_state
 from nodes import (
-    resolve_author,
     fetch_author_profile,
     collect_works,
     deduplicate_works,
@@ -35,7 +34,6 @@ from nodes import (
 )
 
 NODES = [
-    ("resolve_author", resolve_author),
     ("fetch_profile", fetch_author_profile),
     ("collect_works", collect_works),
 
@@ -56,8 +54,7 @@ def build() -> StateGraph:
         builder.add_node(name, func)
 
     # 串行头
-    builder.set_entry_point("resolve_author")
-    builder.add_edge("resolve_author", "fetch_profile")
+    builder.set_entry_point("fetch_profile")
 
     # 串行获取 → 去重
     builder.add_edge("fetch_profile", "collect_works")

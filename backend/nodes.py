@@ -12,10 +12,10 @@ from state import ScholarProfileState
 # ── 工具函数 ─────────────────────────────────────────────────
 
 def dedup_authors(candidates):
-    """按归一化姓名合并 OpenAlex 作者实体，并保留消歧信息。"""
+    """仅按稳定的 OpenAlex 作者 ID 去重，绝不合并不同 ID 的同名作者。"""
     groups = defaultdict(list)
-    for a in candidates:
-        key = a["display_name"].strip().lower()
+    for index, a in enumerate(candidates):
+        key = a.get("id") or f"__missing_id_{index}"
         groups[key].append(a)
     result = []
     for group in groups.values():
@@ -31,26 +31,11 @@ def dedup_authors(candidates):
                 if name and name not in institutions:
                     institutions.append(name)
         best["institutions"] = institutions
-        best["merged_ids"] = sorted(a.get("id", "") for a in group if a.get("id"))
+        best["merged_ids"] = sorted({a.get("id", "") for a in group if a.get("id")})
         best["merged_count"] = len(best["merged_ids"])
-        if best["merged_count"] > 1:
-            best["disambiguation"] = f"已合并 {best['merged_count']} 个同名 OpenAlex 作者实体"
-        else:
-            best["disambiguation"] = ""
+        best["disambiguation"] = ""
         result.append(best)
     return result
-
-
-# ── 阶段一: 学者身份 ─────────────────────────────────────────
-
-def resolve_author(state: ScholarProfileState) -> dict:
-    """搜索姓名并去重，返回候选人列表。如 target_author_id 已设置则跳过。"""
-    if state["target_author_id"]:
-        return {}
-    from openalex import search_authors
-    candidates = search_authors(state["query_name"])
-    merged = dedup_authors(candidates)
-    return {"candidate_authors": merged}
 
 
 def fetch_author_profile(state: ScholarProfileState) -> dict:
@@ -66,17 +51,21 @@ def collect_works(state: ScholarProfileState) -> dict:
     """获取作者全部论文（游标分页）。"""
     from openalex import get_works
     warnings = []
+    works_complete = True
     try:
         works, fetch_warnings = get_works(state["target_author_id"])
         warnings.extend(fetch_warnings)
+        if fetch_warnings:
+            works_complete = False
     except Exception as exc:
         works = []
+        works_complete = False
         warnings.append(f"OpenAlex 论文获取失败，后续分析将基于空论文集: {exc}")
     if state["target_author_profile"]:
         expected = state["target_author_profile"].get("works_count", 0)
         if len(works) < expected:
             warnings.append(f"预期 {expected} 篇，实际获取 {len(works)} 篇（OpenAlex 限制）")
-    return {"raw_works": works, "warnings": warnings}
+    return {"raw_works": works, "works_complete": works_complete, "warnings": warnings}
 
 
 
@@ -292,7 +281,12 @@ def analyze_coauthors(state: ScholarProfileState) -> dict:
         for idx in t.get("paper_indices", []):
             paper_agent_topics[idx].append(topic_name)
 
-    raw = defaultdict(lambda: {"names": set(), "paper_ids": set(), "paper_details": []})
+    raw = defaultdict(lambda: {
+        "names": set(),
+        "institutions": set(),
+        "paper_ids": set(),
+        "paper_details": [],
+    })
 
     for i, w in enumerate(state["deduped_works"]):
         agent_topics = paper_agent_topics.get(
@@ -307,6 +301,10 @@ def analyze_coauthors(state: ScholarProfileState) -> dict:
                 name = (au.get("author") or {}).get("display_name", "?")
                 entry = raw[aid]
                 entry["names"].add(name)
+                for institution in au.get("institutions") or []:
+                    institution_name = institution.get("display_name", "").strip()
+                    if institution_name:
+                        entry["institutions"].add(institution_name)
 
                 if paper_id and paper_id not in entry["paper_ids"]:
                     entry["paper_ids"].add(paper_id)
@@ -321,6 +319,7 @@ def analyze_coauthors(state: ScholarProfileState) -> dict:
         coauthors.append({
             "name": sorted(entry["names"])[0],
             "id": aid,
+            "institution": sorted(entry["institutions"])[0] if entry["institutions"] else "",
             "papers": len(entry["paper_ids"]),
             "paper_titles": entry["paper_details"],
         })
@@ -337,7 +336,12 @@ def build_collaboration_graph(state: ScholarProfileState) -> dict:
     nodes = [{"id": center_id, "name": center_name, "type": "center"}]
     edges = []
     for c in state["coauthors"][:20]:
-        nodes.append({"id": c["id"], "name": c["name"], "type": "coauthor"})
+        nodes.append({
+            "id": c["id"],
+            "name": c["name"],
+            "institution": c.get("institution", ""),
+            "type": "coauthor",
+        })
         edges.append({
             "source": center_id,
             "target": c["id"],
@@ -512,7 +516,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "interestTimeline": state["interest_timeline"],
         "representativePapers": unique_repr,
         "topCitedPapers": top_cited_list,
-        "coauthors": [{"name": c["name"], "papers": c["papers"]}
+        "coauthors": [{"name": c["name"], "institution": c.get("institution", ""), "papers": c["papers"]}
                       for c in state["coauthors"][:15]],
         "graphNodes": state["graph_nodes"],
         "graphEdges": state["graph_edges"],

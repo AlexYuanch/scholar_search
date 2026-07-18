@@ -8,7 +8,7 @@ from state import default_state
 from workflow import NODES
 
 
-def test_dedup_authors_merges_same_name_and_institution():
+def test_dedup_authors_keeps_same_name_different_ids_separate():
     candidates = [
         {
             "id": "A1",
@@ -30,13 +30,38 @@ def test_dedup_authors_merges_same_name_and_institution():
 
     merged = dedup_authors(candidates)
 
+    assert len(merged) == 2
+    assert [author["id"] for author in merged] == ["A1", "A2"]
+    assert all(author["merged_count"] == 1 for author in merged)
+
+
+def test_dedup_authors_only_merges_repeated_openalex_id():
+    candidates = [
+        {
+            "id": "A1",
+            "display_name": "Lina Chen",
+            "works_count": 10,
+            "cited_by_count": 100,
+            "summary_stats": {"h_index": 5},
+            "last_known_institutions": [{"display_name": "Zhejiang Normal University"}],
+        },
+        {
+            "id": "A1",
+            "display_name": "Lina Chen",
+            "works_count": 10,
+            "cited_by_count": 100,
+            "summary_stats": {"h_index": 5},
+            "last_known_institutions": [{"display_name": "Zhejiang Normal University"}],
+        },
+    ]
+
+    merged = dedup_authors(candidates)
+
     assert len(merged) == 1
-    assert merged[0]["works_count"] == 10
-    assert merged[0]["cited_by_count"] == 100
-    assert merged[0]["summary_stats"]["h_index"] == 5
-    assert merged[0]["merged_ids"] == ["A1", "A2"]
-    assert merged[0]["merged_count"] == 2
-    assert "Tongji University" in merged[0]["institutions"]
+    assert merged[0]["id"] == "A1"
+    assert merged[0]["merged_ids"] == ["A1"]
+    assert merged[0]["merged_count"] == 1
+    assert merged[0]["institutions"] == ["Zhejiang Normal University"]
 
 
 def test_analyze_coauthors_keeps_same_name_different_ids_separate():
@@ -122,7 +147,9 @@ def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
 def test_workflow_uses_openalex_only_nodes():
     node_names = [name for name, _ in NODES]
 
+    assert node_names[0] == "fetch_profile"
     assert "collect_works" in node_names
+    assert "resolve_author" not in node_names
     assert "collect_semantic" not in node_names
     assert "merge_sources" not in node_names
 
@@ -132,5 +159,8 @@ def test_default_state_has_no_semantic_scholar_fields():
 
     assert "raw_works" in state
     assert "deduped_works" in state
+    assert "query_name" not in state
+    assert "optional_institution" not in state
+    assert "candidate_authors" not in state
     assert "semantic_works" not in state
     assert "merged_works" not in state

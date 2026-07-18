@@ -6,18 +6,14 @@ from typing import Annotated, TypedDict, List, Dict, Any, Optional
 class ScholarProfileState(TypedDict):
     """LangGraph 工作流的全局状态。字段按处理阶段分组。"""
 
-    # ── 用户输入 ──
-    query_name: str
-    optional_institution: Optional[str]
-
     # ── 学者身份 ──
-    candidate_authors: List[Dict[str, Any]]
     target_author_id: Optional[str]
     target_author_profile: Optional[Dict[str, Any]]
 
     # ── 论文数据 ──
     raw_works: List[Dict[str, Any]]
     deduped_works: List[Dict[str, Any]]
+    works_complete: bool
 
     # ── 引用分析（含年度趋势） ──
     citation_summary: Dict[str, Any]
@@ -49,13 +45,11 @@ class ScholarProfileState(TypedDict):
 def default_state() -> Dict[str, Any]:
     """创建一个初始空状态，方便 FastAPI 调用。"""
     return {
-        "query_name": "",
-        "optional_institution": None,
-        "candidate_authors": [],
         "target_author_id": None,
         "target_author_profile": None,
         "raw_works": [],
         "deduped_works": [],
+        "works_complete": False,
         "citation_summary": {},
         "topic_clusters": [],
         "interest_timeline": [],

@@ -10,7 +10,7 @@ type GraphEdge = ScholarProfile["graphEdges"][number]
 
 interface Props {
   name: string
-  coauthors: Array<{ name: string; papers: number }>
+  coauthors: Array<{ name: string; institution?: string; papers: number }>
   graphNodes: GraphNode[]
   graphEdges: GraphEdge[]
   topics?: string[]
@@ -108,10 +108,15 @@ export default function CollaborationGraph({
         const isCenter = node.type === "center"
         const weight = weightByNode.get(node.id) ?? 1
         const color = isCenter ? "#2563eb" : heatColor(weight, maxWeight)
+        const shortId = node.id.split("/").filter(Boolean).at(-1) ?? node.id
+        const identity = node.institution?.trim() || shortId
+        const displayLabel = isCenter ? node.name : `${node.name} · ${identity}`
         return {
           id: node.id,
-          label: node.name,
-          title: isCenter ? `${node.name}\n${t("graph.center_author")}` : `${node.name}\n${weight} ${t("graph.papers_coauthored")}`,
+          label: displayLabel,
+          title: isCenter
+            ? `${node.name}\n${t("graph.center_author")}`
+            : `${node.name}\n${identity}\n${weight} ${t("graph.papers_coauthored")}`,
           shape: isCenter ? "star" : "dot",
           size: isCenter ? 32 : 16 + Math.log2(weight + 1) * 4,
           color: {

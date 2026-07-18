@@ -1,0 +1,9 @@
+{$PUBLIC_HOST::80} {
+	encode zstd gzip
+	reverse_proxy frontend:80
+
+	log {
+		output stdout
+		format console
+	}
+}

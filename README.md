@@ -1,189 +1,274 @@
 # 学者画像系统 Scholar Profile
 
-一个基于 OpenAlex 的学者画像 Web 应用。用户搜索学者姓名，选择候选人后，系统生成论文统计、引用影响力、研究方向、代表论文、合作网络和学术总结。
+基于 OpenAlex 的学者检索与画像应用。当前版本使用标准 PostgreSQL 17 自托管数据层，不依赖 Supabase、Firebase 或其他 BaaS。
 
-## 界面展示
+## 当前能力
 
-检索过程展示了用户输入学者姓名后，系统调用 OpenAlex 搜索并返回候选学者列表，用户可以根据机构、论文数、引用数和 h-index 选择目标学者。
+- 中文姓名同时检索原名、姓在前拼音和姓在后拼音；候选仅按 OpenAlex ID 去重，不按姓名合并。
+- LangGraph 分页获取全部论文，生成引用统计、研究方向、兴趣演化、代表论文和合作网络。
+- PostgreSQL 规范化保存学者、机构、论文和署名关系，并保存一份最新成功画像 JSONB 以快速加载。
+- 首次生成通过 NDJSON 展示进度；过期画像立即返回旧版本并进入后台刷新队列。
+- 收藏学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
+- 自有邮箱 Magic Link 登录、HttpOnly Cookie 会话、私有历史和收藏。
+- PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送版本变化，前端自动加载新版画像。
+- 全量论文游标分页；合作节点以 OpenAlex ID 为事实主键，同名作者显示机构或短 ID。
 
-![检索过程](./img/检索过程.png)
-
-学者画像概览展示基础信息、总论文数、总引用数、h-index、研究方向标签和系统生成的学术总结，适合快速了解学者整体情况。
-
-![学者画像概览](img/学者画像概览.png)
-
-合作图谱网络展示目标学者与高频合作者之间的关系，节点代表学者，边的权重代表合作论文数量。
-
-![图谱网络](img/图谱网络.png)
-
-点击合作边后，右侧面板会展示两位学者之间的合作论文列表，点击文章列表可以跳转到对应的 OpenAlex 官方查看原文，便于追溯合作关系的具体依据。
-
-![点击边效果](img/点击边效果.png)
-
-## 技术选型
+## 技术栈
 
 | 模块 | 技术 |
 |------|------|
-| 前端 | Vite、React、TypeScript、Tailwind CSS v4 |
-| UI | shadcn/ui 风格组件、Radix primitives、lucide-react |
-| 网络图 | vis-network、vis-data |
-| 后端 | FastAPI、Uvicorn |
+| 前端 | Vite、React 19、TypeScript、Tailwind CSS v4 |
+| UI / 图谱 | Radix primitives、lucide-react、vis-network |
+| API | FastAPI、Uvicorn、SQLAlchemy 2、psycopg |
 | 工作流 | LangGraph |
-| 数据源 | OpenAlex |
-| 历史缓存 | SQLite |
-| 可选 LLM | LangChain OpenAI 兼容接口 |
+| 数据源 | OpenAlex；可选 OpenAI 兼容 LLM |
+| 数据库 | PostgreSQL 17、Alembic |
+| 身份认证 | 自有一次性 Magic Link、SMTP、服务端会话 Cookie |
+| 实时更新 | PostgreSQL `LISTEN/NOTIFY`、Server-Sent Events |
+| 后台更新 | 独立 worker、`FOR UPDATE SKIP LOCKED` |
 
-## 功能
+## 阿里云 ECS 从 Gitee 部署
 
-- 学者姓名搜索与 OpenAlex 候选人去重。
-- 选择候选人后生成完整学者画像。
-- 统计论文数、引用数、h-index 和年度趋势。
-- 分析研究方向、代表论文和兴趣演化。
-- 构建合作作者网络，支持点击节点或边查看合作论文。
-- 画像生成时显示流式进度、百分比和阶段消息。
-- SQLite 缓存已查询过的画像，7 天内再次查询同一 author_id 可快速返回；支持强制刷新。
-- 学术总结带证据编号，页面展示对应统计指标、代表论文和合作依据。
-- 支持暗色模式、主题色切换和中英文切换。
+仓库已经包含 PostgreSQL、数据库迁移、FastAPI、worker、前端 Nginx 和 Caddy HTTPS 网关。服务器拉取后不需要改源码，只需创建未提交的 `.env`。
 
-## 工作流设计
+### 已检查 ECS 的快速入口
 
-后端使用 LangGraph 编排画像生成流程。`/api/profile` 和 `/api/profile/stream` 在进入图之前会先检查 SQLite 历史缓存；缓存未命中、超过 7 天或请求传入 `refresh=true` 时运行下方编译图。
+针对已检查的上海 ECS（Ubuntu 24.04 x86_64、2 核、1.6 GiB 内存、40 GiB 系统盘、无 Docker/Swap/域名），可以使用 [`deploy/bootstrap-aliyun.sh`](deploy/bootstrap-aliyun.sh)：
 
-![LangGraph 工作流](img/langgraph-workflow.png)
+1. 在阿里云安全组新增入方向 `TCP:80`，来源暂设 `0.0.0.0/0`；SSH 22 仅允许管理 IP。不要开放 5432、55432 或 8000。
+2. 服务器实测无法访问 Docker Hub。进入阿里云“容器镜像服务 ACR → 镜像工具 → 镜像加速器”，复制当前账号的专属 `https://...mirror.aliyuncs.com` 地址。
+3. 拉取公开 Gitee 仓库并执行：
 
-### State 设计
+```bash
+git clone <你的-Gitee-仓库地址> /opt/scholar-profile
+cd /opt/scholar-profile
+DOCKER_REGISTRY_MIRROR='https://你的专属地址.mirror.aliyuncs.com' \
+  ./deploy/bootstrap-aliyun.sh
+```
 
-LangGraph 使用 `ScholarProfileState` 作为全局状态。每个节点只返回自己新增或更新的字段，LangGraph 将这些字段合并回状态后传递给后续节点。
+脚本会从 ECS 元数据自动读取公网 EIP，并执行以下操作：
 
-| 状态分组 | 字段 | 说明 |
-|------|------|------|
-| 用户输入 | `query_name`, `optional_institution` | 搜索姓名和可选机构约束 |
-| 学者身份 | `candidate_authors`, `target_author_id`, `target_author_profile` | 候选作者、用户选中的 OpenAlex author id、作者详情 |
-| 论文数据 | `raw_works`, `deduped_works` | OpenAlex 原始论文列表和去重后的论文列表 |
-| 引用分析 | `citation_summary` | 总论文数、总引用数、h-index、年度趋势 |
-| 研究方向 | `topic_clusters`, `representative_papers` | 方向聚类和每个方向的代表论文 |
-| 兴趣演化 | `interest_timeline` | 按年份统计的研究方向变化 |
-| 合作网络 | `coauthors`, `graph_nodes`, `graph_edges` | 合作者统计和前端网络图数据 |
-| 最终输出 | `profile_summary`, `profile_evidence`, `web_payload` | 带证据编号的学术总结、证据列表和前端最终渲染载荷 |
-| 运行信息 | `warnings`, `errors` | 工作流警告和错误信息，其中 `warnings` 使用 LangGraph reducer 追加合并 |
+- 从阿里云 Docker CE 软件源安装 Docker Engine、Buildx 和 Compose plugin。
+- 在系统没有 Swap 时创建 2 GiB `/swapfile`，降低 1.6 GiB 内存首次构建 OOM 风险。
+- 合并写入 Docker `registry-mirrors`，顺序预拉取所有基础镜像；任一镜像不可用时在数据库创建前停止。
+- 自动生成两个随机 PostgreSQL 密码，配置公网 IP + HTTP、生产安全开关和较小连接池。
+- 把备份放在项目同级的 `/opt/scholar-profile-backups`，并安装每天 03:15 的备份计划。
+- 构建、迁移、启动全部服务并验证本机健康接口。
 
-### 节点职责
+脚本幂等可重复执行；已有有效 `.env` 密码和自定义域名不会被覆盖。首次跑通后访问 `http://公网IP`。阿里云说明个人镜像加速不保证所有新镜像均可用，所以脚本会预拉取项目使用的全部基础镜像标签进行验证；若仍失败，应改用 ACR 制品订阅或把构建好的镜像推送到自己的 ACR 仓库。
 
-| 节点 | 主要输入 | 主要输出 | 负责的任务 |
-|------|------|------|------|
-| `resolve_author` | `query_name`, `target_author_id` | `candidate_authors` | 搜索候选学者；如果已传入 `target_author_id` 则跳过搜索 |
-| `fetch_profile` | `target_author_id` | `target_author_profile` | 获取 OpenAlex 作者详情 |
-| `collect_works` | `target_author_id`, `target_author_profile` | `raw_works`, `warnings` | 分页获取作者全部论文；OpenAlex 抖动时保留部分结果并记录警告 |
-| `dedup_works` | `raw_works` | `deduped_works`, `warnings` | 按 DOI 或 OpenAlex work id 去重 |
-| `analyze_citations` | `deduped_works` | `citation_summary` | 计算论文数、引用数、h-index 和年度趋势 |
-| `agent_analyze_topics` | `deduped_works` | `topic_clusters`, `representative_papers`, `warnings` | 调用 LLM Agent 分析研究方向和代表论文；失败时回退到 concepts 规则聚合 |
-| `analyze_evolution` | `deduped_works`, `topic_clusters` | `interest_timeline` | 根据方向聚类结果统计年度兴趣变化 |
-| `analyze_coauthors` | `deduped_works`, `topic_clusters`, `target_author_id` | `coauthors` | 按 OpenAlex author id 汇总合作者、合作次数和合作论文 |
-| `build_graph` | `target_author_profile`, `coauthors` | `graph_nodes`, `graph_edges` | 构建前端合作网络图节点和边 |
-| `generate_report` | `target_author_profile`, `citation_summary`, `topic_clusters`, `coauthors`, `representative_papers` | `profile_summary`, `profile_evidence`, `warnings` | 调用 LLM 生成带证据编号的画像总结；失败或缺少证据引用时使用模板总结 |
-| `format_payload` | 全部分析结果 | `web_payload` | 组装前端所需的最终 JSON 数据 |
+### 1. 准备服务器
 
-### Agent 介入点
+- 建议至少 2 核 4 GB、40 GB 云盘；安装 Docker Engine 和 Docker Compose plugin。
+- 阿里云安全组开放 `80/tcp`、`443/tcp`；`22/tcp` 只允许你的管理 IP。
+- 不要开放 `5432`、`55432` 或 `8000`。Compose 只把 PostgreSQL 测试端口绑定到服务器回环地址。
+- 有域名时，先把域名的 A/AAAA 记录解析到 ECS 公网 IP。Caddy 会自动申请和续期 HTTPS 证书。
 
-当前系统以确定性的 workflow 为主体：搜索、论文获取、去重、引用统计、兴趣演化、合作网络和载荷格式化都由规则代码完成。Agent 能力主要介入两处：
+确认安装：
 
-- `agent_analyze_topics`：将论文标题、年份、引用数和 OpenAlex concepts 交给 LLM，让模型归纳研究方向、解释方向含义并挑选代表论文。若 LLM 不可用，自动回退到 concepts 加权聚合。
-- `generate_report`：基于统计指标、方向、合作者和代表论文生成自然语言画像总结。若 LLM 调用失败，使用固定模板生成摘要。
+```bash
+docker --version
+docker compose version
+git --version
+```
 
-因此，当前版本更像“LangGraph 编排的确定性数据处理流水线 + 局部 Agent 增强”，还不是全流程自主 Agent。
+Docker 的安装方式以 [Docker Engine for Ubuntu 官方文档](https://docs.docker.com/engine/install/ubuntu/) 为准，不建议使用来路不明的一键安装脚本。
 
-### 后续改进方向
+### 2. 拉取代码并创建配置
 
-- 增强 Agent 介入能力
-- 增加多数据源
-- 强化学者消歧，结合机构、合作者、研究方向和论文标题相似度，让 Agent 辅助判断多个 OpenAlex author 是否应合并。
-- 提升总结可追溯性，让 Agent 在画像总结中引用代表论文或统计证据，减少泛化描述。
+```bash
+git clone <你的-Gitee-仓库-HTTPS-或-SSH-地址> scholar-profile
+cd scholar-profile
+cp .env.example .env
+nano .env
+```
 
-## 本地启动
+`.env` 至少要修改这些值：
 
-### 1. 安装前端依赖
+| 配置 | 有域名的正式部署 | 暂时只有公网 IP |
+|------|------------------|----------------|
+| `PUBLIC_HOST` | `scholar.your-domain.com` | `:80` |
+| `PUBLIC_APP_URL` | `https://scholar.your-domain.com` | `http://你的公网IP` |
+| `CORS_ALLOWED_ORIGINS` | 与 `PUBLIC_APP_URL` 完全一致 | 与 `PUBLIC_APP_URL` 完全一致 |
+| `COOKIE_SECURE` | `true` | `false` |
+| `POSTGRES_OWNER_PASSWORD` | 新的强密码 | 新的强密码 |
+| `POSTGRES_APP_PASSWORD` | 与上面不同的强密码 | 与上面不同的强密码 |
+
+密码会被拼入数据库连接 URL，当前模板要求使用足够长的字母、数字、下划线和短横线组合。不要在密码中放 `@`、`:`、`/`、`#`、`%` 等未编码 URL 字符。
+
+保持以下生产安全项不变：
+
+```dotenv
+APP_ENV=production
+AUTH_DEV_RETURN_MAGIC_LINK=false
+```
+
+如果要启用邮箱登录，还必须填写 `SMTP_HOST`、`SMTP_PORT`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`SMTP_FROM` 和 SSL/STARTTLS 选项。SMTP 未配置时，公开搜索和画像仍可使用，但登录、历史和收藏不可用。`LLM_*` 可留空，系统会使用确定性规则分析。
+
+### 3. 启动并验收
+
+只通过生产检查脚本启动，它会拒绝示例密码、错误的生产开关和不安全的 Cookie 组合：
+
+```bash
+./deploy/deploy.sh
+curl -fsS "https://你的域名/api/health"
+curl -fsS "https://你的域名/api/ready"
+docker compose ps
+```
+
+正常结果应为 `health -> {"status":"ok"}`、`ready -> {"status":"ready"}`，且 `postgres`、`web`、`worker`、`frontend`、`gateway` 均为运行/健康状态。只有公网 IP 时，把验收 URL 换成 `http://你的公网IP`。排查日志：
+
+```bash
+docker compose logs --tail=200 web worker gateway
+```
+
+### 4. 后续更新
+
+```bash
+cd scholar-profile
+git pull --ff-only
+./deploy/deploy.sh
+```
+
+Alembic 会在应用启动前自动执行尚未应用的迁移。不要运行 `docker compose down -v`，`-v` 会删除 PostgreSQL、备份和 Caddy 证书数据卷。普通停机使用：
+
+```bash
+docker compose down
+```
+
+仅 IP 的 HTTP 模式适合短期验收，不适合承载真实邮箱登录。绑定域名后，把三项 URL/Host 配置切到域名、设 `COOKIE_SECURE=true`，再重新执行部署脚本。
+
+## 一键本地运行
+
+需要 Docker Desktop 和 Docker Compose。未创建 `.env` 时使用开发默认值：
+
+```bash
+docker compose up -d --build --wait
+```
+
+打开 <http://localhost>。开发模式且未配置 SMTP 时，登录弹窗会显示测试 Magic Link；生产环境的部署脚本会强制关闭此行为。
+
+## 从源码开发
 
 ```bash
 npm install
-```
-
-### 2. 安装后端依赖
-
-```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cd ..
+
+npm run db:up
+npm run db:migrate
 ```
 
-### 3. 启动后端
+后端 Web 环境至少需要：
+
+```bash
+export DATABASE_URL='postgresql://scholar_app:app-dev-only@127.0.0.1:55432/scholar_profile'
+export APP_ENV=development
+export PUBLIC_APP_URL=http://localhost:5173
+export COOKIE_SECURE=false
+export AUTH_DEV_RETURN_MAGIC_LINK=true
+```
+
+分别启动三个进程：
+
+```bash
+cd backend && .venv/bin/python -m uvicorn main:app --reload --host 127.0.0.1 --port 5800
+cd backend && .venv/bin/python worker.py
+npm run dev -- --port 5173
+```
+
+Vite 会把 `/api` 代理到 `127.0.0.1:5800`。
+
+## 数据库与迁移
+
+[`backend/migrations`](backend/migrations) 是数据库结构的唯一来源。迁移必须使用数据库所有者连接，应用和 worker 使用权限受限的固定角色 `scholar_app`：
 
 ```bash
 cd backend
-python -m uvicorn main:app --reload --host 127.0.0.1 --port 5800
+MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' \
+  .venv/bin/alembic -c alembic.ini upgrade head
 ```
 
-后端默认运行在 `http://127.0.0.1:5800`。
+主要表：
 
-### 4. 启动前端
+- 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`authorships`
+- 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
+- 用户与会话：`app_users`、`auth_login_tokens`、`user_sessions`、`user_history`、`favorites`
 
-另开一个终端，项目根目录执行：
+数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
 
-```bash
-npx vite --port 5173
-```
+## API
 
-前端默认运行在 `http://localhost:5173`，Vite 会把 `/api` 代理到 FastAPI 后端。
-
-## 可选环境变量
-
-不配置 LLM 时，系统会自动回退到基于 OpenAlex concepts 的规则分析。
-
-```bash
-export LLM_API_KEY=你的密钥
-export LLM_BASE_URL=https://api.openai.com/v1
-export LLM_MODEL=gpt-4o-mini
-```
-
-SQLite 默认路径为 `backend/data/scholar_history.sqlite3`，可通过下面变量调整：
-
-```bash
-export SCHOLAR_PROFILE_DB=/absolute/path/scholar_history.sqlite3
-```
-
-## API 概览
-
-| 接口 | 方法 | 说明 |
+| 接口 | 鉴权 | 说明 |
 |------|------|------|
-| `/api/health` | GET | 健康检查 |
-| `/api/search?name=...` | GET | 搜索候选学者 |
-| `/api/profile` | POST | 返回画像数据，7 天内优先读取 SQLite 缓存；支持 `refresh=true` |
-| `/api/profile/stream` | POST | NDJSON 流式画像生成进度和结果；异常时返回 `error` 事件 |
-| `/api/history?limit=20` | GET | 查询最近生成过的画像历史 |
+| `GET /api/health`、`GET /api/ready` | 公开 | 进程与数据库健康检查 |
+| `GET /api/search?name=...` | 公开 | 搜索候选学者 |
+| `POST /api/profile` | 可匿名 | 返回最新画像；登录后记录历史 |
+| `POST /api/profile/stream` | 可匿名 | 冷启动 NDJSON 进度流 |
+| `GET /api/authors/{author_id}/works` | 公开 | 全量论文游标分页 |
+| `POST /api/auth/magic-link` | 公开、限速 | 发送一次性登录链接 |
+| `GET /api/auth/callback` | 公开 | 消费链接并设置会话 Cookie |
+| `GET /api/auth/me` | 可匿名 | 查询当前会话 |
+| `POST /api/auth/logout` | 可匿名 | 注销当前会话 |
+| `GET /api/history` | 必须登录 | 当前用户历史 |
+| `GET/POST/DELETE /api/favorites...` | 必须登录 | 当前用户收藏 |
+| `GET /api/profiles/{scholar_id}/events` | 公开 | 画像状态 SSE |
 
-## 验证
+## 测试
 
 ```bash
-npm run build
 npm test
+npm run lint
+npm run build
+npm run test:db
 ```
 
-`npm test` 会进入 `backend` 并运行 pytest。
+`npm test` 使用 fake/in-memory repository。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、分页、队列和会话。
+
+## 备份
+
+手工生成自定义格式备份：
+
+```bash
+docker compose --profile backup run --rm backup
+```
+
+备份默认写入服务器项目目录的 `backups/`，也可通过 `.env` 的 `BACKUP_HOST_DIR` 指向挂载的数据盘。可用 `crontab -e` 每天执行：
+
+```cron
+0 3 * * * cd /你的绝对路径/scholar-profile && /usr/bin/docker compose --profile backup run --rm backup >> /var/log/scholar-backup.log 2>&1
+```
+
+生产环境还应把备份同步到对象存储或另一台机器，并定期验证 `pg_restore`；同一台 ECS 上的备份无法防御整机或云盘故障。
+
+## 单机容量增长后的拆分
+
+当前版本针对单台 ECS 直接启动优化。数据量或并发增长后，可把 PostgreSQL 迁到同 VPC 的 RDS PostgreSQL，把数据库 URL 改为 RDS 私网地址，并继续让 Web/worker 使用受限账号；迁移账号只在发布阶段使用。旧 SQLite 缓存不迁移，自托管 PostgreSQL 从空库开始。
 
 ## 目录结构
 
 ```text
 backend/
-  main.py        # FastAPI 路由、流式进度、缓存接入
-  workflow.py    # LangGraph DAG
-  nodes.py       # 工作流节点实现
-  openalex.py    # OpenAlex 客户端
-  storage.py     # SQLite 历史缓存
+  main.py          # FastAPI、NDJSON、Auth 与 SSE
+  repository.py    # PostgreSQL Repository
+  auth.py          # Cookie 会话依赖
+  mailer.py        # SMTP Magic Link
+  events.py        # LISTEN/NOTIFY 到 SSE
+  worker.py        # 刷新与维护 worker
+  migrations/      # Alembic 迁移
 src/
-  App.tsx        # 前端主界面
-  api.ts         # API 与流式响应消费
-  components/    # UI 与合作网络组件
-img/
-  界面截图
+  App.tsx          # 搜索、画像、登录、收藏与自动换版
+  api.ts           # Cookie API、NDJSON 与 SSE 地址
+  auth.tsx         # 后端会话上下文
+deploy/
+  Caddyfile        # 公网 HTTP/HTTPS 入口
+  bootstrap-aliyun.sh # Ubuntu 24.04 ECS 初始化与一键部署
+  deploy.sh        # 生产配置检查与启动
+  nginx.conf       # 静态前端与 /api 代理
+  postgres/001-create-app-user.sh
+  backup-postgres.sh
+docker-compose.yml
 ```

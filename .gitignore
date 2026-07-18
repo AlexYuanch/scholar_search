@@ -9,6 +9,7 @@ lerna-debug.log*
 
 .env
 .env.*
+!.env.example
 
 node_modules
 dist
@@ -29,7 +30,10 @@ backend/.venv/
 __pycache__/
 *.pyc
 backend/data/
+backups/
 *.sqlite
 *.sqlite3
 *.md
 !README.md
+!docs/**/*.md
+!session-handoff.md

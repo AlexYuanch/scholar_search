@@ -1,7 +1,8 @@
 import { Suspense, lazy, useState, useEffect, useCallback, useRef, type ComponentType } from "react"
 import {
   Search, BookOpen, Quote, BarChart3, Users,
-  ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink, RefreshCw
+  ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink,
+  Heart, History, LogIn, LogOut,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,11 +10,13 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { useTranslation } from "./i18n"
 import type { Candidate, ScholarProfile } from "./types"
-import { searchAuthors, streamProfile } from "./api"
+import { addFavorite, getFavorites, getProfile, profileEventsUrl, removeFavorite, searchAuthors, streamProfile } from "./api"
+import { useAuth } from "./auth"
 import SidePanel from "@/components/SidePanel"
+import AllPapers from "@/components/AllPapers"
+import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
@@ -27,7 +30,7 @@ const dagTiers: Array<{
   nodes: string[]
   mode: "chain" | "parallel" | "fork" | "merge" | "single"
 }> = [
-  { nodes: ["resolve_author", "fetch_profile", "collect_works", "dedup_works"], mode: "chain" },
+  { nodes: ["fetch_profile", "collect_works", "dedup_works"], mode: "chain" },
   { nodes: ["analyze_citations", "agent_analyze_topics"], mode: "parallel" },
   { nodes: ["analyze_evolution"], mode: "merge" },
   { nodes: ["analyze_coauthors"], mode: "single" },
@@ -71,55 +74,6 @@ function TopicsSection({ topics }: { topics: string[] }) {
   )
 }
 
-function PapersTable({ papers, showCitations = true }: {
-  papers: ScholarProfile["topCitedPapers"]
-  showCitations?: boolean
-}) {
-  if (!papers.length) {
-    return <p className="text-sm text-muted-foreground">No papers found.</p>
-  }
-  return (
-    <div className="space-y-3">
-      {papers.map((p, i) => (
-        <Card key={p.id ?? i}>
-          <CardContent className="flex items-start gap-3 p-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground">
-              {i + 1}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-start justify-between gap-2">
-                {p.id ? (
-                  <a
-                    href={p.id}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm font-medium leading-snug text-primary hover:underline flex items-start gap-1"
-                  >
-                    {p.title}
-                    <ExternalLink className="h-3 w-3 shrink-0 mt-0.5" />
-                  </a>
-                ) : (
-                  <p className="text-sm font-medium leading-snug">{p.title}</p>
-                )}
-                {showCitations && (
-                  <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground whitespace-nowrap">
-                    <Quote className="h-3 w-3" />
-                    {p.citations}
-                  </div>
-                )}
-              </div>
-              <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-                <span>{p.journal}</span>
-                <span>{p.year}</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
 function EvidenceList({ evidence, t }: { evidence: ScholarProfile["profileEvidence"]; t: (k: string) => string }) {
   if (!evidence?.length) return null
   return (
@@ -153,6 +107,13 @@ function CandidateList({ candidates, onSelect, loading, t }: {
   loading: boolean
   t: (k: string) => string
 }) {
+  const institutionLabel = (candidate: Candidate) => {
+    const institutions = candidate.institutions?.filter(Boolean) ?? []
+    if (!institutions.length) return candidate.institution || t("candidate.unknown_inst")
+    const visible = institutions.slice(0, 3).join(" · ")
+    return institutions.length > 3 ? `${visible} · +${institutions.length - 3}` : visible
+  }
+
   return (
     <section className="mx-auto max-w-3xl px-6 py-6">
       <h3 className="mb-4 text-sm font-medium text-muted-foreground">
@@ -173,7 +134,8 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                 </Avatar>
                 <div>
                   <p className="font-medium text-sm">{c.name}</p>
-                  <p className="text-xs text-muted-foreground">{c.institution || t("candidate.unknown_inst")}</p>
+                  <p className="max-w-xl text-xs text-muted-foreground">{institutionLabel(c)}</p>
+                  {c.orcid && <p className="mt-0.5 text-xs text-muted-foreground">ORCID {c.orcid.replace("https://orcid.org/", "")}</p>}
                   <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
                     <span>{c.works_count} {t("candidate.papers")}</span>
                     <span>{c.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
@@ -203,8 +165,8 @@ function ProfileSection({
   profile,
   source,
   updatedAt,
-  refreshing,
-  onRefresh,
+  favorite,
+  onToggleFavorite,
   onEdgeClick,
   onNodeClick,
   onFullscreenChange,
@@ -213,15 +175,13 @@ function ProfileSection({
   profile: ScholarProfile
   source: ProfileSource
   updatedAt: string
-  refreshing: boolean
-  onRefresh: () => void
+  favorite: boolean
+  onToggleFavorite: () => void
   onEdgeClick?: (data: { sourceName: string; targetName: string; papers: PanelPaper[]; weight: number }) => void
   onNodeClick?: (data: { id: string; name: string; type: string; papers: PanelPaper[]; weight: number }) => void
   onFullscreenChange?: (fs: boolean) => void
   t: (k: string) => string
 }) {
-  const totalCount = profile.totalPapers
-
   return (
     <section className="mx-auto max-w-5xl px-6 py-10">
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
@@ -241,10 +201,13 @@ function ProfileSection({
           <Badge variant={source === "cache" ? "secondary" : "outline"}>
             {source === "cache" ? t("cache.source_cache") : t("cache.source_live")}
           </Badge>
+          {profile.refreshStatus && profile.refreshStatus !== "ready" && (
+            <Badge variant="outline">{t(`refresh.${profile.refreshStatus}`)}</Badge>
+          )}
           {updatedAt && <span className="text-xs text-muted-foreground">{t("cache.updated_at")} {updatedAt}</span>}
-          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onRefresh} disabled={refreshing}>
-            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
-            {t("cache.refresh")}
+          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onToggleFavorite}>
+            <Heart className={`h-3.5 w-3.5 ${favorite ? "fill-current text-red-500" : ""}`} />
+            {t(favorite ? "favorite.remove" : "favorite.add")}
           </Button>
         </div>
       </div>
@@ -291,13 +254,11 @@ function ProfileSection({
         <TabsContent value="papers" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">{t("section.top_cited")}</CardTitle>
-              <CardDescription>{totalCount} {t("candidate.papers")}</CardDescription>
+              <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
+              <CardDescription>{t("papers.pagination_desc")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <ScrollArea className="h-[600px]">
-                <PapersTable papers={profile.topCitedPapers} />
-              </ScrollArea>
+              <AllPapers profile={profile} t={t} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -335,6 +296,7 @@ function ProfileSection({
 
 export default function App() {
   const { t, lang, setLang } = useTranslation()
+  const { user, configured: authConfigured, signOut } = useAuth()
 
   // 搜索状态
   const [query, setQuery] = useState("")
@@ -345,6 +307,10 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searched, setSearched] = useState(false)
+  const [authDialogOpen, setAuthDialogOpen] = useState(false)
+  const [accountMode, setAccountMode] = useState<"history" | "favorites" | null>(null)
+  const [favorite, setFavorite] = useState(false)
+  const [liveUpdateMessage, setLiveUpdateMessage] = useState("")
 
   // 图谱全屏状态
   const [graphFullscreen, setGraphFullscreen] = useState(false)
@@ -384,7 +350,7 @@ export default function App() {
     localStorage.setItem("accent", accent)
   }, [accent])
 
-  const loadProfile = useCallback(async (authorId: string, options: { refresh?: boolean } = {}) => {
+  const loadProfile = useCallback(async (authorId: string) => {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -397,6 +363,7 @@ export default function App() {
     setProfile(null)
     setProfileSource(null)
     setProfileUpdatedAt("")
+    setFavorite(false)
     setCandidates([])
     setWorkflowStages([])
     setWorkflowProgress(0)
@@ -446,7 +413,11 @@ export default function App() {
       },
       onResult: (data, meta) => {
         if (!isCurrent()) return
-        setProfile(data)
+        setProfile({
+          ...data,
+          profileVersion: meta.profileVersion ?? data.profileVersion,
+          refreshStatus: (meta.refreshStatus as ScholarProfile["refreshStatus"]) ?? data.refreshStatus,
+        })
         setProfileSource((meta.source as ProfileSource) ?? "live")
         setProfileUpdatedAt(meta.updatedAt ?? "")
         setLoading(false)
@@ -458,8 +429,57 @@ export default function App() {
         setLoading(false)
         setWorkflowMessage("")
       },
-    }, { refresh: options.refresh, signal: controller.signal })
+    }, { signal: controller.signal })
   }, [])
+
+  useEffect(() => {
+    if (!user || !profile) return
+    let active = true
+    void getFavorites().then((items) => {
+      if (active) setFavorite(items.some((item) => item.author_id === profile.authorId))
+    }).catch(() => {
+      if (active) setFavorite(false)
+    })
+    return () => { active = false }
+  }, [profile, user])
+
+  useEffect(() => {
+    if (!profile?.scholarId) return
+    const scholarId = profile.scholarId
+    const currentVersion = profile.profileVersion
+    const eventSource = new EventSource(profileEventsUrl(scholarId, currentVersion))
+    const onProfile = (event: MessageEvent) => {
+      try {
+        const next = JSON.parse(event.data) as { version?: number; status?: string }
+        if ((next.version ?? 0) <= currentVersion || next.status !== "ready") return
+        void getProfile(profile.authorId).then((latest) => {
+          setProfile(latest)
+          setProfileSource("cache")
+          setLiveUpdateMessage(t("realtime.updated"))
+          window.setTimeout(() => setLiveUpdateMessage(""), 5000)
+        }).catch(() => undefined)
+      } catch {
+        // Ignore malformed event payloads; EventSource will keep the connection alive.
+      }
+    }
+    eventSource.addEventListener("profile", onProfile as EventListener)
+    return () => eventSource.close()
+  }, [profile?.authorId, profile?.profileVersion, profile?.scholarId, t])
+
+  const handleToggleFavorite = useCallback(async () => {
+    if (!profile) return
+    if (!user) {
+      setAuthDialogOpen(true)
+      return
+    }
+    try {
+      if (favorite) await removeFavorite(profile.authorId)
+      else await addFavorite(profile.authorId)
+      setFavorite((value) => !value)
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : t("favorite.failed"))
+    }
+  }, [favorite, profile, t, user])
 
   // 搜索
   const handleSearch = useCallback(async () => {
@@ -506,6 +526,11 @@ export default function App() {
 
   const handleViewProfile = useCallback(async (authorId: string) => {
     await loadProfile(authorId)
+  }, [loadProfile])
+
+  const handleAccountSelect = useCallback((authorId: string) => {
+    setAccountMode(null)
+    void loadProfile(authorId)
   }, [loadProfile])
 
   const handleReset = useCallback(() => {
@@ -574,6 +599,27 @@ export default function App() {
               {lang === "zh" ? "EN" : "中"}
             </Button>
 
+            {user ? (
+              <>
+                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.history")} onClick={() => setAccountMode("history")}>
+                  <History className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.favorites")} onClick={() => setAccountMode("favorites")}>
+                  <Heart className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => {
+                  setFavorite(false)
+                  void signOut()
+                }}>
+                  <LogOut className="h-3.5 w-3.5" />{t("auth.sign_out")}
+                </Button>
+              </>
+            ) : (
+              <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" disabled={!authConfigured} onClick={() => setAuthDialogOpen(true)}>
+                <LogIn className="h-3.5 w-3.5" />{t("auth.sign_in")}
+              </Button>
+            )}
+
             {profile && (
               <Button variant="ghost" size="sm" className="h-8 ml-1" onClick={handleReset}>
                 <Search className="h-4 w-4 mr-1" />
@@ -632,6 +678,12 @@ export default function App() {
               </Button>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {liveUpdateMessage && (
+        <div className="fixed bottom-5 right-5 z-50 rounded-md border bg-background px-4 py-3 text-sm shadow-lg">
+          {liveUpdateMessage}
         </div>
       )}
 
@@ -769,7 +821,7 @@ export default function App() {
       {loading && !candidates.length && !profile && !error && workflowStages.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <Loader2 className="h-8 w-8 animate-spin mb-4" />
-          <p className="text-sm">{searched ? t("search.profile_loading") : t("search.loading")}</p>
+          <p className="text-sm">{t("search.candidate_loading")}</p>
         </div>
       )}
 
@@ -784,8 +836,8 @@ export default function App() {
           profile={profile}
           source={profileSource}
           updatedAt={profileUpdatedAt}
-          refreshing={loading}
-          onRefresh={() => loadProfile(profile.authorId, { refresh: true })}
+          favorite={Boolean(user) && favorite}
+          onToggleFavorite={() => void handleToggleFavorite()}
           onEdgeClick={handleEdgeClick}
           onNodeClick={handleNodeClick}
           onFullscreenChange={setGraphFullscreen}
@@ -809,6 +861,8 @@ export default function App() {
         t={t}
         fullscreen={graphFullscreen}
       />
+      <AuthDialog open={authDialogOpen} onClose={() => setAuthDialogOpen(false)} t={t} />
+      <AccountPanel mode={accountMode} onClose={() => setAccountMode(null)} onSelect={handleAccountSelect} t={t} />
     </div>
   )
 }

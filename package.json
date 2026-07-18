@@ -8,16 +8,18 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "cd backend && .venv/bin/python -m pytest -q"
+    "test": "cd backend && .venv/bin/python -m pytest -q",
+    "test:db": "docker compose up -d postgres && docker compose run --rm migrate && cd backend && TEST_DATABASE_URL=postgresql://scholar_app:app-dev-only@127.0.0.1:55432/scholar_profile .venv/bin/python -m pytest -q tests/test_postgres_repository_integration.py tests/test_schema.py",
+    "test:all": "npm run test && npm run lint && npm run build && npm run test:db",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "docker compose run --rm migrate"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.1.12",
-    "@radix-ui/react-progress": "^1.1.9",
-    "@radix-ui/react-scroll-area": "^1.2.11",
     "@radix-ui/react-separator": "^1.1.9",
     "@radix-ui/react-slot": "^1.2.5",
     "@radix-ui/react-tabs": "^1.1.14",
-    "@radix-ui/react-tooltip": "^1.2.9",
     "@tailwindcss/vite": "^4.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -6,24 +6,40 @@ Endpoints:
   - POST /api/profile/stream  stream profile progress as NDJSON
 """
 import asyncio
+import base64
+import ipaddress
 import json
+import os
 import queue
 import threading
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from pydantic import BaseModel, EmailStr
 
+from auth import (
+    SESSION_COOKIE_NAME,
+    AuthUser,
+    generate_token,
+    hash_token,
+    optional_user,
+    require_user,
+)
+from events import ProfileEventBroker
+from mailer import MailerNotConfigured, SMTPMailer
 from nodes import dedup_authors
 from openalex import search_authors
+from quality import assess_profile_quality
+from repository import LoginRateLimitExceeded, RepositoryNotConfigured, create_repository
 from state import default_state
-from storage import ProfileStore
 from workflow import graph
 
 
 NODE_SIGNAL = {
-    "resolve_author": "candidate_authors",
     "fetch_profile": "target_author_profile",
     "collect_works": "raw_works",
     "dedup_works": "deduped_works",
@@ -37,7 +53,6 @@ NODE_SIGNAL = {
 }
 
 STAGE_LABELS = {
-    "resolve_author": "搜索学者...",
     "fetch_profile": "获取基本信息...",
     "collect_works": "获取论文列表...",
     "dedup_works": "去重论文...",
@@ -53,8 +68,7 @@ STAGE_LABELS = {
 STAGE_ORDER = list(STAGE_LABELS.keys())
 
 PROGRESS_ANCHORS = {
-    "resolve_author": 5,
-    "fetch_profile": 12,
+    "fetch_profile": 8,
     "collect_works": 35,
     "dedup_works": 42,
     "analyze_citations": 54,
@@ -67,7 +81,6 @@ PROGRESS_ANCHORS = {
 }
 
 PROGRESS_MESSAGES = {
-    "resolve_author": ["确认已选择的学者身份..."],
     "fetch_profile": ["读取 OpenAlex 作者基础信息..."],
     "collect_works": [
         "正在分页获取 OpenAlex 论文列表...",
@@ -89,19 +102,52 @@ PROGRESS_MESSAGES = {
     "format_payload": ["正在组装前端展示数据..."],
 }
 
-profile_store = ProfileStore()
+repository = create_repository()
+event_broker = ProfileEventBroker(os.getenv("DATABASE_URL"))
+mailer = SMTPMailer()
 CACHE_MAX_AGE_DAYS = 7
 
 
-def _cache_is_usable(cached: dict | None, refresh: bool) -> bool:
-    return bool(cached and not refresh and profile_store.is_fresh(cached, CACHE_MAX_AGE_DAYS))
+def _cache_is_fresh(cached: dict | None) -> bool:
+    return bool(cached and repository.is_fresh(cached, CACHE_MAX_AGE_DAYS))
 
 
-def _payload_with_defaults(author_id: str, payload: dict) -> dict:
+def _payload_with_defaults(author_id: str, payload: dict, cached: dict | None = None) -> dict:
     data = dict(payload)
     data.setdefault("authorId", author_id)
     data.setdefault("profileEvidence", [])
+    if cached:
+        data.setdefault("scholarId", cached.get("scholar_id", ""))
+        data.setdefault("profileVersion", cached.get("profile_version", 0))
+        data.setdefault("refreshStatus", cached.get("refresh_status", "ready"))
     return data
+
+
+def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> None:
+    repository.touch_access(author_id)
+    if user:
+        repository.record_history(user.id, author_id, query_name)
+
+
+def _queue_stale_profile(author_id: str, cached: dict) -> str:
+    if _cache_is_fresh(cached):
+        return cached.get("refresh_status", "ready")
+    repository.enqueue_refresh(author_id, reason="stale_access")
+    return "queued"
+
+
+def _encode_cursor(offset: int) -> str:
+    return base64.urlsafe_b64encode(str(offset).encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str | None) -> int:
+    if not cursor:
+        return 0
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        return max(0, int(base64.urlsafe_b64decode(padded).decode()))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
 
 def _run_graph_stream(state, ev_q, result):
@@ -109,7 +155,6 @@ def _run_graph_stream(state, ev_q, result):
     seen = set()
     final = None
     try:
-        ev_q.put(("stage", "resolve_author"))
         for snap in graph.stream(state, stream_mode="values"):
             final = snap
             for node_name, signal_field in NODE_SIGNAL.items():
@@ -123,20 +168,160 @@ def _run_graph_stream(state, ev_q, result):
         ev_q.put(("error", str(exc)))
 
 
-app = FastAPI(title="Scholar Profile API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    event_broker.start()
+    yield
+    event_broker.stop()
+
+
+app = FastAPI(title="Scholar Profile API", version="0.2.0", lifespan=lifespan)
+app.state.repository = repository
+app.state.event_broker = event_broker
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ALLOWED_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173",
+        ).split(",")
+        if origin.strip()
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+@app.exception_handler(RepositoryNotConfigured)
+def repository_not_configured(_request, exc: RepositoryNotConfigured):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 class ProfileRequest(BaseModel):
     author_id: str
     query_name: str = ""
-    refresh: bool = False
+
+
+class FavoriteRequest(BaseModel):
+    author_id: str
+
+
+class MagicLinkRequest(BaseModel):
+    email: EmailStr
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _client_ip(request: Request) -> str | None:
+    if _env_bool("TRUST_PROXY_HEADERS"):
+        forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        if forwarded:
+            try:
+                return str(ipaddress.ip_address(forwarded))
+            except ValueError:
+                pass
+    return request.client.host if request.client else None
+
+
+def _public_app_url() -> str:
+    return os.getenv("PUBLIC_APP_URL", "http://localhost:5173").rstrip("/")
+
+
+@app.post("/api/auth/magic-link")
+def request_magic_link(req: MagicLinkRequest, request: Request):
+    raw_token = generate_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=int(os.getenv("MAGIC_LINK_TTL_MINUTES", "15"))
+    )
+    try:
+        repository.create_login_token(
+            email=str(req.email),
+            token_hash=hash_token(raw_token),
+            expires_at=expires_at,
+            request_ip=_client_ip(request),
+        )
+    except LoginRateLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail="Please wait before requesting another login email") from exc
+
+    magic_link = f"{_public_app_url()}/api/auth/callback?token={raw_token}"
+    dev_link_enabled = (
+        os.getenv("APP_ENV", "production") == "development"
+        and _env_bool("AUTH_DEV_RETURN_MAGIC_LINK")
+    )
+    try:
+        if mailer.configured:
+            mailer.send_magic_link(str(req.email), magic_link)
+        elif not dev_link_enabled:
+            raise MailerNotConfigured("SMTP is not configured")
+    except MailerNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Login email could not be sent") from exc
+
+    response = {"status": "accepted", "message": "If the address is valid, a login link has been sent."}
+    if dev_link_enabled:
+        response["dev_magic_link"] = magic_link
+    return response
+
+
+@app.get("/api/auth/callback")
+def auth_callback(token: str, request: Request):
+    if len(token) < 32:
+        raise HTTPException(status_code=400, detail="Invalid or expired login link")
+    raw_session = generate_token()
+    session_ttl_days = int(os.getenv("SESSION_TTL_DAYS", "30"))
+    user = repository.consume_login_token(
+        token_hash=hash_token(token),
+        session_hash=hash_token(raw_session),
+        session_expires_at=datetime.now(timezone.utc) + timedelta(days=session_ttl_days),
+        user_agent=request.headers.get("user-agent", ""),
+        request_ip=_client_ip(request),
+    )
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired login link")
+
+    response = RedirectResponse(url=f"{_public_app_url()}/?login=success", status_code=303)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=raw_session,
+        max_age=session_ttl_days * 24 * 60 * 60,
+        httponly=True,
+        secure=_env_bool("COOKIE_SECURE", True),
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.get("/api/auth/me")
+def auth_me(user: AuthUser | None = Depends(optional_user)):
+    return {
+        "authenticated": user is not None,
+        "user": {"id": user.id, "email": user.email} if user else None,
+    }
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_token:
+        repository.revoke_session(hash_token(session_token))
+    response = JSONResponse({"status": "success"})
+    response.delete_cookie(
+        SESSION_COOKIE_NAME,
+        path="/",
+        secure=_env_bool("COOKIE_SECURE", True),
+        samesite="lax",
+    )
+    return response
 
 
 @app.get("/api/search")
@@ -155,6 +340,7 @@ def search(name: str = Query(..., description="学者姓名")):
             "works_count": author.get("works_count", 0),
             "cited_by_count": author.get("cited_by_count", 0),
             "h_index": (author.get("summary_stats") or {}).get("h_index", 0),
+            "orcid": author.get("orcid"),
             "merged_count": author.get("merged_count", 1),
             "merged_ids": author.get("merged_ids", [author.get("id", "")]),
             "disambiguation": author.get("disambiguation", ""),
@@ -163,93 +349,142 @@ def search(name: str = Query(..., description="学者姓名")):
 
 
 @app.post("/api/profile")
-def profile(req: ProfileRequest):
-    """为选定的学者运行完整 LangGraph 工作流，返回画像数据。"""
-    cached = profile_store.get_profile(req.author_id)
-    if _cache_is_usable(cached, req.refresh):
+def profile(req: ProfileRequest, user: AuthUser | None = Depends(optional_user)):
+    """返回最新画像；过期画像立即返回并在后台排队更新。"""
+    cached = repository.get_profile(req.author_id)
+    if cached:
+        refresh_status = _queue_stale_profile(req.author_id, cached)
+        _record_access(req.author_id, req.query_name or cached.get("query_name", ""), user)
+        data = _payload_with_defaults(req.author_id, cached["payload"], cached)
+        data["refreshStatus"] = refresh_status
         return {
             "status": "success",
             "source": "cache",
             "updated_at": cached["updated_at"],
+            "scholar_id": cached.get("scholar_id", ""),
+            "profile_version": cached.get("profile_version", 0),
+            "refresh_status": refresh_status,
             "warnings": cached["warnings"],
             "errors": cached["errors"],
-            "data": _payload_with_defaults(req.author_id, cached["payload"]),
+            "data": data,
         }
 
     state = default_state()
     state["target_author_id"] = req.author_id
-    state["query_name"] = req.query_name
 
     result = graph.invoke(state)
-    payload = result.get("web_payload", {})
-    warnings = result.get("warnings", [])
-    errors = result.get("errors", [])
-    profile_store.save_profile(
-        req.author_id,
-        req.query_name or payload.get("name", ""),
-        payload,
-        warnings,
-        errors,
+    assessment = assess_profile_quality(result)
+    if not assessment.publishable:
+        raise HTTPException(status_code=502, detail={"quality_flags": assessment.flags})
+    saved = repository.publish_profile(
+        result,
+        query_name=req.query_name or (result.get("web_payload") or {}).get("name", ""),
+        quality_flags=assessment.flags,
     )
-    saved = profile_store.get_profile(req.author_id)
+    _record_access(req.author_id, req.query_name or saved.get("query_name", ""), user)
 
     return {
         "status": "success",
         "source": "live",
-        "updated_at": saved["updated_at"] if saved else "",
-        "warnings": warnings,
-        "errors": errors,
-        "data": payload,
+        "updated_at": saved["updated_at"],
+        "scholar_id": saved.get("scholar_id", ""),
+        "profile_version": saved.get("profile_version", 0),
+        "refresh_status": "ready",
+        "warnings": saved["warnings"],
+        "errors": saved["errors"],
+        "data": _payload_with_defaults(req.author_id, saved["payload"], saved),
     }
 
 
 @app.get("/api/history")
-def history(limit: int = Query(20, ge=1, le=100)):
-    """返回最近生成过的学者画像历史。"""
+def history(
+    limit: int = Query(20, ge=1, le=100),
+    user: AuthUser = Depends(require_user),
+):
+    """返回当前登录用户的私有查询历史。"""
+    return {"items": repository.list_history(user.id, limit=limit)}
+
+
+@app.get("/api/favorites")
+def favorites(user: AuthUser = Depends(require_user)):
+    return {"items": repository.list_favorites(user.id)}
+
+
+@app.post("/api/favorites")
+def add_favorite(req: FavoriteRequest, user: AuthUser = Depends(require_user)):
+    try:
+        return repository.add_favorite(user.id, req.author_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Scholar profile not found") from exc
+
+
+@app.delete("/api/favorites/{author_id:path}")
+def remove_favorite(author_id: str, user: AuthUser = Depends(require_user)):
+    repository.remove_favorite(user.id, author_id)
+    return {"status": "success"}
+
+
+@app.get("/api/authors/{author_id:path}/works")
+def author_works(
+    author_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    cursor: str | None = None,
+    sort: str = Query("citations", pattern="^(citations|year)$"),
+):
+    offset = _decode_cursor(cursor)
+    page = repository.list_works(author_id, limit=limit, offset=offset, sort=sort)
+    next_offset = offset + len(page["items"])
     return {
-        "items": [
-            {
-                "author_id": item["author_id"],
-                "name": item["name"],
-                "institution": item["institution"],
-                "total_papers": item["total_papers"],
-                "total_citations": item["total_citations"],
-                "h_index": item["h_index"],
-                "updated_at": item["updated_at"],
-            }
-            for item in profile_store.list_history(limit=limit)
-        ]
+        "items": page["items"],
+        "total": page["total"],
+        "next_cursor": _encode_cursor(next_offset) if next_offset < page["total"] else None,
     }
 
 
 @app.post("/api/profile/stream")
-async def profile_stream(req: ProfileRequest):
+async def profile_stream(
+    req: ProfileRequest,
+    user: AuthUser | None = Depends(optional_user),
+):
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
-    cached = profile_store.get_profile(req.author_id)
-    if _cache_is_usable(cached, req.refresh):
+    cached = await asyncio.to_thread(repository.get_profile, req.author_id)
+    if cached:
+        refresh_status = await asyncio.to_thread(_queue_stale_profile, req.author_id, cached)
+        await asyncio.to_thread(
+            _record_access,
+            req.author_id,
+            req.query_name or cached.get("query_name", ""),
+            user,
+        )
+
         async def cached_generate():
             yield json.dumps({"type": "init", "stages": STAGE_ORDER, "labels": STAGE_LABELS}) + "\n"
             yield json.dumps({
                 "type": "progress",
                 "progress": 100,
-                "message": "已命中本地历史缓存，直接加载画像。",
+                "message": "已加载最新画像。" if refresh_status == "ready" else "已加载当前画像，后台正在更新。",
             }, ensure_ascii=False) + "\n"
             yield json.dumps({
                 "type": "cache_hit",
                 "author_id": req.author_id,
                 "updated_at": cached["updated_at"],
+                "refresh_status": refresh_status,
             }, ensure_ascii=False) + "\n"
+            data = _payload_with_defaults(req.author_id, cached["payload"], cached)
+            data["refreshStatus"] = refresh_status
             yield json.dumps({
                 "type": "result",
                 "source": "cache",
-                "data": _payload_with_defaults(req.author_id, cached["payload"]),
+                "updated_at": cached["updated_at"],
+                "profile_version": cached.get("profile_version", 0),
+                "refresh_status": refresh_status,
+                "data": data,
             }, ensure_ascii=False) + "\n"
 
         return StreamingResponse(cached_generate(), media_type="application/x-ndjson")
 
     state = default_state()
     state["target_author_id"] = req.author_id
-    state["query_name"] = req.query_name
 
     ev_q: "queue.Queue" = queue.Queue()
     result_holder: list = []
@@ -344,32 +579,90 @@ async def profile_stream(req: ProfileRequest):
             }, ensure_ascii=False) + "\n"
             return
         final_state = result_holder[0]
-        payload = final_state.get("web_payload", {})
-        warnings = final_state.get("warnings", [])
-        errors = final_state.get("errors", [])
-        profile_store.save_profile(
-            req.author_id,
-            req.query_name or payload.get("name", ""),
-            payload,
-            warnings,
-            errors,
+        assessment = assess_profile_quality(final_state)
+        if not assessment.publishable:
+            yield json.dumps({
+                "type": "error",
+                "message": "画像数据未通过完整性检查，未发布到最新画像。",
+                "quality_flags": assessment.flags,
+                "node": current_stage,
+            }, ensure_ascii=False) + "\n"
+            return
+        saved = await asyncio.to_thread(
+            repository.publish_profile,
+            final_state,
+            req.query_name or (final_state.get("web_payload") or {}).get("name", ""),
+            assessment.flags,
         )
-        saved = profile_store.get_profile(req.author_id)
+        await asyncio.to_thread(
+            _record_access,
+            req.author_id,
+            req.query_name or saved.get("query_name", ""),
+            user,
+        )
         yield json.dumps({
             "type": "progress",
             "progress": 100,
-            "message": "画像生成完成，已写入本地历史缓存。",
+            "message": "画像生成完成，已发布为最新版本。",
         }, ensure_ascii=False) + "\n"
         yield json.dumps({
             "type": "result",
             "source": "live",
-            "updated_at": saved["updated_at"] if saved else "",
-            "data": payload,
+            "updated_at": saved["updated_at"],
+            "profile_version": saved.get("profile_version", 0),
+            "refresh_status": "ready",
+            "data": _payload_with_defaults(req.author_id, saved["payload"], saved),
         }, ensure_ascii=False) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
+@app.get("/api/profiles/{scholar_id}/events")
+async def profile_events(scholar_id: UUID, request: Request, version: int = Query(0, ge=0)):
+    """Stream lightweight profile status changes over server-sent events."""
+    broker: ProfileEventBroker = request.app.state.event_broker
+    if not broker.configured:
+        raise HTTPException(status_code=503, detail="Profile events are not configured")
+
+    scholar_key = str(scholar_id)
+
+    async def generate():
+        latest_version = version
+        subscriber = broker.subscribe(scholar_key)
+        try:
+            current = await asyncio.to_thread(repository.get_profile_status, scholar_key)
+            if current and int(current["version"]) > latest_version:
+                latest_version = int(current["version"])
+                yield f"event: profile\ndata: {json.dumps(current, ensure_ascii=False)}\n\n"
+
+            while not await request.is_disconnected():
+                try:
+                    event = await asyncio.wait_for(subscriber.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                event_version = int(event.get("version", 0))
+                if event_version <= latest_version:
+                    continue
+                latest_version = event_version
+                yield f"event: profile\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            broker.unsubscribe(scholar_key, subscriber)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/ready")
+def ready():
+    if not repository.healthcheck():
+        raise HTTPException(status_code=503, detail="Database is not ready")
+    return {"status": "ready"}

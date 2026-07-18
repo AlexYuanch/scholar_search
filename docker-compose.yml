@@ -1,0 +1,154 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scholar_profile}
+      POSTGRES_USER: ${POSTGRES_OWNER_USER:-scholar_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:-owner-dev-only}
+      POSTGRES_APP_USER: scholar_app
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-app-dev-only}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/001-create-app-user.sh:/docker-entrypoint-initdb.d/001-create-app-user.sh:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_OWNER_USER:-scholar_owner} -d ${POSTGRES_DB:-scholar_profile}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build:
+      context: ./backend
+    logging: *default-logging
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://${POSTGRES_OWNER_USER:-scholar_owner}:${POSTGRES_OWNER_PASSWORD:-owner-dev-only}@postgres:5432/${POSTGRES_DB:-scholar_profile}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DATABASE_URL: postgresql://scholar_app:${POSTGRES_APP_PASSWORD:-app-dev-only}@postgres:5432/${POSTGRES_DB:-scholar_profile}
+      APP_ENV: ${APP_ENV:-development}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-scholar_session}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
+      MAGIC_LINK_TTL_MINUTES: ${MAGIC_LINK_TTL_MINUTES:-15}
+      AUTH_DEV_RETURN_MAGIC_LINK: ${AUTH_DEV_RETURN_MAGIC_LINK:-true}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost}
+      TRUST_PROXY_HEADERS: "true"
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-5}
+      DATABASE_POOL_TIMEOUT: ${DATABASE_POOL_TIMEOUT:-10}
+      DATABASE_POOL_RECYCLE: ${DATABASE_POOL_RECYCLE:-1800}
+      DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-10}
+      WORKFLOW_VERSION: ${WORKFLOW_VERSION:-1}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-true}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["python", "worker.py"]
+    environment:
+      DATABASE_URL: postgresql://scholar_app:${POSTGRES_APP_PASSWORD:-app-dev-only}@postgres:5432/${POSTGRES_DB:-scholar_profile}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-5}
+      DATABASE_POOL_TIMEOUT: ${DATABASE_POOL_TIMEOUT:-10}
+      DATABASE_POOL_RECYCLE: ${DATABASE_POOL_RECYCLE:-1800}
+      DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-10}
+      WORKFLOW_VERSION: ${WORKFLOW_VERSION:-1}
+      WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-3}
+      WORKER_MAINTENANCE_SECONDS: ${WORKER_MAINTENANCE_SECONDS:-3600}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: .
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  gateway:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-:80}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+
+  backup:
+    image: postgres:17-alpine
+    profiles: ["backup"]
+    logging: *default-logging
+    environment:
+      DATABASE_URL: postgresql://scholar_app:${POSTGRES_APP_PASSWORD:-app-dev-only}@postgres:5432/${POSTGRES_DB:-scholar_profile}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - ./deploy/backup-postgres.sh:/usr/local/bin/backup-postgres:ro
+      - ${BACKUP_HOST_DIR:-./backups}:/backups
+    command: ["backup-postgres"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

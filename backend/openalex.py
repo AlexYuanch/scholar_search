@@ -1,9 +1,18 @@
 """OpenAlex API 客户端。封装所有与 OpenAlex 的 HTTP 通信。"""
 import os
+import re
 import time
 from typing import List
 
 import requests
+
+try:
+    from pypinyin import Style, lazy_pinyin
+except ImportError:  # 允许未同步依赖的开发环境先正常启动
+    Style = None
+    lazy_pinyin = None
+
+PINYIN_AVAILABLE = lazy_pinyin is not None and Style is not None
 
 BASE = "https://api.openalex.org"
 HEADERS = {"User-Agent": "mailto:demo@example.com"}
@@ -11,6 +20,7 @@ MAX_RETRIES = 3
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 DEFAULT_MAX_PAGES = int(os.getenv("OPENALEX_MAX_WORK_PAGES", "200"))
 _SESSION = requests.Session()
+_CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 
 
 class OpenAlexError(RuntimeError):
@@ -45,14 +55,55 @@ def _get(endpoint: str, **params) -> dict:
     raise OpenAlexError(f"OpenAlex 请求失败: {endpoint}; {last_error}") from last_error
 
 
+def _name_query_variants(name: str) -> list[str]:
+    """为中文姓名补充姓在前、姓在后的拼音检索形式。"""
+    normalized = " ".join(name.strip().split())
+    variants = [normalized]
+    if not _CHINESE_RE.search(normalized) or not PINYIN_AVAILABLE:
+        return variants
+
+    syllables = lazy_pinyin(normalized, style=Style.NORMAL, errors="ignore")
+    if len(syllables) < 2:
+        return variants
+
+    surname = syllables[0].capitalize()
+    given_name = "".join(syllables[1:]).capitalize()
+    for variant in (f"{surname} {given_name}", f"{given_name} {surname}"):
+        if variant not in variants:
+            variants.append(variant)
+    return variants
+
+
+def _author_search_rank(author: dict) -> tuple[int, int, int]:
+    """优先展示有机构信息、引用较多且论文较多的候选。"""
+    institutions = author.get("last_known_institutions") or []
+    return (
+        1 if institutions else 0,
+        author.get("cited_by_count", 0) or 0,
+        author.get("works_count", 0) or 0,
+    )
+
+
 def search_authors(name: str, per_page: int = 50) -> List[dict]:
-    """按姓名搜索作者，返回候选列表。"""
-    data = _get("/authors",
-                filter=f"display_name.search:{name}",
-                per_page=per_page,
-                sort="cited_by_count:desc",
-                select="id,display_name,works_count,cited_by_count,summary_stats,last_known_institutions")
-    return data.get("results", [])
+    """按姓名搜索作者；中文姓名会同时搜索常见的两种拼音顺序。"""
+    authors_by_id = {}
+    for variant in _name_query_variants(name):
+        data = _get(
+            "/authors",
+            filter=f"display_name.search:{variant}",
+            per_page=per_page,
+            sort="cited_by_count:desc",
+            select=(
+                "id,display_name,display_name_alternatives,orcid,works_count,"
+                "cited_by_count,summary_stats,last_known_institutions"
+            ),
+        )
+        for author in data.get("results", []):
+            author_id = author.get("id")
+            if author_id and author_id not in authors_by_id:
+                authors_by_id[author_id] = author
+
+    return sorted(authors_by_id.values(), key=_author_search_rank, reverse=True)[:100]
 
 
 def get_author(author_id: str) -> dict:

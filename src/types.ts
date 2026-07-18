@@ -12,6 +12,7 @@ export interface Candidate {
   works_count: number
   cited_by_count: number
   h_index: number
+  orcid?: string | null
   merged_count?: number
   merged_ids?: string[]
   disambiguation?: string
@@ -19,6 +20,9 @@ export interface Candidate {
 
 export interface ScholarProfile {
   authorId: string
+  scholarId: string
+  profileVersion: number
+  refreshStatus: "ready" | "queued" | "updating" | "failed"
   name: string
   institution: string
   department: string
@@ -46,8 +50,8 @@ export interface ScholarProfile {
     journal: string
     id?: string
   }>
-  coauthors: Array<{ name: string; papers: number }>
-  graphNodes: Array<{ id: string; name: string; type: string }>
+  coauthors: Array<{ name: string; institution?: string; papers: number }>
+  graphNodes: Array<{ id: string; name: string; institution?: string; type: string }>
   graphEdges: Array<{ source: string; target: string; weight: number; papers?: EdgePaper[] }>
   profileSummary: string
   profileEvidence: Array<{
