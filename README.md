@@ -9,7 +9,7 @@
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保存一份最新成功画像 JSONB 以快速加载。
 - 首次生成通过 NDJSON 展示进度；过期画像立即返回旧版本并进入后台刷新队列。
 - 收藏学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
-- 管理员创建的本地账号密码登录、HttpOnly Cookie 会话、私有历史和收藏；所有查询接口均要求登录。
+- 用户自助注册本地账号并使用密码登录；HttpOnly Cookie 会话保护查询、私有历史和收藏。
 - PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送版本变化，前端自动加载新版画像。
 - 全量论文游标分页；合作节点以 OpenAlex ID 为事实主键，同名作者显示机构或短 ID。
 
@@ -110,7 +110,6 @@ APP_ENV=production
 
 ```bash
 ./deploy/deploy.sh
-docker compose exec -it web python manage_users.py create admin
 curl -fsS "https://你的域名/api/health"
 curl -fsS "https://你的域名/api/ready"
 docker compose ps
@@ -122,15 +121,15 @@ docker compose ps
 docker compose logs --tail=200 web worker gateway
 ```
 
-首次部署后必须在服务器终端创建至少一个账号。密码不会显示，也不会写入 shell 历史；要求至少 12 位：
+部署完成后，用户可直接在登录弹窗切换到“注册账号”。用户名为 3–64 位，只允许字母、数字、点、下划线和短横线；密码至少 12 位。注册按来源 IP 限制为每小时最多 10 次，并在成功后自动登录。
+
+服务器管理员仍可使用以下运维命令创建账号、查看账号或重置密码：
 
 ```bash
 docker compose exec -it web python manage_users.py create admin
 docker compose exec web python manage_users.py list
 docker compose exec -it web python manage_users.py reset-password admin
 ```
-
-用户名为 3–64 位，只允许字母、数字、点、下划线和短横线。系统没有公开注册入口，只有能进入服务器终端的管理员可以新增或重置账号。
 
 ### 4. 后续更新
 
@@ -160,11 +159,7 @@ COOKIE_SECURE=false \
 docker compose up -d --build --wait
 ```
 
-创建本地账号后打开 <http://localhost>：
-
-```bash
-docker compose exec -it web python manage_users.py create admin
-```
+打开 <http://localhost>，在登录弹窗中注册账号。
 
 ## 从源码开发
 
@@ -211,7 +206,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 
 - 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`authorships`
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
-- 用户与会话：`app_users`、`auth_login_attempts`、`user_sessions`、`user_history`、`favorites`
+- 用户与会话：`app_users`、`auth_login_attempts`、`auth_registration_attempts`、`user_sessions`、`user_history`、`favorites`
 
 数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
 
@@ -224,6 +219,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | `POST /api/profile` | 必须登录 | 返回最新画像并记录当前用户历史 |
 | `POST /api/profile/stream` | 必须登录 | 冷启动 NDJSON 进度流 |
 | `GET /api/authors/{author_id}/works` | 必须登录 | 全量论文游标分页 |
+| `POST /api/auth/register` | 公开、限速 | 创建本地账号并自动登录 |
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
 | `GET /api/auth/me` | 可匿名 | 查询当前会话 |
 | `POST /api/auth/logout` | 可匿名 | 注销当前会话 |

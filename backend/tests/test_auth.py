@@ -106,6 +106,63 @@ def test_password_login_creates_revocable_session(monkeypatch):
         assert client.get("/api/auth/me").json()["authenticated"] is False
 
 
+def test_public_registration_creates_user_and_authenticated_session(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "new.user", "password": "correct horse battery staple"},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["user"]["username"] == "new.user"
+        assert verify_password(
+            "correct horse battery staple",
+            repository.get_user_for_login("NEW.USER")["password_hash"],
+        )
+        assert client.get("/api/auth/me").json()["authenticated"] is True
+
+
+def test_public_registration_rejects_duplicate_username(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    repository.create_password_user("Alice", hash_password("correct horse battery staple"))
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+
+    response = TestClient(app).post(
+        "/api/auth/register",
+        json={"username": "alice", "password": "another secure password"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Username is already registered"
+
+
+def test_public_registration_is_rate_limited_by_ip(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    for _ in range(10):
+        repository.record_registration_attempt("testclient", True)
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+
+    response = TestClient(app).post(
+        "/api/auth/register",
+        json={"username": "new-user", "password": "correct horse battery staple"},
+    )
+
+    assert response.status_code == 429
+
+
 def test_password_login_rejects_invalid_credentials(monkeypatch):
     import main
 

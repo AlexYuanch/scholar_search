@@ -11,6 +11,7 @@ interface AuthContextValue {
   loading: boolean
   user: AuthUser | null
   signIn: (username: string, password: string) => Promise<void>
+  register: (username: string, password: string) => Promise<void>
   signOut: () => Promise<void>
   refreshUser: () => Promise<void>
 }
@@ -67,6 +68,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.detail ?? `Login request failed (${response.status})`)
+      setUser(payload.user)
+    },
+    register: async (username: string, password: string) => {
+      const response = await request("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.detail ?? `Registration failed (${response.status})`)
       setUser(payload.user)
     },
     signOut: async () => {

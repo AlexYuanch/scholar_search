@@ -11,19 +11,34 @@ export function AuthDialog({ open, required = false, onClose, t }: {
   onClose: () => void
   t: (key: string) => string
 }) {
-  const { signIn } = useAuth()
+  const { register, signIn } = useAuth()
+  const [mode, setMode] = useState<"login" | "register">("login")
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
+  const [passwordConfirmation, setPasswordConfirmation] = useState("")
   const [message, setMessage] = useState("")
   const [loading, setLoading] = useState(false)
+  const registering = mode === "register"
+  const canSubmit = Boolean(
+    username.trim()
+    && password.length >= 12
+    && (!registering || passwordConfirmation.length >= 12),
+  )
   if (!open) return null
 
   const submit = async () => {
     setLoading(true)
     setMessage("")
+    if (registering && password !== passwordConfirmation) {
+      setMessage(t("auth.password_mismatch"))
+      setLoading(false)
+      return
+    }
     try {
-      await signIn(username.trim(), password)
+      if (registering) await register(username.trim(), password)
+      else await signIn(username.trim(), password)
       setPassword("")
+      setPasswordConfirmation("")
       onClose()
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : t("auth.failed"))
@@ -36,11 +51,15 @@ export function AuthDialog({ open, required = false, onClose, t }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="flex items-center gap-2 text-base"><LogIn className="h-4 w-4" />{t("auth.title")}</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <LogIn className="h-4 w-4" />{t(registering ? "auth.register_title" : "auth.title")}
+          </CardTitle>
           {!required && <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>}
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">{t("auth.password_desc")}</p>
+          <p className="text-sm text-muted-foreground">
+            {t(registering ? "auth.register_desc" : "auth.password_desc")}
+          </p>
           <input
             autoComplete="username"
             value={username}
@@ -50,19 +69,41 @@ export function AuthDialog({ open, required = false, onClose, t }: {
           />
           <input
             type="password"
-            autoComplete="current-password"
+            autoComplete={registering ? "new-password" : "current-password"}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && username.trim() && password.length >= 12) void submit()
+              if (event.key === "Enter" && !registering && canSubmit) void submit()
             }}
             placeholder={t("auth.password_placeholder")}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
-          <Button className="w-full" disabled={!username.trim() || password.length < 12 || loading} onClick={submit}>
-            {loading && <Loader2 className="h-4 w-4 animate-spin" />}{t("auth.sign_in")}
+          {registering && (
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={passwordConfirmation}
+              onChange={(event) => setPasswordConfirmation(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && canSubmit) void submit()
+              }}
+              placeholder={t("auth.password_confirm_placeholder")}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          )}
+          <Button className="w-full" disabled={!canSubmit || loading} onClick={submit}>
+            {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+            {t(registering ? "auth.register" : "auth.sign_in")}
           </Button>
           {message && <p className="text-sm text-destructive">{message}</p>}
+          <Button variant="ghost" className="w-full" onClick={() => {
+            setMode((current) => current === "login" ? "register" : "login")
+            setMessage("")
+            setPassword("")
+            setPasswordConfirmation("")
+          }}>
+            {t(registering ? "auth.have_account" : "auth.need_account")}
+          </Button>
         </CardContent>
       </Card>
     </div>

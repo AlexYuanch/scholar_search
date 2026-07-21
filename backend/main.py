@@ -35,7 +35,13 @@ from events import ProfileEventBroker
 from nodes import dedup_authors
 from openalex import search_authors
 from quality import assess_profile_quality
-from repository import LoginRateLimitExceeded, RepositoryNotConfigured, create_repository
+from repository import (
+    LoginRateLimitExceeded,
+    RegistrationRateLimitExceeded,
+    RepositoryNotConfigured,
+    UsernameTaken,
+    create_repository,
+)
 from state import default_state
 from workflow import graph
 
@@ -233,6 +239,50 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _authenticated_response(user: dict, request: Request, status_code: int = 200) -> JSONResponse:
+    raw_session = generate_token()
+    session_ttl_days = int(os.getenv("SESSION_TTL_DAYS", "30"))
+    repository.create_user_session(
+        user_id=user["id"],
+        session_hash=hash_token(raw_session),
+        session_expires_at=datetime.now(timezone.utc) + timedelta(days=session_ttl_days),
+        user_agent=request.headers.get("user-agent", ""),
+        request_ip=_client_ip(request),
+    )
+    response = JSONResponse({
+        "status": "success",
+        "user": {"id": str(user["id"]), "username": user["username"]},
+    }, status_code=status_code)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=raw_session,
+        max_age=session_ttl_days * 24 * 60 * 60,
+        httponly=True,
+        secure=_env_bool("COOKIE_SECURE", True),
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/register")
+def auth_register(req: PasswordLoginRequest, request: Request):
+    request_ip = _client_ip(request)
+    try:
+        repository.enforce_registration_rate_limit(request_ip)
+    except RegistrationRateLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail="Too many registration attempts") from exc
+
+    try:
+        user = repository.create_password_user(req.username, hash_password(req.password))
+    except UsernameTaken as exc:
+        repository.record_registration_attempt(request_ip, False)
+        raise HTTPException(status_code=409, detail="Username is already registered") from exc
+
+    repository.record_registration_attempt(request_ip, True)
+    return _authenticated_response(user, request, status_code=201)
+
+
 @app.post("/api/auth/login")
 def auth_login(req: PasswordLoginRequest, request: Request):
     username = req.username.strip()
@@ -250,29 +300,7 @@ def auth_login(req: PasswordLoginRequest, request: Request):
     if not authenticated:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    raw_session = generate_token()
-    session_ttl_days = int(os.getenv("SESSION_TTL_DAYS", "30"))
-    repository.create_user_session(
-        user_id=user["id"],
-        session_hash=hash_token(raw_session),
-        session_expires_at=datetime.now(timezone.utc) + timedelta(days=session_ttl_days),
-        user_agent=request.headers.get("user-agent", ""),
-        request_ip=request_ip,
-    )
-    response = JSONResponse({
-        "status": "success",
-        "user": {"id": str(user["id"]), "username": user["username"]},
-    })
-    response.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=raw_session,
-        max_age=session_ttl_days * 24 * 60 * 60,
-        httponly=True,
-        secure=_env_bool("COOKIE_SECURE", True),
-        samesite="lax",
-        path="/",
-    )
-    return response
+    return _authenticated_response(user, request)
 
 
 @app.get("/api/auth/me")

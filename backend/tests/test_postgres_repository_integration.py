@@ -85,7 +85,10 @@ def test_password_user_session_is_revocable():
     unique = os.urandom(8).hex()
     session_hash = ((unique[::-1]) * 8)[:64]
     username = f"integration-{unique}"
+    registration_ip = f"192.0.2.{int(unique[:2], 16) % 254 + 1}"
     try:
+        repository.enforce_registration_rate_limit(registration_ip)
+        repository.record_registration_attempt(registration_ip, True)
         password_hash = hash_password("integration password")
         user = repository.create_password_user(username, password_hash)
         stored = repository.get_user_for_login(username.upper())
@@ -110,6 +113,9 @@ def test_password_user_session_is_revocable():
         assert repository.get_user_by_session(session_hash) is None
     finally:
         with repository.engine.begin() as conn:
+            conn.execute(text(
+                "delete from public.auth_registration_attempts where request_ip = cast(:request_ip as inet)"
+            ), {"request_ip": registration_ip})
             conn.execute(text(
                 "delete from public.auth_login_attempts where normalized_username = :username"
             ), {"username": username})

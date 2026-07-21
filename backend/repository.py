@@ -69,6 +69,10 @@ class UsernameTaken(RuntimeError):
     pass
 
 
+class RegistrationRateLimitExceeded(RuntimeError):
+    pass
+
+
 class InMemoryRepository:
     """Test repository with the same behavioral contract as PostgresRepository."""
 
@@ -82,6 +86,7 @@ class InMemoryRepository:
         self.jobs: dict[str, dict] = {}
         self.users: dict[str, dict] = {}
         self.login_attempts: list[dict] = []
+        self.registration_attempts: list[dict] = []
         self.sessions: dict[str, dict] = {}
 
     def _scholar(self, author_id: str, name: str = "") -> dict:
@@ -289,6 +294,24 @@ class InMemoryRepository:
     def record_login_attempt(self, username: str, request_ip: str | None, success: bool) -> None:
         self.login_attempts.append({
             "normalized_username": username.strip().casefold(),
+            "request_ip": request_ip,
+            "success": success,
+            "created_at": _now(),
+        })
+
+    def enforce_registration_rate_limit(self, request_ip: str | None) -> None:
+        if not request_ip:
+            return
+        cutoff = _now() - timedelta(hours=1)
+        recent_count = sum(
+            row["request_ip"] == request_ip and row["created_at"] >= cutoff
+            for row in self.registration_attempts
+        )
+        if recent_count >= 10:
+            raise RegistrationRateLimitExceeded("Too many registration attempts")
+
+    def record_registration_attempt(self, request_ip: str | None, success: bool) -> None:
+        self.registration_attempts.append({
             "request_ip": request_ip,
             "success": success,
             "created_at": _now(),
@@ -887,6 +910,25 @@ class PostgresRepository:
                 "success": success,
             })
 
+    def enforce_registration_rate_limit(self, request_ip: str | None) -> None:
+        if not request_ip:
+            return
+        with self.engine.connect() as conn:
+            recent_count = conn.execute(text("""
+                select count(*) from public.auth_registration_attempts
+                where request_ip = cast(:request_ip as inet)
+                  and created_at >= now() - interval '1 hour'
+            """), {"request_ip": request_ip}).scalar_one()
+        if recent_count >= 10:
+            raise RegistrationRateLimitExceeded("Too many registration attempts")
+
+    def record_registration_attempt(self, request_ip: str | None, success: bool) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into public.auth_registration_attempts (request_ip, success)
+                values (cast(:request_ip as inet), :success)
+            """), {"request_ip": request_ip, "success": success})
+
     def create_user_session(
         self,
         user_id: str,
@@ -1006,6 +1048,7 @@ class PostgresRepository:
             for statement in (
                 "delete from public.refresh_jobs where status in ('succeeded', 'failed') and updated_at < now() - interval '30 days'",
                 "delete from public.auth_login_attempts where created_at < now() - interval '1 day'",
+                "delete from public.auth_registration_attempts where created_at < now() - interval '1 day'",
                 "delete from public.user_sessions where expires_at < now() - interval '7 days' or revoked_at < now() - interval '7 days'",
             ):
                 deleted += conn.execute(text(statement)).rowcount
