@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import secrets
+from base64 import urlsafe_b64decode, urlsafe_b64encode
+from binascii import Error as Base64Error
 from dataclasses import dataclass
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 
 
 SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "scholar_session")
+PASSWORD_SCHEME = "scrypt"
+PASSWORD_N = 2 ** 14
+PASSWORD_R = 8
+PASSWORD_P = 1
+PASSWORD_KEY_LENGTH = 32
 
 
 def generate_token() -> str:
@@ -22,10 +30,51 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    derived = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=PASSWORD_N,
+        r=PASSWORD_R,
+        p=PASSWORD_P,
+        dklen=PASSWORD_KEY_LENGTH,
+    )
+    return "$".join((
+        PASSWORD_SCHEME,
+        str(PASSWORD_N),
+        str(PASSWORD_R),
+        str(PASSWORD_P),
+        urlsafe_b64encode(salt).decode("ascii"),
+        urlsafe_b64encode(derived).decode("ascii"),
+    ))
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        scheme, n, r, p, salt, expected = encoded.split("$", 5)
+        if scheme != PASSWORD_SCHEME:
+            return False
+        derived = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=urlsafe_b64decode(salt.encode("ascii")),
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=len(urlsafe_b64decode(expected.encode("ascii"))),
+        )
+        return hmac.compare_digest(
+            derived,
+            urlsafe_b64decode(expected.encode("ascii")),
+        )
+    except (Base64Error, TypeError, ValueError):
+        return False
+
+
 @dataclass(frozen=True)
 class AuthUser:
     id: str
-    email: str
+    username: str
 
 
 def optional_user(
@@ -38,7 +87,7 @@ def optional_user(
     user = repository.get_user_by_session(hash_token(session_token))
     if not user:
         return None
-    return AuthUser(id=str(user["id"]), email=str(user["email"]))
+    return AuthUser(id=str(user["id"]), username=str(user["username"]))
 
 
 def require_user(user: AuthUser | None = Depends(optional_user)) -> AuthUser:

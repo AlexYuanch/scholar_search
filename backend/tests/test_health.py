@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
+from auth import AuthUser, require_user
 from main import app
 from repository import InMemoryRepository
 
@@ -25,6 +27,15 @@ def _state(author_id="A1", name="Ada Lovelace"):
     }
 
 
+@pytest.fixture
+def authenticated_client():
+    app.dependency_overrides[require_user] = lambda: AuthUser(id="test-user", username="tester")
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_health_returns_ok():
     response = TestClient(app).get("/api/health")
 
@@ -32,7 +43,7 @@ def test_health_returns_ok():
     assert response.json() == {"status": "ok"}
 
 
-def test_profile_returns_latest_payload_without_running_graph(monkeypatch):
+def test_profile_returns_latest_payload_without_running_graph(monkeypatch, authenticated_client):
     import main
 
     repository = InMemoryRepository()
@@ -44,7 +55,7 @@ def test_profile_returns_latest_payload_without_running_graph(monkeypatch):
     monkeypatch.setattr(main, "repository", repository)
     monkeypatch.setattr(main.graph, "invoke", fail_invoke)
 
-    response = TestClient(app).post("/api/profile", json={"author_id": "A1"})
+    response = authenticated_client.post("/api/profile", json={"author_id": "A1"})
 
     assert response.status_code == 200
     assert response.json()["source"] == "cache"
@@ -52,7 +63,7 @@ def test_profile_returns_latest_payload_without_running_graph(monkeypatch):
     assert response.json()["data"]["profileVersion"] == 1
 
 
-def test_stale_profile_is_returned_and_queued_instead_of_blocking(monkeypatch):
+def test_stale_profile_is_returned_and_queued_instead_of_blocking(monkeypatch, authenticated_client):
     import main
 
     repository = InMemoryRepository()
@@ -62,35 +73,35 @@ def test_stale_profile_is_returned_and_queued_instead_of_blocking(monkeypatch):
     ).isoformat()
     monkeypatch.setattr(main, "repository", repository)
 
-    response = TestClient(app).post("/api/profile", json={"author_id": "A1"})
+    response = authenticated_client.post("/api/profile", json={"author_id": "A1"})
 
     assert response.status_code == 200
     assert response.json()["refresh_status"] == "queued"
     assert len(repository.jobs) == 1
 
 
-def test_cold_profile_publishes_valid_workflow_result(monkeypatch):
+def test_cold_profile_publishes_valid_workflow_result(monkeypatch, authenticated_client):
     import main
 
     repository = InMemoryRepository()
     monkeypatch.setattr(main, "repository", repository)
     monkeypatch.setattr(main.graph, "invoke", lambda _input: _state())
 
-    response = TestClient(app).post("/api/profile", json={"author_id": "A1"})
+    response = authenticated_client.post("/api/profile", json={"author_id": "A1"})
 
     assert response.status_code == 200
     assert response.json()["source"] == "live"
     assert repository.get_profile("A1")["profile_version"] == 1
 
 
-def test_profile_stream_reports_cached_profile(monkeypatch):
+def test_profile_stream_reports_cached_profile(monkeypatch, authenticated_client):
     import main
 
     repository = InMemoryRepository()
     repository.publish_profile(_state(), query_name="Ada Lovelace")
     monkeypatch.setattr(main, "repository", repository)
 
-    response = TestClient(app).post("/api/profile/stream", json={"author_id": "A1"})
+    response = authenticated_client.post("/api/profile/stream", json={"author_id": "A1"})
     body = response.text
 
     assert response.status_code == 200
@@ -98,7 +109,7 @@ def test_profile_stream_reports_cached_profile(monkeypatch):
     assert '"profile_version": 1' in body
 
 
-def test_profile_stream_reports_workflow_error(monkeypatch):
+def test_profile_stream_reports_workflow_error(monkeypatch, authenticated_client):
     import main
 
     class BrokenGraph:
@@ -108,7 +119,7 @@ def test_profile_stream_reports_workflow_error(monkeypatch):
     monkeypatch.setattr(main, "repository", InMemoryRepository())
     monkeypatch.setattr(main, "graph", BrokenGraph())
 
-    response = TestClient(app).post("/api/profile/stream", json={"author_id": "A1"})
+    response = authenticated_client.post("/api/profile/stream", json={"author_id": "A1"})
 
     assert response.status_code == 200
     assert '"type": "error"' in response.text

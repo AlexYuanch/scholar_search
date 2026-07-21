@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from repository import InMemoryRepository, _normalize_database_url
 
 
@@ -77,6 +79,19 @@ def test_history_and_favorites_are_isolated_by_user():
     assert repository.list_history("user-2", limit=20) == []
     assert len(repository.list_favorites("user-1")) == 1
     assert repository.list_favorites("user-2") == []
+
+
+def test_password_reset_revokes_existing_sessions():
+    repository = InMemoryRepository()
+    user = repository.create_password_user("alice", "old-password-hash")
+    repository.create_user_session(
+        user["id"],
+        "session-hash",
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+
+    assert repository.set_password("ALICE", "new-password-hash")
+    assert repository.get_user_by_session("session-hash") is None
 
 
 def test_standard_postgres_url_uses_psycopg_driver():

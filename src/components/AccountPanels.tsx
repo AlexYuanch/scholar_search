@@ -5,26 +5,26 @@ import { getFavorites, getHistory, removeFavorite, type ScholarListItem } from "
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
-export function AuthDialog({ open, onClose, t }: {
+export function AuthDialog({ open, required = false, onClose, t }: {
   open: boolean
+  required?: boolean
   onClose: () => void
   t: (key: string) => string
 }) {
-  const { configured, signInWithEmail } = useAuth()
-  const [email, setEmail] = useState("")
+  const { signIn } = useAuth()
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
   const [message, setMessage] = useState("")
-  const [devMagicLink, setDevMagicLink] = useState("")
   const [loading, setLoading] = useState(false)
   if (!open) return null
 
   const submit = async () => {
     setLoading(true)
     setMessage("")
-    setDevMagicLink("")
     try {
-      const result = await signInWithEmail(email.trim())
-      setMessage(t("auth.email_sent"))
-      setDevMagicLink(result.devMagicLink ?? "")
+      await signIn(username.trim(), password)
+      setPassword("")
+      onClose()
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : t("auth.failed"))
     } finally {
@@ -37,27 +37,32 @@ export function AuthDialog({ open, onClose, t }: {
       <Card className="w-full max-w-md">
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-base"><LogIn className="h-4 w-4" />{t("auth.title")}</CardTitle>
-          <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
+          {!required && <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>}
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">{t("auth.magic_link_desc")}</p>
+          <p className="text-sm text-muted-foreground">{t("auth.password_desc")}</p>
           <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder={t("auth.email_placeholder")}
+            autoComplete="username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder={t("auth.username_placeholder")}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
-          <Button className="w-full" disabled={!configured || !email.trim() || loading} onClick={submit}>
-            {loading && <Loader2 className="h-4 w-4 animate-spin" />}{t("auth.send_link")}
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && username.trim() && password.length >= 12) void submit()
+            }}
+            placeholder={t("auth.password_placeholder")}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+          />
+          <Button className="w-full" disabled={!username.trim() || password.length < 12 || loading} onClick={submit}>
+            {loading && <Loader2 className="h-4 w-4 animate-spin" />}{t("auth.sign_in")}
           </Button>
-          {!configured && <p className="text-xs text-destructive">{t("auth.not_configured")}</p>}
-          {message && <p className="text-sm text-muted-foreground">{message}</p>}
-          {devMagicLink && (
-            <a className="block break-all text-xs text-primary underline" href={devMagicLink}>
-              {devMagicLink}
-            </a>
-          )}
+          {message && <p className="text-sm text-destructive">{message}</p>}
         </CardContent>
       </Card>
     </div>

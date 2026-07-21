@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import text
 
+from auth import hash_password, verify_password
 from repository import PostgresRepository
 
 
@@ -79,41 +80,42 @@ def test_publish_paginate_and_refresh_queue_against_postgres():
             conn.execute(text("delete from public.scholars where source_author_id like 'https://openalex.org/A-CODEX%'"))
 
 
-def test_passwordless_session_is_one_time_and_revocable():
+def test_password_user_session_is_revocable():
     repository = PostgresRepository(DATABASE_URL)
     unique = os.urandom(8).hex()
-    login_hash = (unique * 8)[:64]
     session_hash = ((unique[::-1]) * 8)[:64]
-    email = f"integration-{unique}@example.com"
+    username = f"integration-{unique}"
     try:
-        repository.create_login_token(
-            email=email,
-            token_hash=login_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-            request_ip="127.0.0.1",
-        )
-        user = repository.consume_login_token(
-            token_hash=login_hash,
+        password_hash = hash_password("integration password")
+        user = repository.create_password_user(username, password_hash)
+        stored = repository.get_user_for_login(username.upper())
+        assert stored["id"] == user["id"]
+        assert verify_password("integration password", stored["password_hash"])
+
+        repository.record_login_attempt(username, "127.0.0.1", True)
+        repository.create_user_session(
+            user_id=user["id"],
             session_hash=session_hash,
             session_expires_at=datetime.now(timezone.utc) + timedelta(days=1),
             user_agent="pytest",
             request_ip="127.0.0.1",
         )
 
-        assert user["email"] == email
-        assert repository.consume_login_token(
-            login_hash,
-            "0" * 64,
-            datetime.now(timezone.utc) + timedelta(days=1),
-        ) is None
-        assert repository.get_user_by_session(session_hash)["id"] == user["id"]
+        assert repository.get_user_by_session(session_hash) == {
+            "id": user["id"],
+            "username": username,
+        }
 
         repository.revoke_session(session_hash)
         assert repository.get_user_by_session(session_hash) is None
     finally:
         with repository.engine.begin() as conn:
-            conn.execute(text("delete from public.app_users where normalized_email = :email"), {"email": email})
-            conn.execute(text("delete from public.auth_login_tokens where normalized_email = :email"), {"email": email})
+            conn.execute(text(
+                "delete from public.auth_login_attempts where normalized_username = :username"
+            ), {"username": username})
+            conn.execute(text(
+                "delete from public.app_users where normalized_username = :username"
+            ), {"username": username})
 
 
 def test_maintenance_recovers_abandoned_running_job():

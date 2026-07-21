@@ -32,13 +32,14 @@ def test_aliyun_bootstrap_does_not_commit_host_specific_or_untrusted_registry_va
     assert 'openssl rand -hex 24' in script
 
 
-def test_compose_auth_defaults_fail_closed_outside_local_development():
+def test_compose_auth_uses_secure_server_side_session_defaults():
     compose = COMPOSE.read_text()
 
     assert "APP_ENV: ${APP_ENV:-production}" in compose
-    assert "PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}" in compose
-    assert "AUTH_DEV_RETURN_MAGIC_LINK: ${AUTH_DEV_RETURN_MAGIC_LINK:-false}" in compose
-    assert "PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost}" not in compose
+    assert "COOKIE_SECURE: ${COOKIE_SECURE:-true}" in compose
+    assert "SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-scholar_session}" in compose
+    assert "SMTP_HOST" not in compose
+    assert "AUTH_DEV_RETURN_MAGIC_LINK" not in compose
 
 
 def test_production_deploy_rejects_loopback_public_url():

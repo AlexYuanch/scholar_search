@@ -14,24 +14,24 @@ import queue
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel, EmailStr
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from auth import (
     SESSION_COOKIE_NAME,
     AuthUser,
     generate_token,
+    hash_password,
     hash_token,
     optional_user,
     require_user,
+    verify_password,
 )
 from events import ProfileEventBroker
-from mailer import MailerNotConfigured, SMTPMailer
 from nodes import dedup_authors
 from openalex import search_authors
 from quality import assess_profile_quality
@@ -105,8 +105,8 @@ PROGRESS_MESSAGES = {
 
 repository = create_repository()
 event_broker = ProfileEventBroker(os.getenv("DATABASE_URL"))
-mailer = SMTPMailer()
 CACHE_MAX_AGE_DAYS = 7
+DUMMY_PASSWORD_HASH = hash_password("invalid-login-password")
 
 
 def _cache_is_fresh(cached: dict | None) -> bool:
@@ -210,8 +210,9 @@ class FavoriteRequest(BaseModel):
     author_id: str
 
 
-class MagicLinkRequest(BaseModel):
-    email: EmailStr
+class PasswordLoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(min_length=12, max_length=256)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -232,112 +233,36 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _is_loopback_hostname(hostname: str | None) -> bool:
-    if not hostname:
-        return False
-    normalized = hostname.rstrip(".").lower()
-    if normalized == "localhost" or normalized.endswith(".localhost"):
-        return True
+@app.post("/api/auth/login")
+def auth_login(req: PasswordLoginRequest, request: Request):
+    username = req.username.strip()
+    request_ip = _client_ip(request)
     try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
-
-
-def _public_app_url(request: Request | None = None) -> str:
-    public_app_url = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
-    if not public_app_url:
-        raise HTTPException(
-            status_code=503,
-            detail="PUBLIC_APP_URL is required before email login can be used",
-        )
-
-    parsed = urlsplit(public_app_url)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path not in {"", "/"}
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="PUBLIC_APP_URL must be an absolute http(s) origin without a path",
-        )
-
-    configured_for_loopback = _is_loopback_hostname(parsed.hostname)
-    if os.getenv("APP_ENV", "production") == "production" and configured_for_loopback:
-        raise HTTPException(
-            status_code=503,
-            detail="PUBLIC_APP_URL cannot use localhost in production",
-        )
-    if request and configured_for_loopback and not _is_loopback_hostname(request.url.hostname):
-        raise HTTPException(
-            status_code=503,
-            detail="PUBLIC_APP_URL points to localhost but this request is using a public host",
-        )
-    return public_app_url
-
-
-@app.post("/api/auth/magic-link")
-def request_magic_link(req: MagicLinkRequest, request: Request):
-    public_app_url = _public_app_url(request)
-    raw_token = generate_token()
-    expires_at = datetime.now(timezone.utc) + timedelta(
-        minutes=int(os.getenv("MAGIC_LINK_TTL_MINUTES", "15"))
-    )
-    try:
-        repository.create_login_token(
-            email=str(req.email),
-            token_hash=hash_token(raw_token),
-            expires_at=expires_at,
-            request_ip=_client_ip(request),
-        )
+        repository.enforce_login_rate_limit(username, request_ip)
     except LoginRateLimitExceeded as exc:
-        raise HTTPException(status_code=429, detail="Please wait before requesting another login email") from exc
+        raise HTTPException(status_code=429, detail="Too many failed login attempts") from exc
 
-    magic_link = f"{public_app_url}/api/auth/callback?token={raw_token}"
-    dev_link_enabled = (
-        os.getenv("APP_ENV", "production") == "development"
-        and _env_bool("AUTH_DEV_RETURN_MAGIC_LINK")
-        and _is_loopback_hostname(urlsplit(public_app_url).hostname)
-    )
-    try:
-        if mailer.configured:
-            mailer.send_magic_link(str(req.email), magic_link)
-        elif not dev_link_enabled:
-            raise MailerNotConfigured("SMTP is not configured")
-    except MailerNotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Login email could not be sent") from exc
+    user = repository.get_user_for_login(username)
+    password_hash = user["password_hash"] if user else DUMMY_PASSWORD_HASH
+    valid_credentials = verify_password(req.password, password_hash)
+    authenticated = bool(user and user.get("is_active") and valid_credentials)
+    repository.record_login_attempt(username, request_ip, authenticated)
+    if not authenticated:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    response = {"status": "accepted", "message": "If the address is valid, a login link has been sent."}
-    if dev_link_enabled:
-        response["dev_magic_link"] = magic_link
-    return response
-
-
-@app.get("/api/auth/callback")
-def auth_callback(token: str, request: Request):
-    if len(token) < 32:
-        raise HTTPException(status_code=400, detail="Invalid or expired login link")
-    public_app_url = _public_app_url(request)
     raw_session = generate_token()
     session_ttl_days = int(os.getenv("SESSION_TTL_DAYS", "30"))
-    user = repository.consume_login_token(
-        token_hash=hash_token(token),
+    repository.create_user_session(
+        user_id=user["id"],
         session_hash=hash_token(raw_session),
         session_expires_at=datetime.now(timezone.utc) + timedelta(days=session_ttl_days),
         user_agent=request.headers.get("user-agent", ""),
-        request_ip=_client_ip(request),
+        request_ip=request_ip,
     )
-    if not user:
-        raise HTTPException(status_code=400, detail="Invalid or expired login link")
-
-    response = RedirectResponse(url=f"{public_app_url}/?login=success", status_code=303)
+    response = JSONResponse({
+        "status": "success",
+        "user": {"id": str(user["id"]), "username": user["username"]},
+    })
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=raw_session,
@@ -354,7 +279,7 @@ def auth_callback(token: str, request: Request):
 def auth_me(user: AuthUser | None = Depends(optional_user)):
     return {
         "authenticated": user is not None,
-        "user": {"id": user.id, "email": user.email} if user else None,
+        "user": {"id": user.id, "username": user.username} if user else None,
     }
 
 
@@ -374,7 +299,10 @@ def auth_logout(request: Request):
 
 
 @app.get("/api/search")
-def search(name: str = Query(..., description="学者姓名")):
+def search(
+    name: str = Query(..., description="学者姓名"),
+    _user: AuthUser = Depends(require_user),
+):
     """搜索学者姓名，返回去重后的候选人列表。"""
     candidates = search_authors(name)
     merged = dedup_authors(candidates)
@@ -398,7 +326,7 @@ def search(name: str = Query(..., description="学者姓名")):
 
 
 @app.post("/api/profile")
-def profile(req: ProfileRequest, user: AuthUser | None = Depends(optional_user)):
+def profile(req: ProfileRequest, user: AuthUser = Depends(require_user)):
     """返回最新画像；过期画像立即返回并在后台排队更新。"""
     cached = repository.get_profile(req.author_id)
     if cached:
@@ -479,6 +407,7 @@ def author_works(
     limit: int = Query(50, ge=1, le=100),
     cursor: str | None = None,
     sort: str = Query("citations", pattern="^(citations|year)$"),
+    _user: AuthUser = Depends(require_user),
 ):
     offset = _decode_cursor(cursor)
     page = repository.list_works(author_id, limit=limit, offset=offset, sort=sort)
@@ -493,7 +422,7 @@ def author_works(
 @app.post("/api/profile/stream")
 async def profile_stream(
     req: ProfileRequest,
-    user: AuthUser | None = Depends(optional_user),
+    user: AuthUser = Depends(require_user),
 ):
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
     cached = await asyncio.to_thread(repository.get_profile, req.author_id)
@@ -667,7 +596,12 @@ async def profile_stream(
 
 
 @app.get("/api/profiles/{scholar_id}/events")
-async def profile_events(scholar_id: UUID, request: Request, version: int = Query(0, ge=0)):
+async def profile_events(
+    scholar_id: UUID,
+    request: Request,
+    version: int = Query(0, ge=0),
+    _user: AuthUser = Depends(require_user),
+):
     """Stream lightweight profile status changes over server-sent events."""
     broker: ProfileEventBroker = request.app.state.event_broker
     if not broker.configured:

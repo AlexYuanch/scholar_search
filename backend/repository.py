@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 
 
 def _now() -> datetime:
@@ -64,6 +65,10 @@ class LoginRateLimitExceeded(RuntimeError):
     pass
 
 
+class UsernameTaken(RuntimeError):
+    pass
+
+
 class InMemoryRepository:
     """Test repository with the same behavioral contract as PostgresRepository."""
 
@@ -76,7 +81,7 @@ class InMemoryRepository:
         self.favorites: dict[tuple[str, str], dict] = {}
         self.jobs: dict[str, dict] = {}
         self.users: dict[str, dict] = {}
-        self.login_tokens: dict[str, dict] = {}
+        self.login_attempts: list[dict] = []
         self.sessions: dict[str, dict] = {}
 
     def _scholar(self, author_id: str, name: str = "") -> dict:
@@ -233,60 +238,77 @@ class InMemoryRepository:
                 scheduled_at=_iso(_now() + timedelta(minutes=2 ** self.jobs[job_id]["attempts"])),
             )
 
-    def create_login_token(
-        self,
-        email: str,
-        token_hash: str,
-        expires_at: datetime,
-        request_ip: str | None = None,
-    ) -> None:
-        normalized_email = email.strip().lower()
-        recent = [
-            row for row in self.login_tokens.values()
-            if row["normalized_email"] == normalized_email
-            and _now() - row["created_at"] < timedelta(minutes=15)
-        ]
-        if len(recent) >= 3:
-            raise LoginRateLimitExceeded("Too many login emails requested")
-        self.login_tokens[token_hash] = {
-            "email": email.strip(),
-            "normalized_email": normalized_email,
-            "expires_at": expires_at,
-            "created_at": _now(),
-            "consumed_at": None,
-            "request_ip": request_ip,
-        }
+    def create_password_user(self, username: str, password_hash: str) -> dict:
+        normalized_username = username.strip().casefold()
+        with self._lock:
+            if normalized_username in self.users:
+                raise UsernameTaken("Username already exists")
+            user = {
+                "id": str(uuid.uuid4()),
+                "username": username.strip(),
+                "normalized_username": normalized_username,
+                "password_hash": password_hash,
+                "is_active": True,
+            }
+            self.users[normalized_username] = user
+        return deepcopy(user)
 
-    def consume_login_token(
+    def set_password(self, username: str, password_hash: str) -> bool:
+        user = self.users.get(username.strip().casefold())
+        if not user:
+            return False
+        user["password_hash"] = password_hash
+        for session in self.sessions.values():
+            if session["user_id"] == user["id"] and not session["revoked_at"]:
+                session["revoked_at"] = _now()
+        return True
+
+    def list_users(self) -> list[dict]:
+        return [
+            {
+                "id": user["id"],
+                "username": user["username"],
+                "is_active": user["is_active"],
+            }
+            for user in sorted(self.users.values(), key=lambda item: item["normalized_username"])
+        ]
+
+    def get_user_for_login(self, username: str) -> dict | None:
+        user = self.users.get(username.strip().casefold())
+        return deepcopy(user) if user else None
+
+    def enforce_login_rate_limit(self, username: str, request_ip: str | None) -> None:
+        cutoff = _now() - timedelta(minutes=15)
+        normalized_username = username.strip().casefold()
+        failures = [row for row in self.login_attempts if not row["success"] and row["created_at"] >= cutoff]
+        username_failures = sum(row["normalized_username"] == normalized_username for row in failures)
+        ip_failures = sum(bool(request_ip) and row["request_ip"] == request_ip for row in failures)
+        if username_failures >= 5 or ip_failures >= 20:
+            raise LoginRateLimitExceeded("Too many failed login attempts")
+
+    def record_login_attempt(self, username: str, request_ip: str | None, success: bool) -> None:
+        self.login_attempts.append({
+            "normalized_username": username.strip().casefold(),
+            "request_ip": request_ip,
+            "success": success,
+            "created_at": _now(),
+        })
+
+    def create_user_session(
         self,
-        token_hash: str,
+        user_id: str,
         session_hash: str,
         session_expires_at: datetime,
         user_agent: str = "",
         request_ip: str | None = None,
-    ) -> dict | None:
-        token = self.login_tokens.get(token_hash)
-        if not token or token["consumed_at"] or token["expires_at"] <= _now():
-            return None
-        token["consumed_at"] = _now()
-        normalized_email = token["normalized_email"]
-        user = self.users.get(normalized_email)
-        if not user:
-            user = {
-                "id": str(uuid.uuid4()),
-                "email": token["email"],
-                "normalized_email": normalized_email,
-                "is_active": True,
-            }
-            self.users[normalized_email] = user
+    ) -> None:
         self.sessions[session_hash] = {
-            "user_id": user["id"],
+            "user_id": user_id,
             "expires_at": session_expires_at,
             "revoked_at": None,
             "user_agent": user_agent,
             "request_ip": request_ip,
         }
-        return deepcopy(user)
 
     def get_user_by_session(self, session_hash: str) -> dict | None:
         session = self.sessions.get(session_hash)
@@ -769,98 +791,134 @@ class PostgresRepository:
                     where scholar_id = :scholar_id
                 """), {"scholar_id": scholar_id, "retry": retry})
 
-    def create_login_token(
-        self,
-        email: str,
-        token_hash: str,
-        expires_at: datetime,
-        request_ip: str | None = None,
-    ) -> None:
-        normalized_email = email.strip().lower()
+    def create_password_user(self, username: str, password_hash: str) -> dict:
+        normalized_username = username.strip().casefold()
+        try:
+            with self.engine.begin() as conn:
+                row = conn.execute(text("""
+                    insert into public.app_users (
+                        username, normalized_username, password_hash
+                    ) values (
+                        :username, :normalized_username, :password_hash
+                    )
+                    returning id, username, normalized_username, password_hash, is_active
+                """), {
+                    "username": username.strip(),
+                    "normalized_username": normalized_username,
+                    "password_hash": password_hash,
+                }).mappings().one()
+        except IntegrityError as exc:
+            if "app_users_normalized_username" in str(exc):
+                raise UsernameTaken("Username already exists") from exc
+            raise
+        return {**dict(row), "id": str(row["id"])}
+
+    def set_password(self, username: str, password_hash: str) -> bool:
         with self.engine.begin() as conn:
-            conn.execute(
-                text("select pg_advisory_xact_lock(hashtextextended(:email, 0))"),
-                {"email": normalized_email},
-            )
-            email_count = conn.execute(text("""
-                select count(*) from public.auth_login_tokens
-                where normalized_email = :email
+            user_id = conn.execute(text("""
+                update public.app_users
+                set password_hash = :password_hash, updated_at = now()
+                where normalized_username = :normalized_username
+                returning id
+            """), {
+                "normalized_username": username.strip().casefold(),
+                "password_hash": password_hash,
+            }).scalar_one_or_none()
+            if user_id:
+                conn.execute(text("""
+                    update public.user_sessions
+                    set revoked_at = now()
+                    where user_id = :user_id and revoked_at is null
+                """), {"user_id": user_id})
+        return user_id is not None
+
+    def list_users(self) -> list[dict]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                select id, username, is_active
+                from public.app_users
+                order by normalized_username
+            """)).mappings().all()
+        return [
+            {"id": str(row["id"]), "username": row["username"], "is_active": row["is_active"]}
+            for row in rows
+        ]
+
+    def get_user_for_login(self, username: str) -> dict | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(text("""
+                select id, username, normalized_username, password_hash, is_active
+                from public.app_users
+                where normalized_username = :normalized_username
+            """), {"normalized_username": username.strip().casefold()}).mappings().first()
+        return {**dict(row), "id": str(row["id"])} if row else None
+
+    def enforce_login_rate_limit(self, username: str, request_ip: str | None) -> None:
+        normalized_username = username.strip().casefold()
+        with self.engine.connect() as conn:
+            username_failures = conn.execute(text("""
+                select count(*) from public.auth_login_attempts
+                where normalized_username = :normalized_username
+                  and success = false
                   and created_at >= now() - interval '15 minutes'
-            """), {"email": normalized_email}).scalar_one()
-            ip_count = 0
+            """), {"normalized_username": normalized_username}).scalar_one()
+            ip_failures = 0
             if request_ip:
-                ip_count = conn.execute(text("""
-                    select count(*) from public.auth_login_tokens
+                ip_failures = conn.execute(text("""
+                    select count(*) from public.auth_login_attempts
                     where request_ip = cast(:request_ip as inet)
+                      and success = false
                       and created_at >= now() - interval '15 minutes'
                 """), {"request_ip": request_ip}).scalar_one()
-            if email_count >= 3 or ip_count >= 20:
-                raise LoginRateLimitExceeded("Too many login emails requested")
+        if username_failures >= 5 or ip_failures >= 20:
+            raise LoginRateLimitExceeded("Too many failed login attempts")
+
+    def record_login_attempt(self, username: str, request_ip: str | None, success: bool) -> None:
+        with self.engine.begin() as conn:
             conn.execute(text("""
-                insert into public.auth_login_tokens (
-                    email, normalized_email, token_hash, expires_at, request_ip
+                insert into public.auth_login_attempts (
+                    normalized_username, request_ip, success
                 ) values (
-                    :email, :normalized_email, :token_hash, :expires_at,
-                    cast(:request_ip as inet)
+                    :normalized_username, cast(:request_ip as inet), :success
                 )
             """), {
-                "email": email.strip(),
-                "normalized_email": normalized_email,
-                "token_hash": token_hash,
-                "expires_at": expires_at,
+                "normalized_username": username.strip().casefold(),
                 "request_ip": request_ip,
+                "success": success,
             })
 
-    def consume_login_token(
+    def create_user_session(
         self,
-        token_hash: str,
+        user_id: str,
         session_hash: str,
         session_expires_at: datetime,
         user_agent: str = "",
         request_ip: str | None = None,
-    ) -> dict | None:
+    ) -> None:
         with self.engine.begin() as conn:
-            token = conn.execute(text("""
-                update public.auth_login_tokens
-                set consumed_at = now()
-                where token_hash = :token_hash
-                  and consumed_at is null
-                  and expires_at > now()
-                returning email, normalized_email
-            """), {"token_hash": token_hash}).mappings().first()
-            if not token:
-                return None
-            user = conn.execute(text("""
-                insert into public.app_users (email, normalized_email, last_login_at)
-                values (:email, :normalized_email, now())
-                on conflict (normalized_email) do update set
-                    email = excluded.email,
-                    last_login_at = now(),
-                    updated_at = now()
-                returning id, email, is_active
-            """), dict(token)).mappings().one()
-            if not user["is_active"]:
-                return None
             conn.execute(text("""
                 insert into public.user_sessions (
                     user_id, token_hash, expires_at, user_agent, request_ip
                 ) values (
-                    :user_id, :token_hash, :expires_at, :user_agent,
+                    cast(:user_id as uuid), :token_hash, :expires_at, :user_agent,
                     cast(:request_ip as inet)
                 )
             """), {
-                "user_id": user["id"],
+                "user_id": user_id,
                 "token_hash": session_hash,
                 "expires_at": session_expires_at,
                 "user_agent": user_agent[:1000],
                 "request_ip": request_ip,
             })
-        return {"id": str(user["id"]), "email": user["email"]}
+            conn.execute(text("""
+                update public.app_users set last_login_at = now(), updated_at = now()
+                where id = cast(:user_id as uuid)
+            """), {"user_id": user_id})
 
     def get_user_by_session(self, session_hash: str) -> dict | None:
         with self.engine.begin() as conn:
             row = conn.execute(text("""
-                select u.id, u.email
+                select u.id, u.username
                 from public.user_sessions s
                 join public.app_users u on u.id = s.user_id
                 where s.token_hash = :token_hash
@@ -875,7 +933,7 @@ class PostgresRepository:
                     where token_hash = :token_hash
                       and last_seen_at < now() - interval '5 minutes'
                 """), {"token_hash": session_hash})
-        return {"id": str(row["id"]), "email": row["email"]} if row else None
+        return {"id": str(row["id"]), "username": row["username"]} if row else None
 
     def revoke_session(self, session_hash: str) -> None:
         with self.engine.begin() as conn:
@@ -947,7 +1005,7 @@ class PostgresRepository:
             deleted = 0
             for statement in (
                 "delete from public.refresh_jobs where status in ('succeeded', 'failed') and updated_at < now() - interval '30 days'",
-                "delete from public.auth_login_tokens where expires_at < now() - interval '1 day'",
+                "delete from public.auth_login_attempts where created_at < now() - interval '1 day'",
                 "delete from public.user_sessions where expires_at < now() - interval '7 days' or revoked_at < now() - interval '7 days'",
             ):
                 deleted += conn.execute(text(statement)).rowcount

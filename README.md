@@ -9,7 +9,7 @@
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保存一份最新成功画像 JSONB 以快速加载。
 - 首次生成通过 NDJSON 展示进度；过期画像立即返回旧版本并进入后台刷新队列。
 - 收藏学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
-- 自有邮箱 Magic Link 登录、HttpOnly Cookie 会话、私有历史和收藏。
+- 管理员创建的本地账号密码登录、HttpOnly Cookie 会话、私有历史和收藏；所有查询接口均要求登录。
 - PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送版本变化，前端自动加载新版画像。
 - 全量论文游标分页；合作节点以 OpenAlex ID 为事实主键，同名作者显示机构或短 ID。
 
@@ -23,7 +23,7 @@
 | 工作流 | LangGraph |
 | 数据源 | OpenAlex；可选 OpenAI 兼容 LLM |
 | 数据库 | PostgreSQL 17、Alembic |
-| 身份认证 | 自有一次性 Magic Link、SMTP、服务端会话 Cookie |
+| 身份认证 | 本地账号密码、scrypt 密码摘要、服务端会话 Cookie |
 | 实时更新 | PostgreSQL `LISTEN/NOTIFY`、Server-Sent Events |
 | 后台更新 | 独立 worker、`FOR UPDATE SKIP LOCKED` |
 
@@ -100,10 +100,9 @@ nano .env
 
 ```dotenv
 APP_ENV=production
-AUTH_DEV_RETURN_MAGIC_LINK=false
 ```
 
-如果要启用邮箱登录，还必须填写 `SMTP_HOST`、`SMTP_PORT`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`SMTP_FROM` 和 SSL/STARTTLS 选项。SMTP 未配置时，公开搜索和画像仍可使用，但登录、历史和收藏不可用。`LLM_*` 可留空，系统会使用确定性规则分析。
+本地账号不依赖邮箱、短信或第三方平台。`LLM_*` 可留空，系统会使用确定性规则分析。
 
 ### 3. 启动并验收
 
@@ -111,6 +110,7 @@ AUTH_DEV_RETURN_MAGIC_LINK=false
 
 ```bash
 ./deploy/deploy.sh
+docker compose exec -it web python manage_users.py create admin
 curl -fsS "https://你的域名/api/health"
 curl -fsS "https://你的域名/api/ready"
 docker compose ps
@@ -122,16 +122,15 @@ docker compose ps
 docker compose logs --tail=200 web worker gateway
 ```
 
-如果登录弹窗或邮件里的链接以 `http://localhost/api/auth/callback` 开头，说明 Web 容器没有加载正确的生产配置。不要继续使用该链接；检查并修复后重新申请：
+首次部署后必须在服务器终端创建至少一个账号。密码不会显示，也不会写入 shell 历史；要求至少 12 位：
 
 ```bash
-grep -E '^(APP_ENV|PUBLIC_APP_URL|AUTH_DEV_RETURN_MAGIC_LINK|COOKIE_SECURE)=' .env
-docker compose exec web sh -lc 'printf "%s\n" "APP_ENV=$APP_ENV" "PUBLIC_APP_URL=$PUBLIC_APP_URL" "AUTH_DEV_RETURN_MAGIC_LINK=$AUTH_DEV_RETURN_MAGIC_LINK" "COOKIE_SECURE=$COOKIE_SECURE"'
-nano .env
-./deploy/deploy.sh
+docker compose exec -it web python manage_users.py create admin
+docker compose exec web python manage_users.py list
+docker compose exec -it web python manage_users.py reset-password admin
 ```
 
-公网 IP 模式应使用 `PUBLIC_APP_URL=http://公网IP`；域名模式应使用 `PUBLIC_APP_URL=https://域名`。生产脚本和后端都会拒绝空地址、`localhost` 或回环地址，避免发送无法访问的 Magic Link。
+用户名为 3–64 位，只允许字母、数字、点、下划线和短横线。系统没有公开注册入口，只有能进入服务器终端的管理员可以新增或重置账号。
 
 ### 4. 后续更新
 
@@ -141,28 +140,31 @@ git pull --ff-only
 ./deploy/deploy.sh
 ```
 
-Alembic 会在应用启动前自动执行尚未应用的迁移。不要运行 `docker compose down -v`，`-v` 会删除 PostgreSQL、备份和 Caddy 证书数据卷。普通停机使用：
+需要重新构建：后端、前端和依赖都封装在镜像内，`deploy.sh` 已执行 `docker compose up -d --build`，并会在启动 Web 前自动运行 Alembic 迁移。不要运行 `docker compose down -v`，`-v` 会删除 PostgreSQL、备份和 Caddy 证书数据卷。普通停机使用：
 
 ```bash
 docker compose down
 ```
 
-仅 IP 的 HTTP 模式适合短期验收，不适合承载真实邮箱登录。绑定域名后，把三项 URL/Host 配置切到域名、设 `COOKIE_SECURE=true`，再重新执行部署脚本。
+仅 IP 的 HTTP 模式适合短期验收，账号密码和 Cookie 会以明文 HTTP 传输。正式使用前应绑定域名，把三项 URL/Host 配置切到域名、设 `COOKIE_SECURE=true`，再重新执行部署脚本。
 
 ## 一键本地运行
 
-需要 Docker Desktop 和 Docker Compose。为避免服务器误用开发配置，Compose 默认按生产安全模式关闭测试链接；本地无 `.env` 启动时显式传入开发参数：
+需要 Docker Desktop 和 Docker Compose。本地无 `.env` 启动时显式传入开发参数：
 
 ```bash
 APP_ENV=development \
 PUBLIC_APP_URL=http://localhost \
 CORS_ALLOWED_ORIGINS=http://localhost \
 COOKIE_SECURE=false \
-AUTH_DEV_RETURN_MAGIC_LINK=true \
 docker compose up -d --build --wait
 ```
 
-打开 <http://localhost>。开发模式且未配置 SMTP 时，登录弹窗会显示测试 Magic Link；生产环境的部署脚本会强制关闭此行为。
+创建本地账号后打开 <http://localhost>：
+
+```bash
+docker compose exec -it web python manage_users.py create admin
+```
 
 ## 从源码开发
 
@@ -182,10 +184,7 @@ npm run db:migrate
 
 ```bash
 export DATABASE_URL='postgresql://scholar_app:app-dev-only@127.0.0.1:55432/scholar_profile'
-export APP_ENV=development
-export PUBLIC_APP_URL=http://localhost:5173
 export COOKIE_SECURE=false
-export AUTH_DEV_RETURN_MAGIC_LINK=true
 ```
 
 分别启动三个进程：
@@ -212,7 +211,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 
 - 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`authorships`
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
-- 用户与会话：`app_users`、`auth_login_tokens`、`user_sessions`、`user_history`、`favorites`
+- 用户与会话：`app_users`、`auth_login_attempts`、`user_sessions`、`user_history`、`favorites`
 
 数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
 
@@ -221,17 +220,16 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | 接口 | 鉴权 | 说明 |
 |------|------|------|
 | `GET /api/health`、`GET /api/ready` | 公开 | 进程与数据库健康检查 |
-| `GET /api/search?name=...` | 公开 | 搜索候选学者 |
-| `POST /api/profile` | 可匿名 | 返回最新画像；登录后记录历史 |
-| `POST /api/profile/stream` | 可匿名 | 冷启动 NDJSON 进度流 |
-| `GET /api/authors/{author_id}/works` | 公开 | 全量论文游标分页 |
-| `POST /api/auth/magic-link` | 公开、限速 | 发送一次性登录链接 |
-| `GET /api/auth/callback` | 公开 | 消费链接并设置会话 Cookie |
+| `GET /api/search?name=...` | 必须登录 | 搜索候选学者 |
+| `POST /api/profile` | 必须登录 | 返回最新画像并记录当前用户历史 |
+| `POST /api/profile/stream` | 必须登录 | 冷启动 NDJSON 进度流 |
+| `GET /api/authors/{author_id}/works` | 必须登录 | 全量论文游标分页 |
+| `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
 | `GET /api/auth/me` | 可匿名 | 查询当前会话 |
 | `POST /api/auth/logout` | 可匿名 | 注销当前会话 |
 | `GET /api/history` | 必须登录 | 当前用户历史 |
 | `GET/POST/DELETE /api/favorites...` | 必须登录 | 当前用户收藏 |
-| `GET /api/profiles/{scholar_id}/events` | 公开 | 画像状态 SSE |
+| `GET /api/profiles/{scholar_id}/events` | 必须登录 | 画像状态 SSE |
 
 ## 测试
 
@@ -270,8 +268,8 @@ docker compose --profile backup run --rm backup
 backend/
   main.py          # FastAPI、NDJSON、Auth 与 SSE
   repository.py    # PostgreSQL Repository
-  auth.py          # Cookie 会话依赖
-  mailer.py        # SMTP Magic Link
+  auth.py          # 密码摘要与 Cookie 会话依赖
+  manage_users.py  # 服务器端本地账号管理命令
   events.py        # LISTEN/NOTIFY 到 SSE
   worker.py        # 刷新与维护 worker
   migrations/      # Alembic 迁移

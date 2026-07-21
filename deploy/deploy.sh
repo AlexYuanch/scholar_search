@@ -23,11 +23,6 @@ if [ "$(env_value APP_ENV)" != "production" ]; then
     exit 1
 fi
 
-if [ "$(env_value AUTH_DEV_RETURN_MAGIC_LINK)" != "false" ]; then
-    echo "生产环境必须设置 AUTH_DEV_RETURN_MAGIC_LINK=false。" >&2
-    exit 1
-fi
-
 PUBLIC_HOST=$(env_value PUBLIC_HOST)
 PUBLIC_APP_URL=$(env_value PUBLIC_APP_URL)
 CORS_ALLOWED_ORIGINS=$(env_value CORS_ALLOWED_ORIGINS)
@@ -77,7 +72,7 @@ if [ "$PUBLIC_HOST" = ":80" ]; then
         echo "仅 IP/HTTP 部署必须设置 COOKIE_SECURE=false。" >&2
         exit 1
     fi
-    echo "警告：当前使用 HTTP，登录 Cookie 和邮件链接不会被 TLS 保护。建议绑定域名后启用 HTTPS。" >&2
+    echo "警告：当前使用 HTTP，登录 Cookie 不受 TLS 保护。建议绑定域名后启用 HTTPS。" >&2
 else
     case "$PUBLIC_APP_URL" in
         https://*) ;;
@@ -87,17 +82,6 @@ else
         echo "HTTPS 部署必须设置 COOKIE_SECURE=true。" >&2
         exit 1
     fi
-fi
-
-SMTP_HOST=$(env_value SMTP_HOST)
-if [ -z "$SMTP_HOST" ]; then
-    echo "警告：SMTP_HOST 为空，应用可运行，但邮箱登录暂不可用。" >&2
-elif [ -z "$(env_value SMTP_USERNAME)" ] || [ -z "$(env_value SMTP_PASSWORD)" ] || [ -z "$(env_value SMTP_FROM)" ]; then
-    echo "配置 SMTP_HOST 后，SMTP_USERNAME、SMTP_PASSWORD 和 SMTP_FROM 也必须填写。" >&2
-    exit 1
-elif [ "$(env_value SMTP_USE_SSL)" = "true" ] && [ "$(env_value SMTP_STARTTLS)" = "true" ]; then
-    echo "SMTP_USE_SSL 和 SMTP_STARTTLS 不能同时为 true。" >&2
-    exit 1
 fi
 
 docker compose config --quiet

@@ -266,7 +266,6 @@ if [[ -z "$app_password" || "$app_password" == REPLACE_WITH_* || "$app_password"
 fi
 
 set_env APP_ENV "production"
-set_env AUTH_DEV_RETURN_MAGIC_LINK "false"
 set_env DATABASE_POOL_SIZE "3"
 set_env DATABASE_MAX_OVERFLOW "2"
 

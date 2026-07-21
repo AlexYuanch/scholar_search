@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is n
 
 EXPECTED_TABLES = {
     "app_users",
-    "auth_login_tokens",
+    "auth_login_attempts",
     "authorships",
     "favorites",
     "institutions",
@@ -47,6 +47,24 @@ def test_application_role_cannot_create_tables():
     with psycopg.connect(DATABASE_URL) as connection:
         with pytest.raises(errors.InsufficientPrivilege):
             connection.execute("create table public.should_not_exist (id integer)")
+
+
+def test_local_password_user_columns_are_present():
+    with psycopg.connect(DATABASE_URL) as connection:
+        columns = {
+            row[0]: row[1]
+            for row in connection.execute("""
+                select column_name, is_nullable
+                from information_schema.columns
+                where table_schema = 'public' and table_name = 'app_users'
+            """)
+        }
+
+    assert columns["username"] == "NO"
+    assert columns["normalized_username"] == "NO"
+    assert columns["password_hash"] == "NO"
+    assert "email" not in columns
+    assert "normalized_email" not in columns
 
 
 def test_profile_status_emits_postgres_notification():

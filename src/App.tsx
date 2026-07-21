@@ -296,7 +296,7 @@ function ProfileSection({
 
 export default function App() {
   const { t, lang, setLang } = useTranslation()
-  const { user, configured: authConfigured, signOut } = useAuth()
+  const { user, loading: authLoading, signOut } = useAuth()
 
   // 搜索状态
   const [query, setQuery] = useState("")
@@ -444,7 +444,7 @@ export default function App() {
   }, [profile, user])
 
   useEffect(() => {
-    if (!profile?.scholarId) return
+    if (!user || !profile?.scholarId) return
     const scholarId = profile.scholarId
     const currentVersion = profile.profileVersion
     const eventSource = new EventSource(profileEventsUrl(scholarId, currentVersion))
@@ -464,7 +464,7 @@ export default function App() {
     }
     eventSource.addEventListener("profile", onProfile as EventListener)
     return () => eventSource.close()
-  }, [profile?.authorId, profile?.profileVersion, profile?.scholarId, t])
+  }, [profile?.authorId, profile?.profileVersion, profile?.scholarId, t, user])
 
   const handleToggleFavorite = useCallback(async () => {
     if (!profile) return
@@ -483,6 +483,10 @@ export default function App() {
 
   // 搜索
   const handleSearch = useCallback(async () => {
+    if (!user) {
+      setAuthDialogOpen(true)
+      return
+    }
     const q = query.trim()
     if (!q) return
     setLoading(true)
@@ -503,7 +507,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [loadProfile, query, t])
+  }, [loadProfile, query, t, user])
 
   // 图谱交互
   const handleEdgeClick = useCallback((data: {
@@ -601,6 +605,7 @@ export default function App() {
 
             {user ? (
               <>
+                <span className="hidden text-xs text-muted-foreground sm:inline">{user.username}</span>
                 <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.history")} onClick={() => setAccountMode("history")}>
                   <History className="h-4 w-4" />
                 </Button>
@@ -615,7 +620,7 @@ export default function App() {
                 </Button>
               </>
             ) : (
-              <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" disabled={!authConfigured} onClick={() => setAuthDialogOpen(true)}>
+              <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => setAuthDialogOpen(true)}>
                 <LogIn className="h-3.5 w-3.5" />{t("auth.sign_in")}
               </Button>
             )}
@@ -861,7 +866,12 @@ export default function App() {
         t={t}
         fullscreen={graphFullscreen}
       />
-      <AuthDialog open={authDialogOpen} onClose={() => setAuthDialogOpen(false)} t={t} />
+      <AuthDialog
+        open={authDialogOpen || (!authLoading && !user)}
+        required={!user}
+        onClose={() => setAuthDialogOpen(false)}
+        t={t}
+      />
       <AccountPanel mode={accountMode} onClose={() => setAccountMode(null)} onSelect={handleAccountSelect} t={t} />
     </div>
   )
