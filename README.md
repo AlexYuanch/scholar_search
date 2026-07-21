@@ -122,6 +122,17 @@ docker compose ps
 docker compose logs --tail=200 web worker gateway
 ```
 
+如果登录弹窗或邮件里的链接以 `http://localhost/api/auth/callback` 开头，说明 Web 容器没有加载正确的生产配置。不要继续使用该链接；检查并修复后重新申请：
+
+```bash
+grep -E '^(APP_ENV|PUBLIC_APP_URL|AUTH_DEV_RETURN_MAGIC_LINK|COOKIE_SECURE)=' .env
+docker compose exec web sh -lc 'printf "%s\n" "APP_ENV=$APP_ENV" "PUBLIC_APP_URL=$PUBLIC_APP_URL" "AUTH_DEV_RETURN_MAGIC_LINK=$AUTH_DEV_RETURN_MAGIC_LINK" "COOKIE_SECURE=$COOKIE_SECURE"'
+nano .env
+./deploy/deploy.sh
+```
+
+公网 IP 模式应使用 `PUBLIC_APP_URL=http://公网IP`；域名模式应使用 `PUBLIC_APP_URL=https://域名`。生产脚本和后端都会拒绝空地址、`localhost` 或回环地址，避免发送无法访问的 Magic Link。
+
 ### 4. 后续更新
 
 ```bash
@@ -140,9 +151,14 @@ docker compose down
 
 ## 一键本地运行
 
-需要 Docker Desktop 和 Docker Compose。未创建 `.env` 时使用开发默认值：
+需要 Docker Desktop 和 Docker Compose。为避免服务器误用开发配置，Compose 默认按生产安全模式关闭测试链接；本地无 `.env` 启动时显式传入开发参数：
 
 ```bash
+APP_ENV=development \
+PUBLIC_APP_URL=http://localhost \
+CORS_ALLOWED_ORIGINS=http://localhost \
+COOKIE_SECURE=false \
+AUTH_DEV_RETURN_MAGIC_LINK=true \
 docker compose up -d --build --wait
 ```
 

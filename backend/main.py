@@ -14,6 +14,7 @@ import queue
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -231,12 +232,58 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _public_app_url() -> str:
-    return os.getenv("PUBLIC_APP_URL", "http://localhost:5173").rstrip("/")
+def _is_loopback_hostname(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    normalized = hostname.rstrip(".").lower()
+    if normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _public_app_url(request: Request | None = None) -> str:
+    public_app_url = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
+    if not public_app_url:
+        raise HTTPException(
+            status_code=503,
+            detail="PUBLIC_APP_URL is required before email login can be used",
+        )
+
+    parsed = urlsplit(public_app_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="PUBLIC_APP_URL must be an absolute http(s) origin without a path",
+        )
+
+    configured_for_loopback = _is_loopback_hostname(parsed.hostname)
+    if os.getenv("APP_ENV", "production") == "production" and configured_for_loopback:
+        raise HTTPException(
+            status_code=503,
+            detail="PUBLIC_APP_URL cannot use localhost in production",
+        )
+    if request and configured_for_loopback and not _is_loopback_hostname(request.url.hostname):
+        raise HTTPException(
+            status_code=503,
+            detail="PUBLIC_APP_URL points to localhost but this request is using a public host",
+        )
+    return public_app_url
 
 
 @app.post("/api/auth/magic-link")
 def request_magic_link(req: MagicLinkRequest, request: Request):
+    public_app_url = _public_app_url(request)
     raw_token = generate_token()
     expires_at = datetime.now(timezone.utc) + timedelta(
         minutes=int(os.getenv("MAGIC_LINK_TTL_MINUTES", "15"))
@@ -251,10 +298,11 @@ def request_magic_link(req: MagicLinkRequest, request: Request):
     except LoginRateLimitExceeded as exc:
         raise HTTPException(status_code=429, detail="Please wait before requesting another login email") from exc
 
-    magic_link = f"{_public_app_url()}/api/auth/callback?token={raw_token}"
+    magic_link = f"{public_app_url}/api/auth/callback?token={raw_token}"
     dev_link_enabled = (
         os.getenv("APP_ENV", "production") == "development"
         and _env_bool("AUTH_DEV_RETURN_MAGIC_LINK")
+        and _is_loopback_hostname(urlsplit(public_app_url).hostname)
     )
     try:
         if mailer.configured:
@@ -276,6 +324,7 @@ def request_magic_link(req: MagicLinkRequest, request: Request):
 def auth_callback(token: str, request: Request):
     if len(token) < 32:
         raise HTTPException(status_code=400, detail="Invalid or expired login link")
+    public_app_url = _public_app_url(request)
     raw_session = generate_token()
     session_ttl_days = int(os.getenv("SESSION_TTL_DAYS", "30"))
     user = repository.consume_login_token(
@@ -288,7 +337,7 @@ def auth_callback(token: str, request: Request):
     if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired login link")
 
-    response = RedirectResponse(url=f"{_public_app_url()}/?login=success", status_code=303)
+    response = RedirectResponse(url=f"{public_app_url}/?login=success", status_code=303)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=raw_session,

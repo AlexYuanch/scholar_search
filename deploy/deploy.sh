@@ -40,6 +40,11 @@ if [ -z "$PUBLIC_HOST" ] || [ -z "$PUBLIC_APP_URL" ]; then
     exit 1
 fi
 
+if printf '%s\n' "$PUBLIC_APP_URL" | grep -Eqi '^https?://(localhost|127\.|\[::1\])([:/]|$)'; then
+    echo "PUBLIC_APP_URL 不能指向 localhost 或回环地址。" >&2
+    exit 1
+fi
+
 if [ "$CORS_ALLOWED_ORIGINS" != "$PUBLIC_APP_URL" ]; then
     echo "单域部署时 CORS_ALLOWED_ORIGINS 必须与 PUBLIC_APP_URL 完全一致。" >&2
     exit 1

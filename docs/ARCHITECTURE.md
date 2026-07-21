@@ -75,13 +75,14 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 原子领取任务，支持多实例并�
 ## 身份认证
 
 1. `POST /api/auth/magic-link` 规范化邮箱、限速并生成高熵随机 token。
-2. 数据库只保存 token 的 SHA-256 摘要；SMTP 邮件包含 `PUBLIC_APP_URL/api/auth/callback`。
-3. 回调在单次事务中锁定并消费 token，创建或读取用户，然后创建会话。
-4. 浏览器收到 `HttpOnly`、`SameSite=Lax` Cookie；生产环境同时启用 `Secure`。
-5. 私有接口从会话摘要解析用户，并在 Repository 查询中限制 `user_id`。
-6. 退出时服务端撤销会话并清除 Cookie。
+2. API 先校验 `PUBLIC_APP_URL` 是无路径的 HTTP(S) origin；生产环境拒绝空值、`localhost` 和回环地址。
+3. 数据库只保存 token 的 SHA-256 摘要；SMTP 邮件包含 `PUBLIC_APP_URL/api/auth/callback`。
+4. 回调在单次事务中锁定并消费 token，创建或读取用户，然后创建会话。
+5. 浏览器收到 `HttpOnly`、`SameSite=Lax` Cookie；生产环境同时启用 `Secure`。
+6. 私有接口从会话摘要解析用户，并在 Repository 查询中限制 `user_id`。
+7. 退出时服务端撤销会话并清除 Cookie。
 
-开发环境可通过 `AUTH_DEV_RETURN_MAGIC_LINK=true` 在 UI 显示测试链接；生产环境禁止启用。建议前后端同域部署，以简化 Cookie 和 CSRF 边界。
+开发环境只有在 `APP_ENV=development`、`AUTH_DEV_RETURN_MAGIC_LINK=true` 且 `PUBLIC_APP_URL` 指向本机回环地址时，才会在 UI 显示测试链接；生产环境禁止启用。公网请求遇到回环地址配置会返回 503，不创建或发送不可用 token。建议前后端同域部署，以简化 Cookie 和 CSRF 边界。
 
 ## 实时更新
 
@@ -102,7 +103,7 @@ SSE 连接断开不会影响画像生成，浏览器重连后会先读取当前 
 
 仓库提供两种兼容部署方式：
 
-1. **单机 Compose（当前交付）**：Caddy、Nginx 前端、Web、worker、迁移和 PostgreSQL 运行在一台 ECS。公网只暴露 Caddy 的 80/443，数据库端口仅绑定回环地址。`deploy/bootstrap-aliyun.sh` 可为 Ubuntu 24.04 ECS 安装 Docker、配置可选 ACR 加速、补充 Swap、生成首次配置与定时备份；`deploy/deploy.sh` 负责后续每次发布的配置校验、构建和健康等待。
+1. **单机 Compose（当前交付）**：Caddy、Nginx 前端、Web、worker、迁移和 PostgreSQL 运行在一台 ECS。公网只暴露 Caddy 的 80/443，数据库端口仅绑定回环地址。Compose 的 Auth 默认值按生产安全模式关闭开发链接且不回退到 `localhost`；`deploy/bootstrap-aliyun.sh` 可为 Ubuntu 24.04 ECS 安装 Docker、配置可选 ACR 加速、补充 Swap、生成首次配置与定时备份；`deploy/deploy.sh` 负责后续每次发布的配置校验、回环地址拒绝、构建和健康等待。
 2. **ECS + RDS（容量增长后）**：Caddy/Nginx、Web、worker 部署在 ECS，PostgreSQL 使用同 VPC 的 RDS。部署流水线先以迁移账号执行 Alembic，再启动受限账号的运行时服务。
 
 无论采用哪种方式，公网只暴露 80/443；生产必须使用 HTTPS、安全 Cookie、正式 SMTP、独立备份和恢复演练。

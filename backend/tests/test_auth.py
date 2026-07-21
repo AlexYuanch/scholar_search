@@ -9,6 +9,16 @@ from main import app
 from repository import InMemoryRepository
 
 
+class RecordingMailer:
+    configured = True
+
+    def __init__(self):
+        self.messages = []
+
+    def send_magic_link(self, email: str, magic_link: str) -> None:
+        self.messages.append((email, magic_link))
+
+
 def test_optional_auth_allows_anonymous_request():
     local_app = FastAPI()
     local_app.state.repository = InMemoryRepository()
@@ -77,7 +87,7 @@ def test_magic_link_is_one_time_and_creates_revocable_session(monkeypatch):
     monkeypatch.setenv("COOKIE_SECURE", "false")
     monkeypatch.setenv("PUBLIC_APP_URL", "http://localhost:5173")
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://localhost:5173") as client:
         requested = client.post("/api/auth/magic-link", json={"email": "User@Example.com"})
         assert requested.status_code == 200
         magic_link = requested.json()["dev_magic_link"]
@@ -96,6 +106,68 @@ def test_magic_link_is_one_time_and_creates_revocable_session(monkeypatch):
 
         assert client.post("/api/auth/logout").status_code == 200
         assert client.get("/api/auth/me").json()["authenticated"] is False
+
+
+def test_public_request_rejects_localhost_magic_link_configuration(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    mailer = RecordingMailer()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setattr(main, "mailer", mailer)
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("AUTH_DEV_RETURN_MAGIC_LINK", "true")
+    monkeypatch.setenv("PUBLIC_APP_URL", "http://localhost")
+
+    with TestClient(app, base_url="http://203.0.113.10") as client:
+        response = client.post("/api/auth/magic-link", json={"email": "user@example.com"})
+
+    assert response.status_code == 503
+    assert "PUBLIC_APP_URL" in response.json()["detail"]
+    assert mailer.messages == []
+
+
+def test_production_magic_link_requires_public_app_url(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    mailer = RecordingMailer()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setattr(main, "mailer", mailer)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+
+    with TestClient(app, base_url="https://scholar.example.com") as client:
+        response = client.post("/api/auth/magic-link", json={"email": "user@example.com"})
+
+    assert response.status_code == 503
+    assert "PUBLIC_APP_URL" in response.json()["detail"]
+    assert mailer.messages == []
+
+
+def test_production_magic_link_uses_configured_public_origin(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    mailer = RecordingMailer()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setattr(main, "mailer", mailer)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_DEV_RETURN_MAGIC_LINK", "true")
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://scholar.example.com/")
+
+    with TestClient(app, base_url="https://scholar.example.com") as client:
+        response = client.post("/api/auth/magic-link", json={"email": "user@example.com"})
+
+    assert response.status_code == 200
+    assert "dev_magic_link" not in response.json()
+    assert len(mailer.messages) == 1
+    assert mailer.messages[0][1].startswith(
+        "https://scholar.example.com/api/auth/callback?token="
+    )
 
 
 def test_token_hash_is_stable_and_does_not_store_raw_token():
