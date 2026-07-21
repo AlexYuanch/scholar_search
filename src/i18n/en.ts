@@ -39,12 +39,6 @@ const en: Record<string, string> = {
   "section.profile_summary": "Profile Summary",
   "section.evidence": "Evidence",
 
-  "cache.source_cache": "Cached",
-  "cache.source_live": "Live",
-  "cache.updated_at": "Updated",
-  "refresh.queued": "Queued for background refresh",
-  "refresh.updating": "Updating in the background",
-  "refresh.failed": "Refresh failed; showing the last successful version",
 
   "auth.title": "Account sign in",
   "auth.sign_in": "Sign in",

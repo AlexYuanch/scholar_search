@@ -39,7 +39,6 @@ const dagTiers: Array<{
 
 type Accent = "blue" | "green" | "purple" | "orange"
 type PanelPaper = string | { title: string; id?: string; topics?: string[] }
-type ProfileSource = "cache" | "live" | null
 
 // ── 指标卡片 ──────────────────────────────────────────────
 
@@ -103,7 +102,7 @@ function EvidenceList({ evidence, t }: { evidence: ScholarProfile["profileEviden
 
 function CandidateList({ candidates, onSelect, loading, t }: {
   candidates: Candidate[]
-  onSelect: (id: string) => void
+  onSelect: (candidate: Candidate) => void
   loading: boolean
   t: (k: string) => string
 }) {
@@ -123,7 +122,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
         {candidates.map((c) => (
           <Card key={c.id}
             className="cursor-pointer transition-colors hover:bg-muted/50"
-            onClick={() => onSelect(c.id)}
+            onClick={() => onSelect(c)}
           >
             <CardContent className="flex items-center justify-between p-4">
               <div className="flex items-center gap-3">
@@ -163,8 +162,6 @@ function CandidateList({ candidates, onSelect, loading, t }: {
 
 function ProfileSection({
   profile,
-  source,
-  updatedAt,
   favorite,
   onToggleFavorite,
   onEdgeClick,
@@ -173,8 +170,6 @@ function ProfileSection({
   t,
 }: {
   profile: ScholarProfile
-  source: ProfileSource
-  updatedAt: string
   favorite: boolean
   onToggleFavorite: () => void
   onEdgeClick?: (data: { sourceName: string; targetName: string; papers: PanelPaper[]; weight: number }) => void
@@ -198,13 +193,6 @@ function ProfileSection({
           </div>
         </div>
         <div className="flex flex-col items-start gap-2 sm:items-end">
-          <Badge variant={source === "cache" ? "secondary" : "outline"}>
-            {source === "cache" ? t("cache.source_cache") : t("cache.source_live")}
-          </Badge>
-          {profile.refreshStatus && profile.refreshStatus !== "ready" && (
-            <Badge variant="outline">{t(`refresh.${profile.refreshStatus}`)}</Badge>
-          )}
-          {updatedAt && <span className="text-xs text-muted-foreground">{t("cache.updated_at")} {updatedAt}</span>}
           <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onToggleFavorite}>
             <Heart className={`h-3.5 w-3.5 ${favorite ? "fill-current text-red-500" : ""}`} />
             {t(favorite ? "favorite.remove" : "favorite.add")}
@@ -302,8 +290,6 @@ export default function App() {
   const [query, setQuery] = useState("")
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [profile, setProfile] = useState<ScholarProfile | null>(null)
-  const [profileSource, setProfileSource] = useState<ProfileSource>(null)
-  const [profileUpdatedAt, setProfileUpdatedAt] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searched, setSearched] = useState(false)
@@ -361,8 +347,6 @@ export default function App() {
     setLoading(true)
     setError(null)
     setProfile(null)
-    setProfileSource(null)
-    setProfileUpdatedAt("")
     setFavorite(false)
     setCandidates([])
     setWorkflowStages([])
@@ -404,13 +388,6 @@ export default function App() {
           ))
         }
       },
-      onCacheHit: (updatedAt) => {
-        if (!isCurrent()) return
-        setWorkflowProgress(100)
-        setWorkflowMessage(`已加载历史缓存：${updatedAt}`)
-        setProfileSource("cache")
-        setProfileUpdatedAt(updatedAt)
-      },
       onResult: (data, meta) => {
         if (!isCurrent()) return
         setProfile({
@@ -418,8 +395,6 @@ export default function App() {
           profileVersion: meta.profileVersion ?? data.profileVersion,
           refreshStatus: (meta.refreshStatus as ScholarProfile["refreshStatus"]) ?? data.refreshStatus,
         })
-        setProfileSource((meta.source as ProfileSource) ?? "live")
-        setProfileUpdatedAt(meta.updatedAt ?? "")
         setLoading(false)
         setTimeout(() => setWorkflowStages([]), 600)
       },
@@ -454,7 +429,6 @@ export default function App() {
         if ((next.version ?? 0) <= currentVersion || next.status !== "ready") return
         void getProfile(profile.authorId).then((latest) => {
           setProfile(latest)
-          setProfileSource("cache")
           setLiveUpdateMessage(t("realtime.updated"))
           window.setTimeout(() => setLiveUpdateMessage(""), 5000)
         }).catch(() => undefined)
@@ -528,7 +502,13 @@ export default function App() {
     })
   }, [])
 
-  const handleViewProfile = useCallback(async (authorId: string) => {
+  const handleCandidateSelect = useCallback((candidate: Candidate) => {
+    setQuery(candidate.name)
+    void loadProfile(candidate.id)
+  }, [loadProfile])
+
+  const handleViewProfile = useCallback(async (authorId: string, scholarName: string) => {
+    setQuery(scholarName)
     await loadProfile(authorId)
   }, [loadProfile])
 
@@ -542,8 +522,6 @@ export default function App() {
     setQuery("")
     setCandidates([])
     setProfile(null)
-    setProfileSource(null)
-    setProfileUpdatedAt("")
     setError(null)
     setLoading(false)
     setWorkflowStages([])
@@ -634,6 +612,9 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <div className={panel && !graphFullscreen ? "lg:grid lg:grid-cols-[minmax(0,1fr)_clamp(22rem,32vw,30rem)]" : ""}>
+        <main className="min-w-0">
 
       {/* 搜索区 */}
       <section className={`relative overflow-hidden border-b bg-gradient-to-b from-background to-muted/30 ${graphFullscreen ? "hidden" : ""}`}>
@@ -832,15 +813,13 @@ export default function App() {
 
       {/* 候选人 */}
       {candidates.length > 0 && (
-        <CandidateList candidates={candidates} onSelect={loadProfile} loading={loading} t={t} />
+        <CandidateList candidates={candidates} onSelect={handleCandidateSelect} loading={loading} t={t} />
       )}
 
       {/* 画像 */}
       {profile && (
         <ProfileSection
           profile={profile}
-          source={profileSource}
-          updatedAt={profileUpdatedAt}
           favorite={Boolean(user) && favorite}
           onToggleFavorite={() => void handleToggleFavorite()}
           onEdgeClick={handleEdgeClick}
@@ -858,6 +837,8 @@ export default function App() {
         </div>
       )}
 
+        </main>
+
       {/* 侧面板 */}
       <SidePanel
         data={panel}
@@ -866,6 +847,7 @@ export default function App() {
         t={t}
         fullscreen={graphFullscreen}
       />
+      </div>
       <AuthDialog
         open={authDialogOpen || (!authLoading && !user)}
         required={!user}

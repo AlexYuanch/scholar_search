@@ -39,12 +39,6 @@ const zh: Record<string, string> = {
   "section.profile_summary": "学者总结",
   "section.evidence": "依据",
 
-  "cache.source_cache": "历史缓存",
-  "cache.source_live": "实时生成",
-  "cache.updated_at": "更新于",
-  "refresh.queued": "已进入后台更新队列",
-  "refresh.updating": "后台更新中",
-  "refresh.failed": "后台更新失败，当前显示上一成功版本",
 
   "auth.title": "账号登录",
   "auth.sign_in": "登录",

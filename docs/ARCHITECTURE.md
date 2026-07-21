@@ -52,20 +52,20 @@ flowchart LR
 
 ## 画像读写流程
 
-### 冷启动
+### 交互式查询
 
-1. API 无缓存时运行 LangGraph，通过 NDJSON 输出进度。
+1. `POST /api/profile/stream` 每次都运行 LangGraph，通过 NDJSON 输出进度，不以已有画像短路查询。
 2. OpenAlex 作者详情和论文游标分页必须完整结束。
 3. 质量检查比较 `works_count`、本次数量和上一成功数量。
 4. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
 5. `profile_status.version + 1` 并设为 `ready`；触发器发送轻量 PostgreSQL 通知。
 
-### 缓存与后台更新
+### 最近成功画像与后台更新
 
-- 最新画像未超过 7 天时直接返回。
-- 已过期时仍立即返回旧画像，并原子去重插入 `refresh_jobs`。
+- PostgreSQL 只保留每位学者最近一次通过质量检查的画像，供质量对比、论文分页和自动换版使用。
+- `POST /api/profile` 读取最近成功画像；前端交互式搜索统一使用 `/api/profile/stream` 获取当前数据。
 - 收藏学者使用 24 小时阈值；最近 30 天访问者使用 7 天阈值。
-- 其他学者再次访问过期画像时才入队。
+- 后台维护按阈值原子去重插入 `refresh_jobs`，不改变用户主动查询始终重新获取的行为。
 - 只有完整抓取成功才允许删除已消失的中心作者 authorship。
 
 ### Worker

@@ -6,12 +6,12 @@
 
 - 中文姓名同时检索原名、姓在前拼音和姓在后拼音；候选仅按 OpenAlex ID 去重，不按姓名合并。
 - LangGraph 分页获取全部论文，生成引用统计、研究方向、兴趣演化、代表论文和合作网络。
-- PostgreSQL 规范化保存学者、机构、论文和署名关系，并保存一份最新成功画像 JSONB 以快速加载。
-- 首次生成通过 NDJSON 展示进度；过期画像立即返回旧版本并进入后台刷新队列。
+- 每次用户发起画像查询都会重新获取 OpenAlex 当前数据，并通过 NDJSON 持续展示进度。
+- PostgreSQL 规范化保存学者、机构、论文和署名关系，并保留一份最近成功画像用于质量对比和自动更新。
 - 收藏学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
 - 用户自助注册本地账号并使用密码登录；HttpOnly Cookie 会话保护查询、私有历史和收藏。
 - PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送版本变化，前端自动加载新版画像。
-- 全量论文游标分页；合作节点以 OpenAlex ID 为事实主键，同名作者显示机构或短 ID。
+- 全量论文游标分页；合作图详情在桌面端使用自适应双栏，跳转合作者画像时同步当前搜索姓名。
 
 ## 技术栈
 
@@ -217,7 +217,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | `GET /api/health`、`GET /api/ready` | 公开 | 进程与数据库健康检查 |
 | `GET /api/search?name=...` | 必须登录 | 搜索候选学者 |
 | `POST /api/profile` | 必须登录 | 返回最新画像并记录当前用户历史 |
-| `POST /api/profile/stream` | 必须登录 | 冷启动 NDJSON 进度流 |
+| `POST /api/profile/stream` | 必须登录 | 重新获取当前数据并输出 NDJSON 进度流 |
 | `GET /api/authors/{author_id}/works` | 必须登录 | 全量论文游标分页 |
 | `POST /api/auth/register` | 公开、限速 | 创建本地账号并自动登录 |
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |

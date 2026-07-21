@@ -454,41 +454,6 @@ async def profile_stream(
 ):
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
     cached = await asyncio.to_thread(repository.get_profile, req.author_id)
-    if cached:
-        refresh_status = await asyncio.to_thread(_queue_stale_profile, req.author_id, cached)
-        await asyncio.to_thread(
-            _record_access,
-            req.author_id,
-            req.query_name or cached.get("query_name", ""),
-            user,
-        )
-
-        async def cached_generate():
-            yield json.dumps({"type": "init", "stages": STAGE_ORDER, "labels": STAGE_LABELS}) + "\n"
-            yield json.dumps({
-                "type": "progress",
-                "progress": 100,
-                "message": "已加载最新画像。" if refresh_status == "ready" else "已加载当前画像，后台正在更新。",
-            }, ensure_ascii=False) + "\n"
-            yield json.dumps({
-                "type": "cache_hit",
-                "author_id": req.author_id,
-                "updated_at": cached["updated_at"],
-                "refresh_status": refresh_status,
-            }, ensure_ascii=False) + "\n"
-            data = _payload_with_defaults(req.author_id, cached["payload"], cached)
-            data["refreshStatus"] = refresh_status
-            yield json.dumps({
-                "type": "result",
-                "source": "cache",
-                "updated_at": cached["updated_at"],
-                "profile_version": cached.get("profile_version", 0),
-                "refresh_status": refresh_status,
-                "data": data,
-            }, ensure_ascii=False) + "\n"
-
-        return StreamingResponse(cached_generate(), media_type="application/x-ndjson")
-
     state = default_state()
     state["target_author_id"] = req.author_id
 
@@ -585,11 +550,11 @@ async def profile_stream(
             }, ensure_ascii=False) + "\n"
             return
         final_state = result_holder[0]
-        assessment = assess_profile_quality(final_state)
+        assessment = assess_profile_quality(final_state, cached)
         if not assessment.publishable:
             yield json.dumps({
                 "type": "error",
-                "message": "画像数据未通过完整性检查，未发布到最新画像。",
+                "message": "本次获取的数据不完整，请稍后重试。",
                 "quality_flags": assessment.flags,
                 "node": current_stage,
             }, ensure_ascii=False) + "\n"
@@ -609,7 +574,7 @@ async def profile_stream(
         yield json.dumps({
             "type": "progress",
             "progress": 100,
-            "message": "画像生成完成，已发布为最新版本。",
+            "message": "已获取当前最新学者信息。",
         }, ensure_ascii=False) + "\n"
         yield json.dumps({
             "type": "result",

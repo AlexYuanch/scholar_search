@@ -15,7 +15,7 @@ interface PanelData {
 interface Props {
   data: PanelData | null
   onClose: () => void
-  onViewProfile: (authorId: string) => void
+  onViewProfile: (authorId: string, scholarName: string) => void
   t: (key: string) => string
   fullscreen?: boolean
 }
@@ -36,11 +36,22 @@ export default function SidePanel({ data, onClose, onViewProfile, t, fullscreen 
     : data.targetName
 
   return (
-    <aside
-      className={`fixed right-0 top-0 h-screen w-full max-w-md border-l bg-background shadow-xl transition-transform ${
-        fullscreen ? "z-[70]" : "z-[60]"
-      }`}
-    >
+    <>
+      {!fullscreen && (
+        <button
+          type="button"
+          aria-label={t("panel.close")}
+          className="fixed inset-0 z-50 bg-black/30 lg:hidden"
+          onClick={onClose}
+        />
+      )}
+      <aside
+        className={`fixed right-0 top-0 h-screen w-full max-w-md border-l bg-background shadow-xl ${
+          fullscreen
+            ? "z-[70]"
+            : "z-[60] lg:sticky lg:right-auto lg:top-14 lg:z-20 lg:h-[calc(100vh-3.5rem)] lg:max-w-none lg:self-start lg:shadow-none"
+        }`}
+      >
       <div className="flex h-full flex-col">
         <div className="flex items-start justify-between gap-3 border-b p-4">
           <div>
@@ -56,7 +67,11 @@ export default function SidePanel({ data, onClose, onViewProfile, t, fullscreen 
 
         <div className="flex-1 overflow-y-auto p-4">
           {data.type !== "edge" && data.targetId && data.type !== "center" && (
-            <Button className="mb-4 w-full" variant="outline" onClick={() => onViewProfile(data.targetId!)}>
+            <Button
+              className="mb-4 w-full"
+              variant="outline"
+              onClick={() => onViewProfile(data.targetId!, data.targetName)}
+            >
               {t("graph.view_profile")}
             </Button>
           )}
@@ -100,6 +115,7 @@ export default function SidePanel({ data, onClose, onViewProfile, t, fullscreen 
           )}
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   )
 }

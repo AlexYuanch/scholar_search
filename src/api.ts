@@ -70,10 +70,7 @@ export async function streamProfile(
     onInit: (stages: string[], labels: Record<string, string>) => void
     onStage: (node: string, status: string, label: string) => void
     onProgress?: (progress: number, message: string, node?: string) => void
-    onCacheHit?: (updatedAt: string) => void
     onResult: (data: ScholarProfile, meta: {
-      source?: string
-      updatedAt?: string
       profileVersion?: number
       refreshStatus?: string
     }) => void
@@ -81,7 +78,7 @@ export async function streamProfile(
   },
   options: StreamOptions = {},
 ): Promise<void> {
-  const { onInit, onStage, onProgress, onCacheHit, onResult, onError } = callbacks
+  const { onInit, onStage, onProgress, onResult, onError } = callbacks
   try {
     const res = await fetch(`${API_BASE}/profile/stream`, {
       method: 'POST',
@@ -111,10 +108,7 @@ export async function streamProfile(
           if (msg.type === 'init') onInit(msg.stages, msg.labels)
           else if (msg.type === 'stage') onStage(msg.node, msg.status, msg.label)
           else if (msg.type === 'progress') onProgress?.(msg.progress, msg.message, msg.node)
-          else if (msg.type === 'cache_hit') onCacheHit?.(msg.updated_at)
           else if (msg.type === 'result') onResult(msg.data, {
-            source: msg.source,
-            updatedAt: msg.updated_at,
             profileVersion: msg.profile_version,
             refreshStatus: msg.refresh_status,
           })
