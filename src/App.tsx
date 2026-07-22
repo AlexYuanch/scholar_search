@@ -18,6 +18,7 @@ import SidePanel from "@/components/SidePanel"
 import AllPapers from "@/components/AllPapers"
 import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
 import ScholarComparison from "@/components/ScholarComparison"
+import ResearchChanges from "@/components/ResearchChanges"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
@@ -232,6 +233,8 @@ function ProfileSection({
               <TopicsSection topics={profile.topics} />
             </CardContent>
           </Card>
+
+          <ResearchChanges profile={profile} t={t} />
 
           {profile.profileSummary && (
             <Card>
