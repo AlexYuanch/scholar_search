@@ -124,18 +124,18 @@ function CandidateList({ candidates, onSelect, loading, t }: {
             className="cursor-pointer transition-colors hover:bg-muted/50"
             onClick={() => onSelect(c)}
           >
-            <CardContent className="flex items-center justify-between p-4">
-              <div className="flex items-center gap-3">
+            <CardContent className="flex min-w-0 items-center justify-between gap-3 p-4">
+              <div className="flex min-w-0 items-center gap-3">
                 <Avatar className="h-10 w-10">
                   <AvatarFallback className="text-xs bg-primary/10 text-primary">
                     {c.name.split(" ").map(n => n[0]).join("")}
                   </AvatarFallback>
                 </Avatar>
-                <div>
+                <div className="min-w-0">
                   <p className="font-medium text-sm">{c.name}</p>
-                  <p className="max-w-xl text-xs text-muted-foreground">{institutionLabel(c)}</p>
+                  <p className="max-w-xl break-words text-xs text-muted-foreground">{institutionLabel(c)}</p>
                   {c.orcid && <p className="mt-0.5 text-xs text-muted-foreground">ORCID {c.orcid.replace("https://orcid.org/", "")}</p>}
-                  <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span>{c.works_count} {t("candidate.papers")}</span>
                     <span>{c.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
                     <span>h-index {c.h_index}</span>
@@ -180,16 +180,16 @@ function ProfileSection({
   return (
     <section className="mx-auto max-w-5xl px-6 py-10">
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-4">
-          <Avatar className="h-20 w-20 border-2">
+        <div className="flex min-w-0 items-start gap-4">
+          <Avatar className="h-16 w-16 shrink-0 border-2 sm:h-20 sm:w-20">
             <AvatarFallback className="text-2xl font-semibold bg-primary/10 text-primary">
               {profile.name.split(" ").map(n => n[0]).join("")}
             </AvatarFallback>
           </Avatar>
-          <div>
-            <h2 className="text-2xl font-bold">{profile.name}</h2>
-            {profile.department && <p className="text-muted-foreground">{profile.department}</p>}
-            <p className="text-sm text-muted-foreground">{profile.institution}</p>
+          <div className="min-w-0">
+            <h2 className="break-words text-xl font-bold sm:text-2xl">{profile.name}</h2>
+            {profile.department && <p className="break-words text-muted-foreground">{profile.department}</p>}
+            <p className="break-words text-sm text-muted-foreground">{profile.institution}</p>
           </div>
         </div>
         <div className="flex flex-col items-start gap-2 sm:items-end">
@@ -203,7 +203,7 @@ function ProfileSection({
       <Separator className="my-6" />
 
       <Tabs defaultValue="overview">
-        <TabsList>
+        <TabsList className="grid w-full grid-cols-3 sm:inline-flex sm:w-auto">
           <TabsTrigger value="overview">{t("tab.overview")}</TabsTrigger>
           <TabsTrigger value="papers">{t("tab.papers")}</TabsTrigger>
           <TabsTrigger value="network">{t("tab.network")}</TabsTrigger>
@@ -221,7 +221,7 @@ function ProfileSection({
               <CardTitle className="text-base">{t("section.research_directions")}</CardTitle>
               <CardDescription>{t("section.research_desc")}</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="p-3 sm:p-6">
               <TopicsSection topics={profile.topics} />
             </CardContent>
           </Card>
@@ -257,7 +257,7 @@ function ProfileSection({
               <CardTitle className="text-base">{t("section.collab_network")}</CardTitle>
               <CardDescription>{t("section.collab_desc")}</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="p-3 sm:p-6">
               <Suspense fallback={<div className="flex h-[520px] items-center justify-center text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" /></div>}>
                 <CollaborationGraph
                   name={profile.name}
@@ -344,6 +344,7 @@ export default function App() {
     requestSeqRef.current = requestId
     const isCurrent = () => requestSeqRef.current === requestId && !controller.signal.aborted
     setPanel(null)
+    setAccountMode(null)
     setLoading(true)
     setError(null)
     setProfile(null)
@@ -468,6 +469,7 @@ export default function App() {
     setProfile(null)
     setCandidates([])
     setPanel(null)
+    setAccountMode(null)
     setSearched(true)
     try {
       const results = await searchAuthors(q)
@@ -487,12 +489,14 @@ export default function App() {
   const handleEdgeClick = useCallback((data: {
     sourceName: string; targetName: string; papers: PanelPaper[]; weight: number
   }) => {
+    setAccountMode(null)
     setPanel({ ...data, type: "edge" })
   }, [])
 
   const handleNodeClick = useCallback((data: {
     id: string; name: string; type: string; papers: PanelPaper[]; weight: number
   }) => {
+    setAccountMode(null)
     setPanel({
       type: data.type === "center" ? "center" : "coauthor",
       targetName: data.name,
@@ -512,10 +516,16 @@ export default function App() {
     await loadProfile(authorId)
   }, [loadProfile])
 
-  const handleAccountSelect = useCallback((authorId: string) => {
+  const handleAccountSelect = useCallback((authorId: string, scholarName: string) => {
     setAccountMode(null)
+    setQuery(scholarName)
     void loadProfile(authorId)
   }, [loadProfile])
+
+  const openAccountPanel = useCallback((mode: "history" | "favorites") => {
+    setPanel(null)
+    setAccountMode(mode)
+  }, [])
 
   const handleReset = useCallback(() => {
     abortRef.current?.abort()
@@ -529,6 +539,7 @@ export default function App() {
     setWorkflowMessage("")
     setSearched(false)
     setPanel(null)
+    setAccountMode(null)
   }, [])
 
   useEffect(() => {
@@ -541,21 +552,22 @@ export default function App() {
     { key: "purple", label: t("theme.purple"), color: "bg-[#a855f7]" },
     { key: "orange", label: t("theme.orange"), color: "bg-[#f97316]" },
   ]
+  const sidePanelOpen = Boolean((panel || accountMode) && !graphFullscreen)
 
   return (
     <div className="min-h-screen bg-background">
 
       {/* Navbar */}
       <header className={`sticky top-0 z-30 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 ${graphFullscreen ? "hidden" : ""}`}>
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-2 px-3 sm:px-6">
           <div className="flex items-center gap-2 font-semibold cursor-pointer" onClick={handleReset}>
             <BarChart3 className="h-5 w-5 text-primary" />
-            ScholarProfile
+            <span className="hidden sm:inline">ScholarProfile</span>
           </div>
 
           <div className="flex items-center gap-1">
             {/* 强调色切换 */}
-            <div className="hidden sm:flex items-center gap-0.5 mr-1 border rounded-md p-0.5">
+            <div className="mr-1 hidden items-center gap-0.5 rounded-md border p-0.5 lg:flex">
               {accents.map(a => (
                 <button
                   key={a.key}
@@ -583,18 +595,18 @@ export default function App() {
 
             {user ? (
               <>
-                <span className="hidden text-xs text-muted-foreground sm:inline">{user.username}</span>
-                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.history")} onClick={() => setAccountMode("history")}>
+                <span className="hidden text-xs text-muted-foreground xl:inline">{user.username}</span>
+                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.history")} onClick={() => openAccountPanel("history")}>
                   <History className="h-4 w-4" />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.favorites")} onClick={() => setAccountMode("favorites")}>
+                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.favorites")} onClick={() => openAccountPanel("favorites")}>
                   <Heart className="h-4 w-4" />
                 </Button>
                 <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => {
                   setFavorite(false)
                   void signOut()
                 }}>
-                  <LogOut className="h-3.5 w-3.5" />{t("auth.sign_out")}
+                  <LogOut className="h-3.5 w-3.5" /><span className="hidden md:inline">{t("auth.sign_out")}</span>
                 </Button>
               </>
             ) : (
@@ -606,30 +618,30 @@ export default function App() {
             {profile && (
               <Button variant="ghost" size="sm" className="h-8 ml-1" onClick={handleReset}>
                 <Search className="h-4 w-4 mr-1" />
-                {t("nav.new_search")}
+                <span className="hidden md:inline">{t("nav.new_search")}</span>
               </Button>
             )}
           </div>
         </div>
       </header>
 
-      <div className={panel && !graphFullscreen ? "lg:grid lg:grid-cols-[minmax(0,1fr)_clamp(22rem,32vw,30rem)]" : ""}>
+      <div className={sidePanelOpen ? "lg:grid lg:grid-cols-[minmax(0,1fr)_clamp(22rem,32vw,30rem)]" : ""}>
         <main className="min-w-0">
 
       {/* 搜索区 */}
       <section className={`relative overflow-hidden border-b bg-gradient-to-b from-background to-muted/30 ${graphFullscreen ? "hidden" : ""}`}>
-        <div className="mx-auto max-w-3xl px-6 py-12 sm:py-16 text-center">
+        <div className="mx-auto max-w-3xl px-4 py-10 text-center sm:px-6 sm:py-16">
           {!profile && (
             <>
-              <h1 className="mb-4 text-4xl font-bold tracking-tight sm:text-5xl">
+              <h1 className="mb-4 text-3xl font-bold tracking-tight sm:text-5xl">
                 {t("app.title")}
               </h1>
-              <p className="mx-auto mb-8 max-w-2xl text-lg text-muted-foreground">
+              <p className="mx-auto mb-8 max-w-2xl text-base text-muted-foreground sm:text-lg">
                 {t("app.subtitle")}
               </p>
             </>
           )}
-          <div className="mx-auto flex max-w-xl gap-2">
+          <div className="mx-auto flex max-w-xl flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
@@ -641,7 +653,7 @@ export default function App() {
                 className="h-11 w-full rounded-md border bg-background pl-9 pr-4 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
               />
             </div>
-            <Button size="lg" className="h-11" onClick={handleSearch} disabled={loading || !query.trim()}>
+            <Button size="lg" className="h-11 w-full sm:w-auto" onClick={handleSearch} disabled={loading || !query.trim()}>
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
               {loading ? t("search.loading") : t("search.button")}
             </Button>
@@ -651,13 +663,13 @@ export default function App() {
 
       {/* 错误提示 */}
       {error && (
-        <div className="mx-auto max-w-3xl px-6 pt-6">
+        <div className="mx-auto max-w-3xl px-4 pt-6 sm:px-6">
           <Card className="border-destructive/50 bg-destructive/5">
-            <CardContent className="flex items-center gap-3 p-4">
+            <CardContent className="flex flex-wrap items-center gap-3 p-4">
               <AlertCircle className="h-5 w-5 text-destructive shrink-0" />
-              <div className="text-sm">
+              <div className="min-w-0 flex-1 text-sm">
                 <p className="font-medium">{t("search.error")}</p>
-                <p className="text-muted-foreground">{error}</p>
+                <p className="break-words text-muted-foreground">{error}</p>
               </div>
               <Button variant="outline" size="sm" className="ml-auto" onClick={handleSearch}>
                 Retry
@@ -668,7 +680,7 @@ export default function App() {
       )}
 
       {liveUpdateMessage && (
-        <div className="fixed bottom-5 right-5 z-50 rounded-md border bg-background px-4 py-3 text-sm shadow-lg">
+        <div className="fixed bottom-4 left-1/2 z-[80] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 rounded-md border bg-background px-4 py-3 text-center text-sm shadow-lg sm:bottom-5">
           {liveUpdateMessage}
         </div>
       )}
@@ -847,6 +859,7 @@ export default function App() {
         t={t}
         fullscreen={graphFullscreen}
       />
+      <AccountPanel mode={accountMode} onClose={() => setAccountMode(null)} onSelect={handleAccountSelect} t={t} />
       </div>
       <AuthDialog
         open={authDialogOpen || (!authLoading && !user)}
@@ -854,7 +867,6 @@ export default function App() {
         onClose={() => setAuthDialogOpen(false)}
         t={t}
       />
-      <AccountPanel mode={accountMode} onClose={() => setAccountMode(null)} onSelect={handleAccountSelect} t={t} />
     </div>
   )
 }

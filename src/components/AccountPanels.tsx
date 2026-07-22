@@ -48,8 +48,8 @@ export function AuthDialog({ open, required = false, onClose, t }: {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <Card className="w-full max-w-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-3 sm:p-6">
+      <Card className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto sm:max-h-[calc(100dvh-3rem)]">
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-base">
             <LogIn className="h-4 w-4" />{t(registering ? "auth.register_title" : "auth.title")}
@@ -113,7 +113,7 @@ export function AuthDialog({ open, required = false, onClose, t }: {
 export function AccountPanel({ mode, onClose, onSelect, t }: {
   mode: "history" | "favorites" | null
   onClose: () => void
-  onSelect: (authorId: string) => void
+  onSelect: (authorId: string, scholarName: string) => void
   t: (key: string) => string
 }) {
   const [items, setItems] = useState<ScholarListItem[]>([])
@@ -147,38 +147,46 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
   }
 
   return (
-    <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose}>
-      <aside className="ml-auto h-full w-full max-w-md overflow-y-auto border-l bg-background p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
-        <div className="mb-4 flex items-center justify-between">
+    <>
+      <button
+        type="button"
+        aria-label={t("panel.close")}
+        className="fixed inset-0 z-40 bg-black/30 lg:hidden"
+        onClick={onClose}
+      />
+      <aside className="fixed right-0 top-0 z-50 flex h-[100dvh] w-full max-w-md flex-col border-l bg-background shadow-xl lg:sticky lg:right-auto lg:top-14 lg:z-20 lg:h-[calc(100dvh-3.5rem)] lg:max-w-none lg:self-start lg:shadow-none">
+        <div className="flex shrink-0 items-center justify-between border-b p-5">
           <h2 className="flex items-center gap-2 font-semibold">
             {mode === "history" ? <BookOpen className="h-4 w-4" /> : <Heart className="h-4 w-4" />}
             {t(mode === "history" ? "account.history" : "account.favorites")}
           </h2>
           <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
         </div>
-        {loading && <Loader2 className="mx-auto mt-12 h-6 w-6 animate-spin" />}
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        {!loading && !items.length && <p className="text-sm text-muted-foreground">{t("account.empty")}</p>}
-        <div className="space-y-2">
-          {items.map((item) => (
-            <Card key={item.author_id} className="cursor-pointer hover:bg-muted/50" onClick={() => onSelect(item.author_id)}>
-              <CardContent className="flex items-start justify-between p-4">
-                <div>
-                  <p className="text-sm font-medium">{item.name}</p>
-                  <p className="text-xs text-muted-foreground">{item.institution}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{item.total_papers ?? 0} {t("candidate.papers")}</p>
-                </div>
-                {mode === "favorites" && (
-                  <Button variant="ghost" size="icon" onClick={(event) => {
-                    event.stopPropagation()
-                    void remove(item)
-                  }}><X className="h-4 w-4" /></Button>
-                )}
-              </CardContent>
-            </Card>
-          ))}
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {loading && <Loader2 className="mx-auto mt-12 h-6 w-6 animate-spin" />}
+          {error && <p className="break-words text-sm text-destructive">{error}</p>}
+          {!loading && !items.length && <p className="text-sm text-muted-foreground">{t("account.empty")}</p>}
+          <div className="space-y-2">
+            {items.map((item) => (
+              <Card key={item.author_id} className="cursor-pointer hover:bg-muted/50" onClick={() => onSelect(item.author_id, item.name)}>
+                <CardContent className="flex min-w-0 items-start justify-between gap-2 p-4">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-medium">{item.name}</p>
+                    <p className="break-words text-xs text-muted-foreground">{item.institution}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{item.total_papers ?? 0} {t("candidate.papers")}</p>
+                  </div>
+                  {mode === "favorites" && (
+                    <Button className="shrink-0" variant="ghost" size="icon" onClick={(event) => {
+                      event.stopPropagation()
+                      void remove(item)
+                    }}><X className="h-4 w-4" /></Button>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </div>
       </aside>
-    </div>
+    </>
   )
 }

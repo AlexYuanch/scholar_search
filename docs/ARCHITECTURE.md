@@ -8,7 +8,7 @@ flowchart LR
   CADDY --> NGINX["React static + Nginx"]
   NGINX -->|"/api 同源代理"| API["FastAPI Web"]
   API -->|"SQLAlchemy + psycopg"| PG["PostgreSQL 17"]
-  API -->|"冷启动"| WF["LangGraph"]
+  API -->|"每次交互查询"| WF["LangGraph"]
   WF --> OA["OpenAlex"]
   MAINT["Worker 每小时维护"] --> JOB["refresh_jobs"]
   WORKER["Refresh worker"] -->|"SKIP LOCKED"| JOB
@@ -27,6 +27,8 @@ flowchart LR
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
 | 公网入口 | Caddy + Nginx | 自动 HTTPS、静态资源、同源 API 代理和日志 |
+
+前端将文章详情、查询历史和收藏作为同一类响应式侧栏：`lg` 及以上进入页面网格的独立列，主内容同步收缩；较窄视口改为带遮罩的抽屉，手机宽度占满屏幕。面板使用动态视口高度和内部滚动，长标题、机构名和论文信息允许换行，避免水平溢出。
 
 ## 数据模型
 

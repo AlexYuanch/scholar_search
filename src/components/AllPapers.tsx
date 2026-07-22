@@ -50,9 +50,9 @@ export default function AllPapers({ profile, t }: {
           <CardContent className="flex gap-3 p-4">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-xs">{index + 1}</div>
             <div className="min-w-0 flex-1">
-              {paper.id ? <a href={paper.id} target="_blank" rel="noreferrer" className="text-sm font-medium hover:underline">{paper.title}</a>
-                : <p className="text-sm font-medium">{paper.title}</p>}
-              <p className="text-xs text-muted-foreground">{paper.year} · {paper.journal} · {paper.citations} {t("candidate.citations")}</p>
+              {paper.id ? <a href={paper.id} target="_blank" rel="noreferrer" className="break-words text-sm font-medium hover:underline">{paper.title}</a>
+                : <p className="break-words text-sm font-medium">{paper.title}</p>}
+              <p className="break-words text-xs text-muted-foreground">{paper.year} · {paper.journal} · {paper.citations} {t("candidate.citations")}</p>
             </div>
           </CardContent>
         </Card>

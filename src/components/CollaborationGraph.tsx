@@ -230,7 +230,7 @@ export default function CollaborationGraph({
 
   return (
     <div className={fullscreen ? "fixed inset-0 z-50 bg-background p-4" : "relative"}>
-      <div className="mb-3 flex items-center justify-between gap-3">
+      <div className="mb-3 flex items-start justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <span className="inline-flex items-center gap-1">
             <span className="h-3 w-3 rounded-full bg-primary" />
@@ -249,7 +249,7 @@ export default function CollaborationGraph({
 
       <div
         ref={containerRef}
-        className={fullscreen ? "h-[calc(100vh-5rem)] rounded-md border bg-card" : "h-[520px] rounded-md border bg-card"}
+        className={fullscreen ? "h-[calc(100dvh-5rem)] rounded-md border bg-card" : "h-[clamp(22rem,58dvh,32.5rem)] rounded-md border bg-card"}
       />
 
       <p className="mt-2 text-xs text-muted-foreground">{t("graph.operate_hint")}</p>

@@ -46,16 +46,16 @@ export default function SidePanel({ data, onClose, onViewProfile, t, fullscreen 
         />
       )}
       <aside
-        className={`fixed right-0 top-0 h-screen w-full max-w-md border-l bg-background shadow-xl ${
+        className={`fixed right-0 top-0 h-[100dvh] w-full max-w-md border-l bg-background shadow-xl ${
           fullscreen
             ? "z-[70]"
-            : "z-[60] lg:sticky lg:right-auto lg:top-14 lg:z-20 lg:h-[calc(100vh-3.5rem)] lg:max-w-none lg:self-start lg:shadow-none"
+            : "z-[60] lg:sticky lg:right-auto lg:top-14 lg:z-20 lg:h-[calc(100dvh-3.5rem)] lg:max-w-none lg:self-start lg:shadow-none"
         }`}
       >
       <div className="flex h-full flex-col">
         <div className="flex items-start justify-between gap-3 border-b p-4">
-          <div>
-            <h3 className="text-base font-semibold leading-tight">{title}</h3>
+          <div className="min-w-0">
+            <h3 className="break-words text-base font-semibold leading-tight">{title}</h3>
             <p className="mt-1 text-xs text-muted-foreground">
               {data.weight} {t("graph.papers_coauthored")}
             </p>
@@ -65,7 +65,7 @@ export default function SidePanel({ data, onClose, onViewProfile, t, fullscreen 
           </Button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {data.type !== "edge" && data.targetId && data.type !== "center" && (
             <Button
               className="mb-4 w-full"
@@ -92,16 +92,16 @@ export default function SidePanel({ data, onClose, onViewProfile, t, fullscreen 
                           href={id}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex items-start gap-1 text-sm font-medium leading-snug text-primary hover:underline"
+                          className="flex min-w-0 items-start gap-1 break-words text-sm font-medium leading-snug text-primary hover:underline"
                         >
                           {paperTitle(paper)}
                           <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
                         </a>
                       ) : (
-                        <p className="text-sm font-medium leading-snug">{paperTitle(paper)}</p>
+                        <p className="break-words text-sm font-medium leading-snug">{paperTitle(paper)}</p>
                       )}
                       {typeof paper !== "string" && (paper.topics?.length ?? 0) > 0 && (
-                        <p className="mt-2 text-xs text-muted-foreground">
+                        <p className="mt-2 break-words text-xs text-muted-foreground">
                           {paper.topics?.slice(0, 3).join(" / ")}
                         </p>
                       )}
