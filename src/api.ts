@@ -3,6 +3,15 @@ import type { Candidate, ScholarProfile } from './types'
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
 const SEARCH_TIMEOUT_MS = 30_000
 
+async function errorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json()
+    if (typeof payload.detail === 'string') return payload.detail
+  } catch {
+  }
+  return fallback
+}
+
 export type { Candidate, ScholarProfile }
 
 export interface ScholarListItem {
@@ -33,7 +42,7 @@ export async function searchAuthors(name: string): Promise<Candidate[]> {
       signal: controller.signal,
       credentials: 'include',
     })
-    if (!res.ok) throw new Error(`Search failed (${res.status})`)
+    if (!res.ok) throw new Error(await errorMessage(res, `Search failed (${res.status})`))
     const data = await res.json()
     return data.candidates ?? []
   } catch (error: unknown) {
@@ -88,7 +97,7 @@ export async function streamProfile(
       credentials: 'include',
     })
     if (!res.ok) {
-      onError(`Profile request failed (${res.status})`)
+      onError(await errorMessage(res, `Profile request failed (${res.status})`))
       return
     }
     const reader = res.body!.getReader()

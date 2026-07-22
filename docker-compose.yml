@@ -56,6 +56,11 @@ services:
       DATABASE_POOL_RECYCLE: ${DATABASE_POOL_RECYCLE:-1800}
       DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-10}
       WORKFLOW_VERSION: ${WORKFLOW_VERSION:-1}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-600}
+      SEARCH_RATE_LIMIT_PER_USER: ${SEARCH_RATE_LIMIT_PER_USER:-30}
+      SEARCH_RATE_LIMIT_PER_IP: ${SEARCH_RATE_LIMIT_PER_IP:-120}
+      PROFILE_RATE_LIMIT_PER_USER: ${PROFILE_RATE_LIMIT_PER_USER:-12}
+      PROFILE_RATE_LIMIT_PER_IP: ${PROFILE_RATE_LIMIT_PER_IP:-60}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
@@ -124,16 +129,24 @@ services:
 
   backup:
     image: postgres:17-alpine
-    profiles: ["backup"]
+    restart: unless-stopped
     logging: *default-logging
     environment:
       DATABASE_URL: postgresql://scholar_app:${POSTGRES_APP_PASSWORD:-app-dev-only}@postgres:5432/${POSTGRES_DB:-scholar_profile}
       BACKUP_DIR: /backups
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
     volumes:
       - ./deploy/backup-postgres.sh:/usr/local/bin/backup-postgres:ro
       - ${BACKUP_HOST_DIR:-./backups}:/backups
-    command: ["backup-postgres"]
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          backup-postgres || echo "PostgreSQL backup failed" >&2
+          sleep "$${BACKUP_INTERVAL_SECONDS}"
+        done
     depends_on:
       postgres:
         condition: service_healthy

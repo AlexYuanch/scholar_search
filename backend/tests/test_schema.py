@@ -12,6 +12,7 @@ pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is n
 
 
 EXPECTED_TABLES = {
+    "api_rate_limit_events",
     "app_users",
     "auth_login_attempts",
     "auth_registration_attempts",

@@ -46,3 +46,14 @@ def test_production_deploy_rejects_loopback_public_url():
     script = DEPLOY.read_text()
 
     assert "PUBLIC_APP_URL 不能指向 localhost 或回环地址" in script
+
+
+def test_compose_runs_daily_postgres_backups_without_manual_profile():
+    compose = COMPOSE.read_text()
+
+    backup_service = compose.split("  backup:\n", 1)[1].split("\nvolumes:", 1)[0]
+    assert 'profiles: ["backup"]' not in backup_service
+    assert "restart: unless-stopped" in backup_service
+    assert "BACKUP_INTERVAL_SECONDS" in backup_service
+    assert "backup-postgres" in backup_service
+    assert "compose --profile backup" not in BOOTSTRAP.read_text()

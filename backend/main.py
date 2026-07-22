@@ -36,6 +36,7 @@ from nodes import dedup_authors
 from openalex import search_authors
 from quality import assess_profile_quality
 from repository import (
+    APIQuotaExceeded,
     LoginRateLimitExceeded,
     RegistrationRateLimitExceeded,
     RepositoryNotConfigured,
@@ -113,6 +114,11 @@ repository = create_repository()
 event_broker = ProfileEventBroker(os.getenv("DATABASE_URL"))
 CACHE_MAX_AGE_DAYS = 7
 DUMMY_PASSWORD_HASH = hash_password("invalid-login-password")
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "600"))
+SEARCH_RATE_LIMIT_PER_USER = int(os.getenv("SEARCH_RATE_LIMIT_PER_USER", "30"))
+SEARCH_RATE_LIMIT_PER_IP = int(os.getenv("SEARCH_RATE_LIMIT_PER_IP", "120"))
+PROFILE_RATE_LIMIT_PER_USER = int(os.getenv("PROFILE_RATE_LIMIT_PER_USER", "12"))
+PROFILE_RATE_LIMIT_PER_IP = int(os.getenv("PROFILE_RATE_LIMIT_PER_IP", "60"))
 
 
 def _cache_is_fresh(cached: dict | None) -> bool:
@@ -134,6 +140,26 @@ def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> No
     repository.touch_access(author_id)
     if user:
         repository.record_history(user.id, author_id, query_name)
+
+
+def _consume_api_quota(action: str, user: AuthUser, request: Request) -> None:
+    user_limit = SEARCH_RATE_LIMIT_PER_USER if action == "search" else PROFILE_RATE_LIMIT_PER_USER
+    ip_limit = SEARCH_RATE_LIMIT_PER_IP if action == "search" else PROFILE_RATE_LIMIT_PER_IP
+    try:
+        repository.consume_api_quota(
+            action,
+            user.id,
+            _client_ip(request),
+            user_limit,
+            ip_limit,
+            RATE_LIMIT_WINDOW_SECONDS,
+        )
+    except APIQuotaExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="操作过于频繁，请稍后再试。",
+            headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
+        ) from exc
 
 
 def _queue_stale_profile(author_id: str, cached: dict) -> str:
@@ -328,10 +354,12 @@ def auth_logout(request: Request):
 
 @app.get("/api/search")
 def search(
+    request: Request,
     name: str = Query(..., description="学者姓名"),
-    _user: AuthUser = Depends(require_user),
+    user: AuthUser = Depends(require_user),
 ):
     """搜索学者姓名，返回去重后的候选人列表。"""
+    _consume_api_quota("search", user, request)
     candidates = search_authors(name)
     merged = dedup_authors(candidates)
     return {
@@ -354,7 +382,7 @@ def search(
 
 
 @app.post("/api/profile")
-def profile(req: ProfileRequest, user: AuthUser = Depends(require_user)):
+def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(require_user)):
     """返回最新画像；过期画像立即返回并在后台排队更新。"""
     cached = repository.get_profile(req.author_id)
     if cached:
@@ -376,6 +404,7 @@ def profile(req: ProfileRequest, user: AuthUser = Depends(require_user)):
 
     state = default_state()
     state["target_author_id"] = req.author_id
+    _consume_api_quota("profile", user, request)
 
     result = graph.invoke(state)
     assessment = assess_profile_quality(result)
@@ -450,9 +479,11 @@ def author_works(
 @app.post("/api/profile/stream")
 async def profile_stream(
     req: ProfileRequest,
+    request: Request,
     user: AuthUser = Depends(require_user),
 ):
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
+    _consume_api_quota("profile", user, request)
     cached = await asyncio.to_thread(repository.get_profile, req.author_id)
     state = default_state()
     state["target_author_id"] = req.author_id

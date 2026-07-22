@@ -1,5 +1,7 @@
 from nodes import (
     analyze_coauthors,
+    build_collaboration_graph,
+    collect_works,
     dedup_authors,
     format_web_payload,
     generate_profile_report,
@@ -73,7 +75,10 @@ def test_analyze_coauthors_keeps_same_name_different_ids_separate():
             "title": "Paper 1",
             "authorships": [
                 {"author": {"id": "A0", "display_name": "Center"}},
-                {"author": {"id": "A1", "display_name": "Wei Zhang"}},
+                {
+                    "author": {"id": "A1", "display_name": "Wei Zhang"},
+                    "institutions": [{"display_name": "University One"}],
+                },
             ],
         },
         {
@@ -81,7 +86,10 @@ def test_analyze_coauthors_keeps_same_name_different_ids_separate():
             "title": "Paper 2",
             "authorships": [
                 {"author": {"id": "A0", "display_name": "Center"}},
-                {"author": {"id": "A2", "display_name": "Wei Zhang"}},
+                {
+                    "author": {"id": "A2", "display_name": "Wei Zhang"},
+                    "institutions": [{"display_name": "University Two"}],
+                },
             ],
         },
     ]
@@ -91,6 +99,52 @@ def test_analyze_coauthors_keeps_same_name_different_ids_separate():
     assert len(result["coauthors"]) == 2
     assert {item["id"] for item in result["coauthors"]} == {"A1", "A2"}
     assert [item["papers"] for item in result["coauthors"]] == [1, 1]
+    assert {item["institution"] for item in result["coauthors"]} == {
+        "University One",
+        "University Two",
+    }
+
+    state["coauthors"] = result["coauthors"]
+    state["target_author_profile"] = {"display_name": "Center"}
+    graph = build_collaboration_graph(state)
+    institutions = {
+        item["institution"]
+        for item in graph["graph_nodes"]
+        if item["type"] == "coauthor"
+    }
+    assert institutions == {"University One", "University Two"}
+
+
+def test_collect_works_marks_complete_fetch_for_quality_gate(monkeypatch):
+    import openalex
+
+    state = default_state()
+    state["target_author_id"] = "A0"
+    state["target_author_profile"] = {"works_count": 1}
+    monkeypatch.setattr(openalex, "get_works", lambda _author_id: ([{"id": "W1"}], []))
+
+    result = collect_works(state)
+
+    assert result["raw_works"] == [{"id": "W1"}]
+    assert result["works_complete"] is True
+
+
+def test_collect_works_marks_partial_fetch_for_quality_gate(monkeypatch):
+    import openalex
+
+    state = default_state()
+    state["target_author_id"] = "A0"
+    state["target_author_profile"] = {"works_count": 2}
+    monkeypatch.setattr(
+        openalex,
+        "get_works",
+        lambda _author_id: ([{"id": "W1"}], ["OpenAlex partial fetch"]),
+    )
+
+    result = collect_works(state)
+
+    assert result["works_complete"] is False
+    assert "OpenAlex partial fetch" in result["warnings"]
 
 
 def test_generate_profile_report_falls_back_to_evidence_when_llm_lacks_citations(monkeypatch):

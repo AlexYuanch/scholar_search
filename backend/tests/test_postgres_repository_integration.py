@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import text
 
 from auth import hash_password, verify_password
-from repository import PostgresRepository
+from repository import APIQuotaExceeded, PostgresRepository
 
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -94,6 +94,11 @@ def test_password_user_session_is_revocable():
         stored = repository.get_user_for_login(username.upper())
         assert stored["id"] == user["id"]
         assert verify_password("integration password", stored["password_hash"])
+
+        repository.consume_api_quota("profile", user["id"], registration_ip, 2, 10, 600)
+        repository.consume_api_quota("profile", user["id"], registration_ip, 2, 10, 600)
+        with pytest.raises(APIQuotaExceeded):
+            repository.consume_api_quota("profile", user["id"], registration_ip, 2, 10, 600)
 
         repository.record_login_attempt(username, "127.0.0.1", True)
         repository.create_user_session(

@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
-from repository import InMemoryRepository, _normalize_database_url
+import pytest
+
+from repository import APIQuotaExceeded, InMemoryRepository, _normalize_database_url
 
 
 def _workflow_state(work_count=60):
@@ -92,6 +94,18 @@ def test_password_reset_revokes_existing_sessions():
 
     assert repository.set_password("ALICE", "new-password-hash")
     assert repository.get_user_by_session("session-hash") is None
+
+
+def test_api_quota_limits_each_user_within_time_window():
+    repository = InMemoryRepository()
+
+    repository.consume_api_quota("profile", "user-1", "192.0.2.1", 2, 10, 600)
+    repository.consume_api_quota("profile", "user-1", "192.0.2.1", 2, 10, 600)
+
+    with pytest.raises(APIQuotaExceeded):
+        repository.consume_api_quota("profile", "user-1", "192.0.2.1", 2, 10, 600)
+
+    repository.consume_api_quota("profile", "user-2", "192.0.2.1", 2, 10, 600)
 
 
 def test_standard_postgres_url_uses_psycopg_driver():

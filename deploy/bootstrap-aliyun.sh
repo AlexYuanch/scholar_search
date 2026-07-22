@@ -297,17 +297,14 @@ printf '\n'
 curl -fsS http://127.0.0.1/api/ready
 printf '\n'
 
-log "安装每日 PostgreSQL 备份计划"
-printf '15 3 * * * root cd %s && /usr/bin/docker compose --profile backup run --rm backup >> /var/log/scholar-profile-backup.log 2>&1\n' \
-    "$ROOT_DIR" >/etc/cron.d/scholar-profile-backup
-chmod 644 /etc/cron.d/scholar-profile-backup
+rm -f /etc/cron.d/scholar-profile-backup
 
 cat <<EOF
 
 部署成功。
 
 访问地址：        http://$PUBLIC_IP
-备份目录：        $BACKUP_DIR
+自动备份目录：    $BACKUP_DIR
 项目配置：        $ROOT_DIR/.env（权限 600，请勿提交）
 查看状态：        cd $ROOT_DIR && docker compose ps
 查看日志：        cd $ROOT_DIR && docker compose logs --tail=200 web worker gateway

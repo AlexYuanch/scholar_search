@@ -10,7 +10,9 @@
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保留一份最近成功画像用于质量对比和自动更新。
 - 收藏学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
 - 用户自助注册本地账号并使用密码登录；HttpOnly Cookie 会话保护查询、私有历史和收藏。
+- 搜索与画像生成按账号和来源 IP 限速，避免公开注册用户短时间重复触发外部数据抓取。
 - PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送版本变化，前端自动加载新版画像。
+- Compose 常驻备份服务每天生成 PostgreSQL 自定义格式备份，默认保留 7 天。
 - 全量论文游标分页；文章详情、查询历史和收藏在桌面端使用自适应双栏，在窄屏端使用可滚动抽屉。
 - 导航、搜索区、画像卡片和合作图随浏览器宽高重排；从候选、合作者、历史或收藏跳转时同步当前搜索姓名。
 
@@ -53,7 +55,7 @@ DOCKER_REGISTRY_MIRROR='https://你的专属地址.mirror.aliyuncs.com' \
 - 在系统没有 Swap 时创建 2 GiB `/swapfile`，降低 1.6 GiB 内存首次构建 OOM 风险。
 - 合并写入 Docker `registry-mirrors`，顺序预拉取所有基础镜像；任一镜像不可用时在数据库创建前停止。
 - 自动生成两个随机 PostgreSQL 密码，配置公网 IP + HTTP、生产安全开关和较小连接池。
-- 把备份放在项目同级的 `/opt/scholar-profile-backups`，并安装每天 03:15 的备份计划。
+- 把备份放在项目同级的 `/opt/scholar-profile-backups`，由 Compose 常驻服务按日备份。
 - 构建、迁移、启动全部服务并验证本机健康接口。
 
 脚本幂等可重复执行；已有有效 `.env` 密码和自定义域名不会被覆盖。首次跑通后访问 `http://公网IP`。阿里云说明个人镜像加速不保证所有新镜像均可用，所以脚本会预拉取项目使用的全部基础镜像标签进行验证；若仍失败，应改用 ACR 制品订阅或把构建好的镜像推送到自己的 ACR 仓库。
@@ -207,7 +209,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 
 - 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`authorships`
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
-- 用户与会话：`app_users`、`auth_login_attempts`、`auth_registration_attempts`、`user_sessions`、`user_history`、`favorites`
+- 用户与会话：`app_users`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`
 
 数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
 
@@ -216,9 +218,9 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | 接口 | 鉴权 | 说明 |
 |------|------|------|
 | `GET /api/health`、`GET /api/ready` | 公开 | 进程与数据库健康检查 |
-| `GET /api/search?name=...` | 必须登录 | 搜索候选学者 |
+| `GET /api/search?name=...` | 必须登录、限速 | 搜索候选学者 |
 | `POST /api/profile` | 必须登录 | 返回最新画像并记录当前用户历史 |
-| `POST /api/profile/stream` | 必须登录 | 重新获取当前数据并输出 NDJSON 进度流 |
+| `POST /api/profile/stream` | 必须登录、限速 | 重新获取当前数据并输出 NDJSON 进度流 |
 | `GET /api/authors/{author_id}/works` | 必须登录 | 全量论文游标分页 |
 | `POST /api/auth/register` | 公开、限速 | 创建本地账号并自动登录 |
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
@@ -241,17 +243,13 @@ npm run test:db
 
 ## 备份
 
-手工生成自定义格式备份：
+`backup` 服务随 Compose 常驻运行，启动时立即备份，之后默认每 86400 秒备份一次，并删除超过 `BACKUP_RETENTION_DAYS` 的旧文件。手工额外生成一次备份：
 
 ```bash
-docker compose --profile backup run --rm backup
+docker compose exec backup backup-postgres
 ```
 
-备份默认写入服务器项目目录的 `backups/`，也可通过 `.env` 的 `BACKUP_HOST_DIR` 指向挂载的数据盘。可用 `crontab -e` 每天执行：
-
-```cron
-0 3 * * * cd /你的绝对路径/scholar-profile && /usr/bin/docker compose --profile backup run --rm backup >> /var/log/scholar-backup.log 2>&1
-```
+备份默认写入服务器项目目录的 `backups/`，也可通过 `.env` 的 `BACKUP_HOST_DIR` 指向挂载的数据盘；周期由 `BACKUP_INTERVAL_SECONDS` 配置。
 
 生产环境还应把备份同步到对象存储或另一台机器，并定期验证 `pg_restore`；同一台 ECS 上的备份无法防御整机或云盘故障。
 

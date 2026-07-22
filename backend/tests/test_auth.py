@@ -225,6 +225,32 @@ def test_all_scholar_query_routes_require_authentication():
     assert [response.status_code for response in requests] == [401, 401, 401, 401, 401]
 
 
+def test_search_rate_limit_returns_friendly_error(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    user = repository.create_password_user("alice", hash_password("correct horse battery staple"))
+    raw_session = generate_token()
+    repository.create_user_session(
+        user["id"],
+        hash_token(raw_session),
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setattr(main, "SEARCH_RATE_LIMIT_PER_USER", 1)
+    monkeypatch.setattr(main, "search_authors", lambda _name: [])
+
+    client = TestClient(app)
+    client.cookies.set("scholar_session", raw_session)
+    assert client.get("/api/search?name=Ada").status_code == 200
+
+    response = client.get("/api/search?name=Ada")
+
+    assert response.status_code == 429
+    assert response.json()["detail"] == "操作过于频繁，请稍后再试。"
+
+
 def test_token_hash_is_stable_and_does_not_store_raw_token():
     token = generate_token()
 

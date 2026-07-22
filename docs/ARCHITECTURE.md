@@ -46,6 +46,7 @@ flowchart LR
 | `app_users` | 应用用户；规范化用户名唯一、scrypt 密码摘要和启停状态 |
 | `auth_login_attempts` | 登录结果、用户名、IP 和时间，用于短时限速与审计 |
 | `auth_registration_attempts` | 注册结果、IP 和时间，用于公开注册防滥用 |
+| `api_rate_limit_events` | 搜索与画像生成的账号、IP、动作和时间窗口计数 |
 | `user_sessions` | 不透明会话 token 摘要、过期和撤销时间 |
 | `user_history` | 用户私有访问历史，同一用户/学者合并次数 |
 | `favorites` | 用户私有收藏，复合主键去重 |
@@ -83,6 +84,7 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 原子领取任务，支持多实例并�
 5. `require_user` 从会话摘要解析启用用户；搜索、画像、论文、SSE、历史和收藏接口全部依赖该检查。
 6. 历史和收藏 Repository 查询同时限制 `user_id`，确保多用户数据隔离。
 7. 退出时服务端撤销会话并清除 Cookie；管理员重置密码时撤销该用户已有会话。
+8. 搜索和画像生成在 PostgreSQL 事务内按用户与 IP 消费额度，多 Web 实例共享同一限制。
 
 系统提供公开本地账号注册，但不依赖外部身份提供商。建议前后端同域部署，以简化 Cookie 和 CSRF 边界；生产环境必须启用 HTTPS 与 Secure Cookie。
 
@@ -98,6 +100,7 @@ SSE 连接断开不会影响画像生成，浏览器重连后会先读取当前 
 - 迁移撤销 `PUBLIC` 对 schema、表和 sequence 的默认权限。
 - `scholar_app` 只用于 Web/worker，不能建表；迁移账号不提供给运行时。
 - 密码与会话 token 均不明文入库；注册按 IP 限速，登录按用户名和 IP 限速，会话具有过期和撤销状态。
+- 搜索与画像生成设置独立账号/IP 限额，事件由 worker 定期清理。
 - CORS 仅允许配置的前端域名，Cookie 请求启用 credentials。
 - 数据库和 LLM 密钥全部为服务端配置，不进入 Vite bundle。
 
@@ -105,7 +108,7 @@ SSE 连接断开不会影响画像生成，浏览器重连后会先读取当前 
 
 仓库提供两种兼容部署方式：
 
-1. **单机 Compose（当前交付）**：Caddy、Nginx 前端、Web、worker、迁移和 PostgreSQL 运行在一台 ECS。公网只暴露 Caddy 的 80/443，数据库端口仅绑定回环地址。`deploy/bootstrap-aliyun.sh` 可为 Ubuntu 24.04 ECS 安装 Docker、配置可选 ACR 加速、补充 Swap、生成首次配置与定时备份；`deploy/deploy.sh` 负责后续每次发布的配置校验、构建、迁移和健康等待。用户在 Web 登录弹窗中自助注册。
+1. **单机 Compose（当前交付）**：Caddy、Nginx 前端、Web、worker、迁移、自动备份和 PostgreSQL 运行在一台 ECS。公网只暴露 Caddy 的 80/443，数据库端口仅绑定回环地址。`deploy/bootstrap-aliyun.sh` 可为 Ubuntu 24.04 ECS 安装 Docker、配置可选 ACR 加速、补充 Swap 和生成首次配置；`deploy/deploy.sh` 负责后续每次发布的配置校验、构建、迁移和健康等待。用户在 Web 登录弹窗中自助注册。
 2. **ECS + RDS（容量增长后）**：Caddy/Nginx、Web、worker 部署在 ECS，PostgreSQL 使用同 VPC 的 RDS。部署流水线先以迁移账号执行 Alembic，再启动受限账号的运行时服务。
 
 无论采用哪种方式，公网只暴露 80/443；生产必须使用 HTTPS、安全 Cookie、独立备份和恢复演练。

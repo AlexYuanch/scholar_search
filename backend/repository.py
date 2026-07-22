@@ -73,6 +73,10 @@ class RegistrationRateLimitExceeded(RuntimeError):
     pass
 
 
+class APIQuotaExceeded(RuntimeError):
+    pass
+
+
 class InMemoryRepository:
     """Test repository with the same behavioral contract as PostgresRepository."""
 
@@ -87,6 +91,7 @@ class InMemoryRepository:
         self.users: dict[str, dict] = {}
         self.login_attempts: list[dict] = []
         self.registration_attempts: list[dict] = []
+        self.api_rate_limit_events: list[dict] = []
         self.sessions: dict[str, dict] = {}
 
     def _scholar(self, author_id: str, name: str = "") -> dict:
@@ -316,6 +321,32 @@ class InMemoryRepository:
             "success": success,
             "created_at": _now(),
         })
+
+    def consume_api_quota(
+        self,
+        action: str,
+        user_id: str,
+        request_ip: str | None,
+        user_limit: int,
+        ip_limit: int,
+        window_seconds: int,
+    ) -> None:
+        cutoff = _now() - timedelta(seconds=window_seconds)
+        with self._lock:
+            recent = [
+                row for row in self.api_rate_limit_events
+                if row["action"] == action and row["created_at"] >= cutoff
+            ]
+            user_count = sum(row["user_id"] == user_id for row in recent)
+            ip_count = sum(bool(request_ip) and row["request_ip"] == request_ip for row in recent)
+            if user_count >= user_limit or ip_count >= ip_limit:
+                raise APIQuotaExceeded("API quota exceeded")
+            self.api_rate_limit_events.append({
+                "action": action,
+                "user_id": user_id,
+                "request_ip": request_ip,
+                "created_at": _now(),
+            })
 
     def create_user_session(
         self,
@@ -929,6 +960,49 @@ class PostgresRepository:
                 values (cast(:request_ip as inet), :success)
             """), {"request_ip": request_ip, "success": success})
 
+    def consume_api_quota(
+        self,
+        action: str,
+        user_id: str,
+        request_ip: str | None,
+        user_limit: int,
+        ip_limit: int,
+        window_seconds: int,
+    ) -> None:
+        params = {
+            "action": action,
+            "user_id": user_id,
+            "request_ip": request_ip,
+            "user_limit": user_limit,
+            "ip_limit": ip_limit,
+            "window_seconds": window_seconds,
+        }
+        with self.engine.begin() as conn:
+            conn.execute(text(
+                "select pg_advisory_xact_lock(hashtextextended('api-user:' || :action || ':' || :user_id, 0))"
+            ), params)
+            if request_ip:
+                conn.execute(text(
+                    "select pg_advisory_xact_lock(hashtextextended('api-ip:' || :action || ':' || :request_ip, 0))"
+                ), params)
+            row = conn.execute(text("""
+                select
+                    count(*) filter (where user_id = cast(:user_id as uuid)) as user_count,
+                    count(*) filter (
+                        where cast(:request_ip as inet) is not null
+                          and request_ip = cast(:request_ip as inet)
+                    ) as ip_count
+                from public.api_rate_limit_events
+                where action = :action
+                  and created_at >= now() - (:window_seconds * interval '1 second')
+            """), params).mappings().one()
+            if int(row["user_count"]) >= user_limit or int(row["ip_count"]) >= ip_limit:
+                raise APIQuotaExceeded("API quota exceeded")
+            conn.execute(text("""
+                insert into public.api_rate_limit_events (user_id, request_ip, action)
+                values (cast(:user_id as uuid), cast(:request_ip as inet), :action)
+            """), params)
+
     def create_user_session(
         self,
         user_id: str,
@@ -1049,6 +1123,7 @@ class PostgresRepository:
                 "delete from public.refresh_jobs where status in ('succeeded', 'failed') and updated_at < now() - interval '30 days'",
                 "delete from public.auth_login_attempts where created_at < now() - interval '1 day'",
                 "delete from public.auth_registration_attempts where created_at < now() - interval '1 day'",
+                "delete from public.api_rate_limit_events where created_at < now() - interval '1 day'",
                 "delete from public.user_sessions where expires_at < now() - interval '7 days' or revoked_at < now() - interval '7 days'",
             ):
                 deleted += conn.execute(text(statement)).rowcount
