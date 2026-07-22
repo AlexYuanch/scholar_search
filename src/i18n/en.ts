@@ -18,6 +18,7 @@ const en: Record<string, string> = {
   "candidate.citations": "citations",
   "candidate.unknown_inst": "Unknown institution",
   "candidate.merged": "merged entities",
+  "candidate.merged_hint": "Consolidated using publications, coauthors, affiliations, and research topics",
 
   "tab.overview": "Overview",
   "tab.papers": "Papers",
@@ -41,9 +42,12 @@ const en: Record<string, string> = {
   "verification.detail": "OpenAlex reports {expected} papers and {fetched} were fetched; {merged} duplicate records were merged and {conflicts} metadata differences were found. Pending does not mean incorrect; it usually means a DOI is unavailable or Crossref has no matching record yet.",
   "verification.limited": "Up to 200 DOIs are verified per run. Remaining papers retain their OpenAlex records and are excluded from the cross-source verification rate.",
   "verification.failed": "Crossref was temporarily unavailable for {count} DOI records. Run the search again later to retry verification.",
+  "verification.identity_merged": "This profile consolidates {count} public records supported by multiple identity signals.",
+  "verification.identity_excluded": "Identity review excluded {count} papers disconnected from the scholar's core affiliations, coauthors, and topics.",
+  "verification.identity_conflict": "Another {count} papers form a larger independent identity cluster. They were retained for manual review.",
 
   "section.research_directions": "Research Directions",
-  "section.research_desc": "Extracted from publication keywords and topics",
+  "section.research_desc": "Extracted from fine-grained topics, keywords, and title phrases",
   "section.repr_papers": "Representative Papers",
   "section.repr_desc": "Top-cited and recent publications",
   "section.top_cited": "Top Cited Papers",

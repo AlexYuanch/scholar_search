@@ -16,6 +16,7 @@ export interface Candidate {
   merged_count?: number
   merged_ids?: string[]
   disambiguation?: string
+  identity_confidence?: string
 }
 
 export interface ScholarProfile {
@@ -91,5 +92,17 @@ export interface ScholarProfile {
     flags: string[]
     publishable: boolean
     summaryConfidence: "high" | "medium" | "low"
+  }
+  identityAudit?: {
+    primaryAuthorId: string
+    requestedAuthorIds: string[]
+    mergedAuthorIds: string[]
+    rejectedAuthorIds: string[]
+    mergedCount: number
+    collectedWorks?: number
+    excludedWorks?: number
+    excludedWorkIds?: string[]
+    largeConflictWorks?: number
+    possibleConflatedIdentity?: boolean
   }
 }

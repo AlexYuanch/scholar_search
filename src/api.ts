@@ -78,6 +78,7 @@ export async function getProfile(authorId: string): Promise<ScholarProfile> {
 
 interface StreamOptions {
   signal?: AbortSignal
+  authorIds?: string[]
 }
 
 /** NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据 */
@@ -100,7 +101,7 @@ export async function streamProfile(
     const res = await fetch(`${API_BASE}/profile/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ author_id: authorId }),
+      body: JSON.stringify({ author_id: authorId, author_ids: options.authorIds ?? [authorId] }),
       signal: options.signal,
       credentials: 'include',
     })

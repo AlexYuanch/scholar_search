@@ -1,10 +1,13 @@
 from nodes import (
+    _fallback_topic_analysis,
+    _filter_identity_outlier_works,
     adjudicate_sources,
     analyze_coauthors,
     build_collaboration_graph,
     collect_crossref_records,
     collect_works,
     dedup_authors,
+    fetch_author_profile,
     format_web_payload,
     generate_profile_report,
     review_profile_evidence,
@@ -13,23 +16,71 @@ from state import default_state
 from workflow import NODES
 
 
-def test_dedup_authors_keeps_same_name_different_ids_separate():
+def _identity_fingerprint(*, coauthors=(), topics=(), works=()):
+    return {
+        "coauthor_ids": list(coauthors),
+        "topic_ids": list(topics),
+        "work_ids": list(works),
+    }
+
+
+def test_dedup_authors_merges_split_profiles_with_strong_identity_evidence():
     candidates = [
         {
             "id": "A1",
             "display_name": "Haofen Wang",
-            "works_count": 10,
-            "cited_by_count": 100,
-            "summary_stats": {"h_index": 5},
+            "orcid": "https://orcid.org/0000-0003-3018-3824",
+            "works_count": 172,
+            "cited_by_count": 2379,
+            "summary_stats": {"h_index": 23},
             "last_known_institutions": [{"display_name": "Tongji University"}],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=("C1", "C2", "C3", "C4", "C5", "C6"),
+                topics=("T1", "T2", "T3", "T4"),
+            ),
         },
         {
             "id": "A2",
             "display_name": "haofen wang",
-            "works_count": 7,
-            "cited_by_count": 80,
-            "summary_stats": {"h_index": 4},
+            "works_count": 32,
+            "cited_by_count": 384,
+            "summary_stats": {"h_index": 7},
             "last_known_institutions": [{"display_name": "Tongji University"}],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=("C1", "C2", "C3", "C4", "C5", "C7"),
+                topics=("T1", "T2", "T3", "T5"),
+            ),
+        },
+    ]
+
+    merged = dedup_authors(candidates)
+
+    assert len(merged) == 1
+    assert merged[0]["id"] == "A1"
+    assert merged[0]["merged_ids"] == ["A1", "A2"]
+    assert merged[0]["merged_count"] == 2
+    assert merged[0]["identity_confidence"] == "high"
+
+
+def test_dedup_authors_keeps_namesakes_separate_when_only_name_and_institution_match():
+    candidates = [
+        {
+            "id": "A1",
+            "display_name": "Wei Wang",
+            "works_count": 40,
+            "cited_by_count": 300,
+            "summary_stats": {"h_index": 9},
+            "last_known_institutions": [{"display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(coauthors=("C1",), topics=("T1", "T2")),
+        },
+        {
+            "id": "A2",
+            "display_name": "Wei Wang",
+            "works_count": 35,
+            "cited_by_count": 250,
+            "summary_stats": {"h_index": 8},
+            "last_known_institutions": [{"display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(coauthors=("C2",), topics=("T3", "T4")),
         },
     ]
 
@@ -37,7 +88,89 @@ def test_dedup_authors_keeps_same_name_different_ids_separate():
 
     assert len(merged) == 2
     assert [author["id"] for author in merged] == ["A1", "A2"]
-    assert all(author["merged_count"] == 1 for author in merged)
+
+
+def test_dedup_authors_does_not_override_orcid_conflict_with_weak_overlap():
+    candidates = [
+        {
+            "id": "A1",
+            "display_name": "Alex Kim",
+            "orcid": "https://orcid.org/0000-0000-0000-0001",
+            "works_count": 10,
+            "last_known_institutions": [{"display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(coauthors=("C1", "C2"), topics=("T1", "T2")),
+        },
+        {
+            "id": "A2",
+            "display_name": "Alex Kim",
+            "orcid": "https://orcid.org/0000-0000-0000-0002",
+            "works_count": 8,
+            "last_known_institutions": [{"display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(coauthors=("C1", "C3"), topics=("T1", "T3")),
+        },
+    ]
+
+    assert len(dedup_authors(candidates)) == 2
+
+
+def test_dedup_authors_does_not_override_orcid_conflict_with_large_overlap():
+    shared_coauthors = tuple(f"C{index}" for index in range(30))
+    shared_topics = tuple(f"T{index}" for index in range(20))
+    candidates = [
+        {
+            "id": "A1",
+            "display_name": "Wei Wang",
+            "orcid": "https://orcid.org/0000-0000-0000-0001",
+            "works_count": 900,
+            "last_known_institutions": [{"display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=shared_coauthors,
+                topics=shared_topics,
+            ),
+        },
+        {
+            "id": "A2",
+            "display_name": "Wei Wang",
+            "orcid": "https://orcid.org/0000-0000-0000-0002",
+            "works_count": 800,
+            "last_known_institutions": [{"display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=shared_coauthors,
+                topics=shared_topics,
+            ),
+        },
+    ]
+
+    assert len(dedup_authors(candidates)) == 2
+
+
+def test_dedup_authors_keeps_diffuse_profiles_separate_despite_context_overlap():
+    candidates = [
+        {
+            "id": "A1",
+            "display_name": "Wei Wang",
+            "works_count": 600,
+            "last_known_institutions": [
+                {"display_name": f"Institution {index}"} for index in range(20)
+            ],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=("C1", "C2", "C3", "C4"),
+                topics=("T1", "T2", "T3", "T4"),
+            ),
+        },
+        {
+            "id": "A2",
+            "display_name": "Wei Wang",
+            "works_count": 30,
+            "last_known_institutions": [{"display_name": "Institution 1"}],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=("C1", "C2", "C3", "C4"),
+                topics=("T1", "T2", "T3", "T4"),
+            ),
+        },
+    ]
+
+    assert len(dedup_authors(candidates)) == 2
 
 
 def test_dedup_authors_only_merges_repeated_openalex_id():
@@ -128,8 +261,8 @@ def test_collect_works_marks_complete_fetch_for_quality_gate(monkeypatch):
 
     result = collect_works(state)
 
-    assert result["raw_works"] == [{"id": "W1"}]
-    assert result["source_works"]["openalex"] == [{"id": "W1"}]
+    assert [work["id"] for work in result["raw_works"]] == ["W1"]
+    assert result["source_works"]["openalex"] == result["raw_works"]
     assert result["works_complete"] is True
 
 
@@ -149,6 +282,193 @@ def test_collect_works_marks_partial_fetch_for_quality_gate(monkeypatch):
 
     assert result["works_complete"] is False
     assert "OpenAlex partial fetch" in result["warnings"]
+
+
+def test_fetch_profile_and_collect_works_join_merged_author_ids(monkeypatch):
+    import openalex
+
+    profiles = {
+        "A1": {
+            "id": "A1",
+            "display_name": "Haofen Wang",
+            "works_count": 2,
+            "last_known_institutions": [{"id": "I1", "display_name": "Tongji University"}],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=("C1", "C2", "C3"), topics=("T1", "T2")
+            ),
+        },
+        "A2": {
+            "id": "A2",
+            "display_name": "HaoFen Wang",
+            "works_count": 1,
+            "last_known_institutions": [{"id": "I1", "display_name": "Tongji University"}],
+            "identity_fingerprint": _identity_fingerprint(
+                coauthors=("C1", "C2", "C3"), topics=("T1", "T2")
+            ),
+        },
+    }
+    works = {
+        "A1": ([{"id": "W1", "authorships": [{"author": {"id": "A1", "display_name": "Haofen Wang"}}]}], []),
+        "A2": ([{"id": "W2", "authorships": [{"author": {"id": "A2", "display_name": "HaoFen Wang"}}]}], []),
+    }
+    monkeypatch.setattr(openalex, "get_author", lambda author_id: profiles[author_id])
+    monkeypatch.setattr(openalex, "get_works", lambda author_id: works[author_id])
+
+    state = default_state()
+    state["target_author_id"] = "A1"
+    state["target_author_ids"] = ["A1", "A2"]
+    state.update(fetch_author_profile(state))
+    result = collect_works(state)
+
+    assert state["target_author_profile"]["works_count"] == 3
+    assert state["target_author_profile"]["merged_author_ids"] == ["A1", "A2"]
+    assert {work["id"] for work in result["raw_works"]} == {"W1", "W2"}
+    assert {
+        authorship["author"]["id"]
+        for work in result["raw_works"]
+        for authorship in work["authorships"]
+    } == {"A1"}
+    assert result["works_complete"] is True
+
+
+def test_fetch_profile_rejects_client_supplied_namesake_without_identity_evidence(monkeypatch):
+    import openalex
+
+    profiles = {
+        "A1": {
+            "id": "A1",
+            "display_name": "Wei Wang",
+            "works_count": 20,
+            "last_known_institutions": [{"id": "I1", "display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(coauthors=("C1",), topics=("T1",)),
+        },
+        "A2": {
+            "id": "A2",
+            "display_name": "Wei Wang",
+            "works_count": 18,
+            "last_known_institutions": [{"id": "I1", "display_name": "Example University"}],
+            "identity_fingerprint": _identity_fingerprint(coauthors=("C2",), topics=("T2",)),
+        },
+    }
+    monkeypatch.setattr(openalex, "get_author", lambda author_id: profiles[author_id])
+
+    state = default_state()
+    state["target_author_id"] = "A1"
+    state["target_author_ids"] = ["A1", "A2"]
+    result = fetch_author_profile(state)
+
+    assert result["target_author_ids"] == ["A1"]
+    assert result["identity_audit"]["rejectedAuthorIds"] == ["A2"]
+    assert result["target_author_profile"]["works_count"] == 20
+
+
+def test_specific_topic_analysis_prefers_fine_grained_phrases_over_broad_fields():
+    works = [
+        {
+            "id": "W1",
+            "title": "Large Language Model Enhanced Knowledge Representation Learning: A Survey",
+            "publication_year": 2025,
+            "cited_by_count": 20,
+            "primary_topic": {"id": "T1", "display_name": "Topic Modeling", "score": 0.8},
+            "topics": [{"id": "T1", "display_name": "Topic Modeling", "score": 0.8}],
+            "keywords": [
+                {"display_name": "Artificial intelligence", "score": 0.8},
+                {"display_name": "Knowledge graph", "score": 0.7},
+            ],
+            "concepts": [{"display_name": "Data science", "score": 0.9, "level": 1}],
+        },
+        {
+            "id": "W2",
+            "title": "Knowledge Graph Enhanced Large Language Models for Question Answering",
+            "publication_year": 2026,
+            "cited_by_count": 5,
+            "primary_topic": {"id": "T2", "display_name": "Semantic Web and Ontologies", "score": 0.9},
+            "topics": [{"id": "T2", "display_name": "Semantic Web and Ontologies", "score": 0.9}],
+            "keywords": [
+                {"display_name": "Knowledge graph", "score": 0.9},
+                {"display_name": "Artificial intelligence", "score": 0.7},
+            ],
+            "concepts": [{"display_name": "Artificial intelligence", "score": 0.9, "level": 1}],
+        },
+        {
+            "id": "W3",
+            "title": "Retrieval Augmented Generation over Enterprise Knowledge Graphs",
+            "publication_year": 2026,
+            "cited_by_count": 3,
+            "primary_topic": {"id": "T2", "display_name": "Semantic Web and Ontologies", "score": 0.8},
+            "topics": [{"id": "T2", "display_name": "Semantic Web and Ontologies", "score": 0.8}],
+            "keywords": [{"display_name": "Knowledge graph", "score": 0.9}],
+            "concepts": [{"display_name": "Data science", "score": 0.7, "level": 1}],
+        },
+    ]
+
+    result = _fallback_topic_analysis(works)
+    topics = [item["topic"].casefold() for item in result["topic_clusters"]]
+
+    assert "knowledge graph" in topics
+    assert "large language model" in topics
+    assert "retrieval augmented generation" in topics
+    assert "artificial intelligence" not in topics
+    assert "data science" not in topics
+    assert all(item["paper_indices"] for item in result["topic_clusters"])
+
+
+def test_identity_outlier_filter_excludes_small_disconnected_work_cluster():
+    core_works = [{
+        "id": f"W{index}",
+        "authorships": [
+            {
+                "author": {"id": "A1", "display_name": "Wei Wang"},
+                "institutions": [{"id": "I1", "display_name": "Example University"}],
+            },
+            {"author": {"id": "C1", "display_name": "Core Collaborator"}},
+        ],
+        "primary_topic": {"id": "T1", "display_name": "Knowledge Graph"},
+        "topics": [{"id": "T1", "display_name": "Knowledge Graph"}],
+    } for index in range(20)]
+    outliers = [{
+        "id": f"O{index}",
+        "authorships": [
+            {
+                "author": {"id": "A1", "display_name": "Wei Wang"},
+                "institutions": [{"id": "I9", "display_name": "Unrelated Hospital"}],
+            },
+            {"author": {"id": "C9", "display_name": "Other Collaborator"}},
+        ],
+        "primary_topic": {"id": "T9", "display_name": "Clinical Surgery"},
+        "topics": [{"id": "T9", "display_name": "Clinical Surgery"}],
+    } for index in range(2)]
+
+    kept, audit = _filter_identity_outlier_works(core_works + outliers, "A1")
+
+    assert len(kept) == 20
+    assert audit["excludedWorks"] == 2
+    assert audit["possibleConflatedIdentity"] is True
+    assert audit["excludedWorkIds"] == ["O0", "O1"]
+
+
+def test_identity_outlier_filter_keeps_new_topic_with_core_collaborator():
+    works = [{
+        "id": f"W{index}",
+        "authorships": [
+            {"author": {"id": "A1"}, "institutions": [{"id": "I1"}]},
+            {"author": {"id": "C1"}},
+        ],
+        "topics": [{"id": "T1"}],
+    } for index in range(20)]
+    works.append({
+        "id": "NEW",
+        "authorships": [
+            {"author": {"id": "A1"}, "institutions": [{"id": "I2"}]},
+            {"author": {"id": "C1"}},
+        ],
+        "topics": [{"id": "T2"}],
+    })
+
+    kept, audit = _filter_identity_outlier_works(works, "A1")
+
+    assert len(kept) == 21
+    assert audit["excludedWorks"] == 0
 
 
 def test_crossref_collection_and_adjudication_merge_by_doi(monkeypatch):
@@ -332,6 +652,8 @@ def test_default_state_has_multi_source_fields_without_semantic_scholar():
     state = default_state()
 
     assert "raw_works" in state
+    assert state["target_author_ids"] == []
+    assert state["identity_audit"] == {}
     assert "deduped_works" in state
     assert state["source_works"] == {}
     assert state["source_audit"] == {}

@@ -4,8 +4,10 @@
 节点按处理阶段分组，与 workflow.py 中的图定义一一对应。
 """
 import json
+import math
 import re
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
 from state import ScholarProfileState
@@ -16,63 +18,384 @@ CROSSREF_VERIFICATION_LIMIT = 200
 
 # ── 工具函数 ─────────────────────────────────────────────────
 
+def _normalized_name_keys(author: dict) -> set[str]:
+    values = [author.get("display_name", ""), *(author.get("display_name_alternatives") or [])]
+    keys = set()
+    for value in values:
+        tokens = re.findall(r"[a-z0-9㐀-鿿]+", str(value).casefold())
+        if tokens:
+            keys.update({" ".join(tokens), " ".join(sorted(tokens)), "".join(tokens)})
+    return keys
+
+
+def _institution_keys(author: dict) -> set[str]:
+    keys = set()
+    for institution in author.get("last_known_institutions") or []:
+        value = institution.get("id") or institution.get("display_name")
+        normalized = _normalized_title(value)
+        if normalized:
+            keys.add(normalized)
+    return keys
+
+
+def _orcid(author: dict) -> str:
+    return str(author.get("orcid") or "").rstrip("/").rsplit("/", 1)[-1].casefold()
+
+
+def _fingerprint_set(author: dict, field: str) -> set[str]:
+    return {str(item) for item in (author.get("identity_fingerprint") or {}).get(field, []) if item}
+
+
+def _containment(left: set[str], right: set[str]) -> tuple[int, float]:
+    shared = len(left & right)
+    return shared, shared / max(1, min(len(left), len(right)))
+
+
+def _identity_match(left: dict, right: dict, candidate_ids: set[str]) -> dict:
+    if left.get("id") and left.get("id") == right.get("id"):
+        return {"merge": True, "confidence": "high", "reason": "same_openalex_id"}
+    left_orcid = _orcid(left)
+    right_orcid = _orcid(right)
+    if left_orcid and left_orcid == right_orcid:
+        return {"merge": True, "confidence": "high", "reason": "same_orcid"}
+    if not (_normalized_name_keys(left) & _normalized_name_keys(right)):
+        return {"merge": False}
+
+    left_institutions = _institution_keys(left)
+    right_institutions = _institution_keys(right)
+    institutions = left_institutions & right_institutions
+    _, institution_containment = _containment(left_institutions, right_institutions)
+    compact_institution_history = max(len(left_institutions), len(right_institutions)) <= 12
+    left_works = _fingerprint_set(left, "work_ids")
+    right_works = _fingerprint_set(right, "work_ids")
+    shared_works, work_containment = _containment(left_works, right_works)
+    left_coauthors = _fingerprint_set(left, "coauthor_ids") - candidate_ids
+    right_coauthors = _fingerprint_set(right, "coauthor_ids") - candidate_ids
+    shared_coauthors, coauthor_containment = _containment(left_coauthors, right_coauthors)
+    shared_topics, topic_containment = _containment(
+        _fingerprint_set(left, "topic_ids"),
+        _fingerprint_set(right, "topic_ids"),
+    )
+    evidence = {
+        "sharedInstitutions": len(institutions),
+        "institutionContainment": round(institution_containment, 3),
+        "compactInstitutionHistory": compact_institution_history,
+        "sharedWorks": shared_works,
+        "sharedCoauthors": shared_coauthors,
+        "coauthorContainment": round(coauthor_containment, 3),
+        "sharedTopics": shared_topics,
+        "topicContainment": round(topic_containment, 3),
+        "orcidConflict": bool(left_orcid and right_orcid and left_orcid != right_orcid),
+    }
+
+    if shared_works >= 2 and work_containment >= 0.25 and (institutions or shared_coauthors >= 2):
+        return {"merge": True, "confidence": "high", "reason": "shared_works", **evidence}
+    if evidence["orcidConflict"]:
+        return {
+            "merge": False,
+            "confidence": "low",
+            "reason": "orcid_conflict",
+            **evidence,
+        }
+
+    strong_context = (
+        bool(institutions)
+        and compact_institution_history
+        and shared_coauthors >= 3
+        and shared_topics >= 2
+        and (
+            (coauthor_containment >= 0.40 and topic_containment >= 0.35)
+            or (coauthor_containment >= 0.25 and topic_containment >= 0.45)
+        )
+    )
+    small_split = (
+        bool(institutions)
+        and compact_institution_history
+        and min(int(left.get("works_count") or 0), int(right.get("works_count") or 0)) <= 3
+        and shared_coauthors >= 2
+        and coauthor_containment >= 0.50
+        and shared_topics >= 1
+    )
+    should_merge = strong_context or small_split
+    return {
+        "merge": should_merge,
+        "confidence": "high" if strong_context else "medium" if small_split else "low",
+        "reason": "shared_context" if strong_context else "small_split_profile" if small_split else "insufficient_evidence",
+        **evidence,
+    }
+
+
+def _combine_author_group(group: list[dict], matches: list[dict]) -> dict:
+    primary = dict(max(group, key=lambda item: (
+        int(item.get("cited_by_count") or 0),
+        int(item.get("works_count") or 0),
+    )))
+    unique_by_id = {}
+    for author in group:
+        unique_by_id.setdefault(author.get("id") or f"missing-{len(unique_by_id)}", author)
+    unique_group = list(unique_by_id.values())
+    primary_id = primary.get("id")
+    ordered_ids = [primary_id] if primary_id else []
+    ordered_ids.extend(
+        author.get("id") for author in unique_group
+        if author.get("id") and author.get("id") != primary_id
+    )
+    institutions = []
+    for item in unique_group:
+        for institution in item.get("last_known_institutions") or []:
+            name = str(institution.get("display_name") or "").strip()
+            if name and name not in institutions:
+                institutions.append(name)
+    h_indices = [int((item.get("summary_stats") or {}).get("h_index") or 0) for item in unique_group]
+    primary["works_count"] = sum(int(item.get("works_count") or 0) for item in unique_group)
+    primary["cited_by_count"] = sum(int(item.get("cited_by_count") or 0) for item in unique_group)
+    primary["summary_stats"] = {**(primary.get("summary_stats") or {}), "h_index": max(h_indices, default=0)}
+    primary["institutions"] = institutions
+    primary["merged_ids"] = ordered_ids
+    primary["merged_count"] = len(ordered_ids)
+    primary["identity_confidence"] = (
+        "high" if matches and all(match.get("confidence") == "high" for match in matches)
+        else "medium" if matches
+        else "single"
+    )
+    primary["identity_signals"] = matches
+    primary["disambiguation"] = ""
+    return primary
+
+
 def dedup_authors(candidates):
-    """仅按稳定的 OpenAlex 作者 ID 去重，绝不合并不同 ID 的同名作者。"""
-    groups = defaultdict(list)
-    for index, a in enumerate(candidates):
-        key = a.get("id") or f"__missing_id_{index}"
-        groups[key].append(a)
+    """按多信号保守聚类拆分档案；证据不足的同名作者保持分开。"""
+    exact_groups = defaultdict(list)
+    for index, author in enumerate(candidates):
+        exact_groups[author.get("id") or f"__missing_id_{index}"].append(author)
+    unique = []
+    for exact_group in exact_groups.values():
+        unique.append(max(exact_group, key=lambda item: int(item.get("works_count") or 0)))
+
+    candidate_ids = {str(author.get("id")) for author in unique if author.get("id")}
+    assigned = set()
     result = []
-    for group in groups.values():
-        best = dict(max(group, key=lambda a: a.get("works_count", 0)))
-        best["works_count"] = max(a.get("works_count", 0) for a in group)
-        best["cited_by_count"] = max(a.get("cited_by_count", 0) for a in group)
-        hs = [a.get("summary_stats", {}).get("h_index", 0) or 0 for a in group]
-        best["summary_stats"] = {"h_index": max(hs)}
-        institutions = []
-        for item in group:
-            for inst in item.get("last_known_institutions") or []:
-                name = inst.get("display_name", "").strip()
-                if name and name not in institutions:
-                    institutions.append(name)
-        best["institutions"] = institutions
-        best["merged_ids"] = sorted({a.get("id", "") for a in group if a.get("id")})
-        best["merged_count"] = len(best["merged_ids"])
-        best["disambiguation"] = ""
-        result.append(best)
+    for index, primary in enumerate(unique):
+        if index in assigned:
+            continue
+        group = [primary]
+        matches = []
+        assigned.add(index)
+        for candidate_index in range(index + 1, len(unique)):
+            if candidate_index in assigned:
+                continue
+            match = _identity_match(primary, unique[candidate_index], candidate_ids)
+            if match.get("merge"):
+                group.append(unique[candidate_index])
+                matches.append({"authorId": unique[candidate_index].get("id"), **match})
+                assigned.add(candidate_index)
+        result.append(_combine_author_group(group, matches))
     return result
 
 
 def fetch_author_profile(state: ScholarProfileState) -> dict:
-    """获取选定作者的详细信息。"""
-    from openalex import get_author
-    profile = get_author(state["target_author_id"])
-    return {"target_author_profile": profile}
+    """获取并验证候选身份组，合并基础信息但保留主 OpenAlex ID。"""
+    from openalex import enrich_authors_for_disambiguation, get_author
+
+    primary_id = state["target_author_id"]
+    requested_ids = list(dict.fromkeys([primary_id, *(state.get("target_author_ids") or [])]))[:8]
+    profiles = [get_author(author_id) for author_id in requested_ids]
+    valid_ids = [primary_id]
+    if len(profiles) > 1:
+        groups = dedup_authors(enrich_authors_for_disambiguation(profiles))
+        selected = next(
+            (group for group in groups if primary_id in (group.get("merged_ids") or [])),
+            None,
+        )
+        if selected:
+            valid_ids = selected.get("merged_ids") or valid_ids
+    valid_profiles = [profile for profile in profiles if profile.get("id") in valid_ids]
+    primary = deepcopy(next(
+        (profile for profile in valid_profiles if profile.get("id") == primary_id),
+        valid_profiles[0],
+    ))
+    institutions = []
+    alternatives = []
+    for profile in valid_profiles:
+        for institution in profile.get("last_known_institutions") or []:
+            key = institution.get("id") or _normalized_title(institution.get("display_name"))
+            if key and all((item.get("id") or _normalized_title(item.get("display_name"))) != key for item in institutions):
+                institutions.append(institution)
+        for name in [profile.get("display_name"), *(profile.get("display_name_alternatives") or [])]:
+            if name and name not in alternatives:
+                alternatives.append(name)
+    primary["works_count"] = sum(int(profile.get("works_count") or 0) for profile in valid_profiles)
+    primary["last_known_institutions"] = institutions
+    primary["display_name_alternatives"] = alternatives
+    primary["merged_author_ids"] = valid_ids
+    audit = {
+        "primaryAuthorId": primary_id,
+        "requestedAuthorIds": requested_ids,
+        "mergedAuthorIds": valid_ids,
+        "rejectedAuthorIds": [author_id for author_id in requested_ids if author_id not in valid_ids],
+        "mergedCount": len(valid_ids),
+    }
+    return {
+        "target_author_ids": valid_ids,
+        "target_author_profile": primary,
+        "identity_audit": audit,
+    }
 
 
 # ── 阶段二: 论文获取与去重 ──────────────────────────────────
 
+def _work_identity_signals(work: dict, primary_author_id: str) -> dict[str, set[str]]:
+    institutions = set()
+    coauthors = set()
+    for authorship in work.get("authorships") or []:
+        author_id = str((authorship.get("author") or {}).get("id") or "")
+        if author_id == primary_author_id:
+            for institution in authorship.get("institutions") or []:
+                key = institution.get("id") or _normalized_title(institution.get("display_name"))
+                if key:
+                    institutions.add(str(key))
+        elif author_id:
+            coauthors.add(author_id)
+    topics = set()
+    primary_topic = work.get("primary_topic") or {}
+    if primary_topic.get("id"):
+        topics.add(str(primary_topic["id"]))
+    for topic in work.get("topics") or []:
+        if topic.get("id"):
+            topics.add(str(topic["id"]))
+    return {"institutions": institutions, "coauthors": coauthors, "topics": topics}
+
+
+def _filter_identity_outlier_works(works: list[dict], primary_author_id: str) -> tuple[list[dict], dict]:
+    """排除与核心身份三类信号均断开的很小论文簇；大簇只告警。"""
+    if len(works) < 20:
+        return works, {
+            "collectedWorks": len(works),
+            "excludedWorks": 0,
+            "excludedWorkIds": [],
+            "largeConflictWorks": 0,
+            "possibleConflatedIdentity": False,
+        }
+    signals = [_work_identity_signals(work, primary_author_id) for work in works]
+    counts = {category: defaultdict(int) for category in ("institutions", "coauthors", "topics")}
+    for item in signals:
+        for category, values in item.items():
+            for value in values:
+                counts[category][value] += 1
+    thresholds = {
+        "institutions": max(3, math.ceil(len(works) * 0.03)),
+        "coauthors": max(3, math.ceil(len(works) * 0.03)),
+        "topics": max(3, math.ceil(len(works) * 0.04)),
+    }
+    core = {
+        category: {value for value, count in counts[category].items() if count >= thresholds[category]}
+        for category in counts
+    }
+    unsupported = set()
+    for index, item in enumerate(signals):
+        populated = sum(bool(values) for values in item.values())
+        supported = any(item[category] & core[category] for category in item)
+        has_explicit_institution_conflict = bool(item["institutions"] and not (item["institutions"] & core["institutions"]))
+        if populated >= 2 and has_explicit_institution_conflict and not supported:
+            unsupported.add(index)
+
+    components = []
+    remaining = set(unsupported)
+    while remaining:
+        component = {remaining.pop()}
+        frontier = list(component)
+        while frontier:
+            current = frontier.pop()
+            linked = {
+                candidate for candidate in remaining
+                if any(
+                    signals[current][category] & signals[candidate][category]
+                    for category in signals[current]
+                )
+            }
+            if linked:
+                component.update(linked)
+                remaining.difference_update(linked)
+                frontier.extend(linked)
+        components.append(component)
+
+    small_component_limit = max(3, math.floor(len(works) * 0.05))
+    excluded_indices = set()
+    large_conflict_works = 0
+    for component in components:
+        if len(component) <= small_component_limit:
+            excluded_indices.update(component)
+        else:
+            large_conflict_works += len(component)
+    kept = [work for index, work in enumerate(works) if index not in excluded_indices]
+    excluded_ids = [
+        str(works[index].get("id") or works[index].get("doi") or f"work-{index}")
+        for index in sorted(excluded_indices)
+    ]
+    return kept, {
+        "collectedWorks": len(works),
+        "excludedWorks": len(excluded_indices),
+        "excludedWorkIds": excluded_ids[:50],
+        "largeConflictWorks": large_conflict_works,
+        "possibleConflatedIdentity": bool(excluded_indices or large_conflict_works),
+    }
+
 def collect_works(state: ScholarProfileState) -> dict:
-    """获取作者全部论文（游标分页）。"""
+    """并发获取同一身份组的全部论文，并把中心作者统一到主 ID。"""
     from openalex import get_works
     warnings = []
     works_complete = True
-    try:
-        works, fetch_warnings = get_works(state["target_author_id"])
-        warnings.extend(fetch_warnings)
-        if fetch_warnings:
-            works_complete = False
-    except Exception as exc:
-        works = []
-        works_complete = False
-        warnings.append(f"OpenAlex 论文获取失败，后续分析将基于空论文集: {exc}")
+    primary_id = state["target_author_id"]
+    author_ids = state.get("target_author_ids") or [primary_id]
+    works = []
+    with ThreadPoolExecutor(max_workers=min(6, len(author_ids))) as executor:
+        futures = {executor.submit(get_works, author_id): author_id for author_id in author_ids}
+        for future in as_completed(futures):
+            author_id = futures[future]
+            try:
+                author_works, fetch_warnings = future.result()
+                warnings.extend(fetch_warnings)
+                if fetch_warnings:
+                    works_complete = False
+                for source_work in author_works:
+                    work = deepcopy(source_work)
+                    canonical_authorships = []
+                    seen_authors = set()
+                    for authorship in work.get("authorships") or []:
+                        author = dict(authorship.get("author") or {})
+                        source_id = author.get("id")
+                        if source_id in author_ids:
+                            author["source_id"] = source_id
+                            author["id"] = primary_id
+                            author["display_name"] = (state.get("target_author_profile") or {}).get("display_name", author.get("display_name", ""))
+                        if author.get("id") in seen_authors:
+                            continue
+                        seen_authors.add(author.get("id"))
+                        canonical_authorships.append({**authorship, "author": author})
+                    work["authorships"] = canonical_authorships
+                    work["source_author_id"] = author_id
+                    works.append(work)
+            except Exception as exc:
+                works_complete = False
+                warnings.append(f"OpenAlex 作者档案 {author_id} 论文获取失败: {exc}")
     if state["target_author_profile"]:
         expected = state["target_author_profile"].get("works_count", 0)
         if len(works) < expected:
             warnings.append(f"预期 {expected} 篇，实际获取 {len(works)} 篇（OpenAlex 限制）")
+    works, outlier_audit = _filter_identity_outlier_works(works, primary_id)
+    identity_audit = {**(state.get("identity_audit") or {}), **outlier_audit}
+    if outlier_audit["excludedWorks"]:
+        warnings.append(
+            f"身份一致性审查排除 {outlier_audit['excludedWorks']} 篇与核心机构、合作者和主题均断开的论文"
+        )
+    if outlier_audit["largeConflictWorks"]:
+        warnings.append(
+            f"发现 {outlier_audit['largeConflictWorks']} 篇形成较大独立论文簇，已保留并标记身份风险"
+        )
     return {
         "raw_works": works,
         "source_works": {"openalex": works},
+        "identity_audit": identity_audit,
         "works_complete": works_complete,
         "warnings": warnings,
     }
@@ -283,125 +606,226 @@ def analyze_citations(state: ScholarProfileState) -> dict:
 
 # ── 阶段四: Agent 驱动的方向分析 ──────────────────────────
 
-def _fallback_topic_analysis(works: list) -> dict:
-    """LLM 不可用时的回退方案 — 按 OpenAlex 概念聚合，排除 level-0 宽泛概念。"""
-    # 只聚合 level >= 1 的概念，排除 "Computer Science" 等大词
-    scores = defaultdict(float)
-    paper_concepts = []
-    for w in works:
-        cs = {c["display_name"]: c["score"]
-              for c in (w.get("concepts") or []) if c.get("level", 0) >= 1}
-        paper_concepts.append(cs)
-        for name, s in cs.items():
-            scores[name] += s
+_BROAD_TOPIC_LABELS = {
+    "agricultural and biological sciences", "agriculture", "artificial intelligence",
+    "arts and humanities", "biochemistry", "biology", "business", "chemistry",
+    "computer science", "data science", "earth and planetary sciences", "economics",
+    "engineering", "environmental science", "health sciences", "humanities",
+    "information technology", "life sciences", "materials science", "mathematics",
+    "medicine", "multidisciplinary", "neuroscience", "nursing", "pharmacology",
+    "physics", "psychology", "social science", "social sciences",
+}
+_MID_LEVEL_TOPIC_LABELS = {
+    "data mining", "information retrieval", "machine learning", "natural language processing",
+    "world wide web", "database", "deep learning", "information system",
+}
+_TITLE_STOPWORDS = {
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "on",
+    "or", "over", "the", "through", "to", "toward", "towards", "using", "via", "with",
+}
+_TITLE_EDGE_WORDS = {
+    "analysis", "approach", "based", "case", "challenges", "comparison", "enhanced",
+    "evaluation", "framework", "method", "methods", "modeling", "new", "perspective",
+    "review", "study", "survey", "system", "systems", "technique", "techniques",
+}
 
-    total = sum(scores.values()) or 1
-    clusters = []
-    for name, s in sorted(scores.items(), key=lambda x: -x[1])[:10]:
-        clusters.append({
-            "topic": name,
-            "weight": round(s / total, 3),
-            "score": round(s, 1),
-            "paper_indices": [i for i, cs in enumerate(paper_concepts) if name in cs],
-        })
 
-    # 为每个 topic 选代表论文
-    representative_papers = {}
-    for t in clusters:
-        name = t["topic"]
-        indices = t["paper_indices"]
-        # 先按引用数排序，取 top 3
-        sorted_idx = sorted(indices, key=lambda i: -(works[i].get("cited_by_count") or 0))
-        repr_list = []
-        for idx in sorted_idx[:3]:
-            w = works[idx]
-            repr_list.append({
-                "title": w.get("title", ""),
-                "year": w.get("publication_year"),
-                "citations": w.get("cited_by_count", 0),
-                "journal": _work_journal(w),
-                "doi": w.get("doi", ""),
-                "id": w.get("id", ""),
-                "sources": [record.get("source") for record in w.get("source_records") or [] if record.get("source")],
+def _topic_key(value: str) -> str:
+    tokens = re.findall(r"[a-z0-9]+", str(value or "").casefold())
+    normalized = []
+    for token in tokens:
+        if len(token) > 4 and token.endswith("ies"):
+            token = token[:-3] + "y"
+        elif len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+            token = token[:-1]
+        normalized.append(token)
+    return " ".join(normalized)
+
+
+def _topic_is_specific(value: str) -> bool:
+    key = _topic_key(value)
+    return bool(key and key not in _BROAD_TOPIC_LABELS and len(key) >= 3)
+
+
+def _title_phrases(title: str) -> set[str]:
+    tokens = re.findall(r"[a-z0-9]+", str(title or "").casefold())
+    phrases = set()
+    for size in range(2, 5):
+        for start in range(0, len(tokens) - size + 1):
+            phrase_tokens = tokens[start:start + size]
+            if any(token in _TITLE_STOPWORDS for token in phrase_tokens):
+                continue
+            if phrase_tokens[0] in _TITLE_EDGE_WORDS or phrase_tokens[-1] in _TITLE_EDGE_WORDS:
+                continue
+            key = _topic_key(" ".join(phrase_tokens))
+            if _topic_is_specific(key):
+                phrases.add(key)
+    return phrases
+
+
+def _topic_display_name(key: str, preferred: str = "") -> str:
+    if preferred and _topic_key(preferred) == key:
+        return preferred.strip()
+    acronyms = {"ai", "dna", "gnn", "llm", "nlp", "rdf", "rna", "sparql"}
+    return " ".join(token.upper() if token in acronyms else token.capitalize() for token in key.split())
+
+
+def _representative_papers(works: list, clusters: list[dict]) -> dict:
+    representative = {}
+    for cluster in clusters:
+        indices = cluster["paper_indices"]
+        sorted_indices = sorted(indices, key=lambda index: -(works[index].get("cited_by_count") or 0))
+        items = []
+        for index in sorted_indices[:3]:
+            work = works[index]
+            items.append({
+                "title": work.get("title", ""),
+                "year": work.get("publication_year"),
+                "citations": work.get("cited_by_count", 0),
+                "journal": _work_journal(work),
+                "doi": work.get("doi", ""),
+                "id": work.get("id", ""),
+                "sources": [
+                    record.get("source")
+                    for record in work.get("source_records") or []
+                    if record.get("source")
+                ],
             })
-        representative_papers[name] = repr_list
+        representative[cluster["topic"]] = items
+    return representative
 
-    return {"topic_clusters": clusters, "representative_papers": representative_papers}
+def _fallback_topic_analysis(works: list) -> dict:
+    """融合 OpenAlex topics/keywords 与标题短语，优先输出细粒度方向。"""
+    if not works:
+        return {"topic_clusters": [], "representative_papers": {}}
+    candidates = defaultdict(lambda: {
+        "score": 0.0,
+        "paper_indices": set(),
+        "preferred": "",
+        "sources": set(),
+    })
+    max_year = max((int(work.get("publication_year") or 0) for work in works), default=0)
+    title_phrase_indices = defaultdict(set)
+    normalized_titles = []
+    for index, work in enumerate(works):
+        normalized_title = _topic_key(work.get("title", ""))
+        normalized_titles.append(normalized_title)
+        for phrase in _title_phrases(work.get("title", "")):
+            title_phrase_indices[phrase].add(index)
+
+    def add_candidate(name: str, index: int, score: float, source: str) -> None:
+        if not _topic_is_specific(name):
+            return
+        key = _topic_key(name)
+        if key in _MID_LEVEL_TOPIC_LABELS:
+            score *= 0.28
+        elif any(key.startswith(f"{label} ") for label in _MID_LEVEL_TOPIC_LABELS):
+            score *= 0.55
+        item = candidates[key]
+        item["score"] += score
+        item["paper_indices"].add(index)
+        item["sources"].add(source)
+        if source in {"keyword", "openalex_topic"} or (source == "concept" and not item["preferred"]):
+            item["preferred"] = str(name).strip()
+
+    keyword_occurrences = defaultdict(set)
+    for index, work in enumerate(works):
+        for keyword in work.get("keywords") or []:
+            name = keyword.get("display_name", "")
+            if _topic_is_specific(name):
+                keyword_occurrences[_topic_key(name)].add(index)
+
+    for index, work in enumerate(works):
+        year = int(work.get("publication_year") or 0)
+        recency = 1.0 + (0.35 * max(0, year - (max_year - 5)) / 5 if max_year and year else 0)
+        citation = 1.0 + min(math.log1p(int(work.get("cited_by_count") or 0)) / 12, 0.45)
+        primary = work.get("primary_topic") or {}
+        if primary.get("display_name"):
+            add_candidate(
+                primary["display_name"], index,
+                2.2 * float(primary.get("score") or 1) * recency * citation,
+                "openalex_topic",
+            )
+        for topic in work.get("topics") or []:
+            if topic.get("display_name"):
+                add_candidate(
+                    topic["display_name"], index,
+                    1.2 * float(topic.get("score") or 1) * recency * citation,
+                    "openalex_topic",
+                )
+        for keyword in work.get("keywords") or []:
+            name = keyword.get("display_name", "")
+            key = _topic_key(name)
+            appears_in_title = bool(key and key in normalized_titles[index])
+            if appears_in_title or len(keyword_occurrences[key]) >= 2:
+                add_candidate(
+                    name, index,
+                    2.4 * float(keyword.get("score") or 0.7) * recency * citation,
+                    "keyword",
+                )
+        for concept in work.get("concepts") or []:
+            name = concept.get("display_name", "")
+            if int(concept.get("level") or 0) >= 2:
+                add_candidate(name, index, 0.45 * float(concept.get("score") or 0.5), "concept")
+
+    minimum_phrase_documents = 1 if len(works) <= 5 else 2
+    for phrase, indices in title_phrase_indices.items():
+        if len(indices) < minimum_phrase_documents:
+            continue
+        phrase_score = (2.4 + 0.50 * min(len(phrase.split()), 4)) * len(indices)
+        for index in indices:
+            add_candidate(phrase, index, phrase_score / len(indices), "title_phrase")
+
+    ranked = sorted(
+        candidates.items(),
+        key=lambda item: (
+            -item[1]["score"],
+            -len(item[1]["paper_indices"]),
+            -len(item[0].split()),
+        ),
+    )
+    selected = []
+    for key, item in ranked:
+        indices = set(item["paper_indices"])
+        if not indices:
+            continue
+        key_tokens = set(key.split())
+        redundant = False
+        for existing in selected:
+            existing_tokens = set(existing["key"].split())
+            overlap = len(indices & existing["indices"]) / max(1, min(len(indices), len(existing["indices"])))
+            if overlap >= 0.70 and (key_tokens <= existing_tokens or existing_tokens <= key_tokens):
+                redundant = True
+                break
+        if redundant:
+            continue
+        selected.append({"key": key, "indices": indices, **item})
+        if len(selected) >= 10:
+            break
+
+    total_score = sum(float(item["score"]) for item in selected) or 1.0
+    clusters = [{
+        "topic": _topic_display_name(item["key"], item["preferred"]),
+        "description": "由 OpenAlex 主题、关键词与论文标题共同支持。",
+        "weight": round(float(item["score"]) / total_score, 3),
+        "score": round(float(item["score"]), 2),
+        "paper_indices": sorted(item["indices"]),
+        "sources": sorted(item["sources"]),
+    } for item in selected]
+    return {
+        "topic_clusters": clusters,
+        "representative_papers": _representative_papers(works, clusters),
+    }
 
 
 def agent_analyze_topics(state: ScholarProfileState) -> dict:
-    """使用 LLM Agent 分析研究方向并选择代表论文（每个方向实事求是，不强制数量）。"""
+    """基于可追溯的主题、关键词和标题短语提取细粒度研究方向。"""
     works = _analysis_works(state)
     if not works:
         return {"topic_clusters": [], "representative_papers": {}}
-
-    # 准备论文摘要数据
-    papers_data = []
-    for i, w in enumerate(works):
-        papers_data.append({
-            "index": i,
-            "title": w.get("title", ""),
-            "year": w.get("publication_year"),
-            "citations": w.get("cited_by_count", 0),
-            "concepts": [c["display_name"] for c in (w.get("concepts") or [])],
-        })
-
-    try:
-        from llm import analyze_topics
-        result = analyze_topics(papers_data)
-
-        topics = result.topics
-        if not topics:
-            raise ValueError("Agent 未返回任何方向")
-
-        topic_clusters = []
-        representative_papers = {}
-        total = max(len(works), 1)
-
-        for t in topics:
-            all_idx = [i for i in t.all_paper_indices if 0 <= i < len(works)]
-            if not all_idx:
-                continue
-
-            weight = round(len(all_idx) / total, 3)
-            score = round(sum(works[i].get("cited_by_count", 0) for i in all_idx), 1)
-
-            topic_clusters.append({
-                "topic": t.name,
-                "description": t.description,
-                "weight": weight,
-                "score": score,
-                "paper_indices": all_idx,
-            })
-
-            # 代表论文：取 LLM 推荐的，若没有则按引用数取前 3
-            repr_idx = [i for i in t.representative_paper_indices if 0 <= i < len(works)]
-            chosen = repr_idx if repr_idx else sorted(all_idx, key=lambda i: -(works[i].get("cited_by_count") or 0))[:3]
-            repr_list = []
-            for idx in chosen:
-                w = works[idx]
-                repr_list.append({
-                    "title": w.get("title", ""),
-                    "year": w.get("publication_year"),
-                    "citations": w.get("cited_by_count", 0),
-                    "journal": _work_journal(w),
-                    "doi": w.get("doi", ""),
-                    "id": w.get("id", ""),
-                    "sources": [record.get("source") for record in w.get("source_records") or [] if record.get("source")],
-                })
-            representative_papers[t.name] = repr_list
-
-        if not topic_clusters:
-            raise ValueError("Agent 未能产出有效方向")
-
-        print(f"[AGENT] ✓ 成功，产出 {len(topic_clusters)} 个方向")
-        return {"topic_clusters": topic_clusters, "representative_papers": representative_papers, "warnings": ["Agent驱动方向分析 ✓"]}
-
-    except Exception as e:
-        warnings = [f"LLM 分析失败，回退到规则模式: {e}"]
-        fallback = _fallback_topic_analysis(works)
-        fallback["warnings"] = warnings
-        return fallback
+    result = _fallback_topic_analysis(works)
+    result["warnings"] = ["细粒度研究方向已由 OpenAlex topics、keywords 与论文标题交叉提取"]
+    return result
 
 
 # ── 阶段五: 兴趣演化 ────────────────────────────────────────
@@ -470,7 +894,7 @@ def analyze_coauthors(state: ScholarProfileState) -> dict:
 
         for au in w.get("authorships") or []:
             aid = (au.get("author") or {}).get("id")
-            if aid and aid != state["target_author_id"]:
+            if aid and aid not in set(state.get("target_author_ids") or [state["target_author_id"]]):
                 name = (au.get("author") or {}).get("display_name", "?")
                 entry = raw[aid]
                 entry["names"].add(name)
@@ -559,7 +983,7 @@ def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[
         evidence.append({
             "id": str(next_id),
             "type": "topic",
-            "text": "核心研究方向来自裁决后论文标题与 OpenAlex concepts 聚合: " + "、".join(topics) + "。",
+            "text": "核心研究方向来自裁决后论文标题与 OpenAlex topics、keywords 交叉聚合: " + "、".join(topics) + "。",
             "sources": ["OpenAlex", "Crossref"] if verified else ["OpenAlex"],
         })
         next_id += 1
@@ -796,6 +1220,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "graphEdges": state["graph_edges"],
         "profileSummary": state["profile_summary"],
         "profileEvidence": state["profile_evidence"],
+        "identityAudit": state.get("identity_audit") or {},
         "dataAudit": state.get("data_audit") or {},
         "evidenceReview": state.get("evidence_review") or {},
     }

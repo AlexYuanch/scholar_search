@@ -247,7 +247,7 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
         setError(message)
         setLoading(null)
       },
-    }, { signal: controller.signal })
+    }, { signal: controller.signal, authorIds: candidate.merged_ids })
   }
 
   const search = async () => {

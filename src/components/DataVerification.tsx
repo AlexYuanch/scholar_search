@@ -20,6 +20,18 @@ export default function DataVerification({ profile, t }: {
     .replace("{merged}", String(audit.duplicateRecordsMerged))
     .replace("{conflicts}", String(audit.conflictCount))
   const failureDetail = t("verification.failed").replace("{count}", String(audit.crossrefFailed))
+  const identityDetail = t("verification.identity_merged").replace(
+    "{count}",
+    String(profile.identityAudit?.mergedCount ?? 1),
+  )
+  const identityExcludedDetail = t("verification.identity_excluded").replace(
+    "{count}",
+    String(profile.identityAudit?.excludedWorks ?? 0),
+  )
+  const identityConflictDetail = t("verification.identity_conflict").replace(
+    "{count}",
+    String(profile.identityAudit?.largeConflictWorks ?? 0),
+  )
 
   return (
     <Card>
@@ -73,6 +85,16 @@ export default function DataVerification({ profile, t }: {
           <span>{t("verification.sources")}</span>
           {audit.sources.map((source) => <Badge key={source} variant="secondary">{source}</Badge>)}
         </div>
+
+        {(profile.identityAudit?.mergedCount ?? 1) > 1 && (
+          <p className="text-xs leading-relaxed text-primary">{identityDetail}</p>
+        )}
+        {(profile.identityAudit?.excludedWorks ?? 0) > 0 && (
+          <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">{identityExcludedDetail}</p>
+        )}
+        {(profile.identityAudit?.largeConflictWorks ?? 0) > 0 && (
+          <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">{identityConflictDetail}</p>
+        )}
 
         <p className="text-xs leading-relaxed text-muted-foreground">
           {detail}

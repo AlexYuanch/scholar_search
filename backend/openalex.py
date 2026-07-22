@@ -2,6 +2,7 @@
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
 import requests
@@ -19,6 +20,8 @@ HEADERS = {"User-Agent": "mailto:demo@example.com"}
 MAX_RETRIES = 3
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 DEFAULT_MAX_PAGES = int(os.getenv("OPENALEX_MAX_WORK_PAGES", "200"))
+IDENTITY_FINGERPRINT_WORKS = int(os.getenv("OPENALEX_IDENTITY_FINGERPRINT_WORKS", "100"))
+IDENTITY_MAX_WORKERS = int(os.getenv("OPENALEX_IDENTITY_MAX_WORKERS", "8"))
 _SESSION = requests.Session()
 _CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 
@@ -111,6 +114,70 @@ def get_author(author_id: str) -> dict:
     return _get(f"/authors/{author_id}")
 
 
+def get_author_identity_fingerprint(author_id: str, per_page: int = IDENTITY_FINGERPRINT_WORKS) -> dict:
+    """获取用于身份消歧的轻量论文、合作者和主题指纹。"""
+    data = _get(
+        "/works",
+        filter=f"authorships.author.id:{author_id}",
+        per_page=min(max(per_page, 1), 200),
+        sort="cited_by_count:desc",
+        select="id,doi,publication_year,authorships,primary_topic,topics",
+    )
+    work_ids = set()
+    coauthor_ids = set()
+    topic_ids = set()
+    publication_years = []
+    for work in data.get("results", []):
+        work_key = work.get("doi") or work.get("id")
+        if work_key:
+            work_ids.add(str(work_key))
+        if work.get("publication_year"):
+            publication_years.append(int(work["publication_year"]))
+        for authorship in work.get("authorships") or []:
+            coauthor_id = (authorship.get("author") or {}).get("id")
+            if coauthor_id and coauthor_id != author_id:
+                coauthor_ids.add(str(coauthor_id))
+        primary_topic = work.get("primary_topic") or {}
+        if primary_topic.get("id"):
+            topic_ids.add(str(primary_topic["id"]))
+        for topic in work.get("topics") or []:
+            if topic.get("id"):
+                topic_ids.add(str(topic["id"]))
+    return {
+        "work_ids": sorted(work_ids),
+        "coauthor_ids": sorted(coauthor_ids),
+        "topic_ids": sorted(topic_ids),
+        "publication_years": sorted(set(publication_years)),
+        "sampled_works": len(data.get("results", [])),
+    }
+
+
+def enrich_authors_for_disambiguation(candidates: List[dict]) -> List[dict]:
+    """并发补充身份指纹；单个请求失败时保留候选但不自动合并。"""
+    enriched = [dict(candidate) for candidate in candidates]
+    pending = {
+        index: candidate
+        for index, candidate in enumerate(enriched)
+        if candidate.get("id") and not candidate.get("identity_fingerprint")
+    }
+    if not pending:
+        return enriched
+    workers = min(max(1, IDENTITY_MAX_WORKERS), len(pending))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(get_author_identity_fingerprint, candidate["id"]): index
+            for index, candidate in pending.items()
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                enriched[index]["identity_fingerprint"] = future.result()
+            except Exception as exc:
+                enriched[index]["identity_fingerprint"] = {}
+                enriched[index]["identity_warning"] = str(exc)
+    return enriched
+
+
 def get_works(author_id: str, max_pages: int = DEFAULT_MAX_PAGES) -> tuple[List[dict], list[str]]:
     """获取作者的全部论文（游标分页），失败时尽量返回已取得的部分结果。"""
     works = []
@@ -125,7 +192,10 @@ def get_works(author_id: str, max_pages: int = DEFAULT_MAX_PAGES) -> tuple[List[
                         per_page=200,
                         cursor=cursor,
                         sort="cited_by_count:desc",
-                        select="id,doi,title,publication_year,cited_by_count,authorships,concepts,primary_location,type")
+                        select=(
+                            "id,doi,title,publication_year,cited_by_count,authorships,concepts,"
+                            "primary_topic,topics,keywords,primary_location,type"
+                        ))
         except OpenAlexError as exc:
             if works:
                 warnings.append(f"OpenAlex 部分论文获取失败，已保留 {len(works)} 篇部分结果: {exc}")

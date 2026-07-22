@@ -18,6 +18,7 @@ const zh: Record<string, string> = {
   "candidate.citations": "次引用",
   "candidate.unknown_inst": "未知机构",
   "candidate.merged": "个实体已合并",
+  "candidate.merged_hint": "已根据论文、合作者、机构和研究主题综合归并",
 
   "tab.overview": "概览",
   "tab.papers": "论文",
@@ -41,9 +42,12 @@ const zh: Record<string, string> = {
   "verification.detail": "OpenAlex 报告 {expected} 篇，本次获取 {fetched} 篇；合并 {merged} 条重复记录，发现 {conflicts} 项元数据差异。待核实不等于错误，通常表示缺少 DOI 或暂未被 Crossref 收录。",
   "verification.limited": "本次最多核验 200 个 DOI，其余论文仍保留 OpenAlex 记录，未计入跨来源核验比例。",
   "verification.failed": "有 {count} 条 DOI 因 Crossref 暂时不可用而未完成核验，可稍后重新查询。",
+  "verification.identity_merged": "本次画像已归并 {count} 个经多项证据判断属于同一学者的公开档案。",
+  "verification.identity_excluded": "身份一致性审查排除 {count} 篇与核心机构、合作者和研究主题均不一致的论文。",
+  "verification.identity_conflict": "另有 {count} 篇论文形成较大的独立身份簇，系统未自动删除，建议结合论文列表人工确认。",
 
   "section.research_directions": "研究方向",
-  "section.research_desc": "基于论文关键词和主题自动提取",
+  "section.research_desc": "基于论文细粒度主题、关键词和标题短语提取",
   "section.repr_papers": "代表性论文",
   "section.repr_desc": "高被引及近期发表",
   "section.top_cited": "高被引论文",

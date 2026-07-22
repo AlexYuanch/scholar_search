@@ -111,3 +111,36 @@ def test_search_authors_combines_variants_and_deduplicates_by_id(monkeypatch):
     authors = openalex.search_authors("陈丽娜")
 
     assert [author["id"] for author in authors] == ["A3", "A1", "A2"]
+
+
+def test_author_identity_fingerprint_uses_works_coauthors_and_topics(monkeypatch):
+    import openalex
+
+    monkeypatch.setattr(openalex, "_get", lambda _endpoint, **_params: {
+        "results": [
+            {
+                "id": "W1",
+                "doi": "https://doi.org/10.1000/one",
+                "publication_year": 2025,
+                "authorships": [
+                    {"author": {"id": "A1"}},
+                    {"author": {"id": "C1"}},
+                ],
+                "primary_topic": {"id": "T1"},
+                "topics": [{"id": "T1"}, {"id": "T2"}],
+            },
+            {
+                "id": "W2",
+                "publication_year": 2026,
+                "authorships": [{"author": {"id": "C2"}}],
+                "topics": [{"id": "T2"}],
+            },
+        ]
+    })
+
+    fingerprint = openalex.get_author_identity_fingerprint("A1")
+
+    assert fingerprint["work_ids"] == ["W2", "https://doi.org/10.1000/one"]
+    assert fingerprint["coauthor_ids"] == ["C1", "C2"]
+    assert fingerprint["topic_ids"] == ["T1", "T2"]
+    assert fingerprint["publication_years"] == [2025, 2026]

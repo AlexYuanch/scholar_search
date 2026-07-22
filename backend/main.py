@@ -33,7 +33,7 @@ from auth import (
 )
 from events import ProfileEventBroker
 from nodes import dedup_authors
-from openalex import search_authors
+from openalex import enrich_authors_for_disambiguation, search_authors
 from quality import assess_profile_quality
 from repository import (
     APIQuotaExceeded,
@@ -70,7 +70,7 @@ STAGE_LABELS = {
     "collect_crossref": "核验出版信息...",
     "adjudicate_sources": "统一多来源数据...",
     "analyze_citations": "统计引用数据...",
-    "agent_analyze_topics": "AI 分析研究方向...",
+    "agent_analyze_topics": "提取细粒度研究方向...",
     "analyze_evolution": "分析兴趣演化...",
     "analyze_coauthors": "分析合作关系...",
     "build_graph": "构建合作网络图...",
@@ -114,8 +114,8 @@ PROGRESS_MESSAGES = {
         "正在整理年度论文与引用趋势...",
     ],
     "agent_analyze_topics": [
-        "正在扫描论文标题与主题标签...",
-        "正在归纳研究方向和代表论文...",
+        "正在交叉分析论文主题、关键词与标题短语...",
+        "正在过滤泛化学科标签并筛选代表作...",
     ],
     "analyze_evolution": ["正在按年份整理研究兴趣变化..."],
     "analyze_coauthors": ["正在统计合作作者与合作论文..."],
@@ -250,7 +250,16 @@ def repository_not_configured(_request, exc: RepositoryNotConfigured):
 
 class ProfileRequest(BaseModel):
     author_id: str
+    author_ids: list[str] = Field(default_factory=list, max_length=8)
     query_name: str = ""
+
+
+def _requested_author_ids(req: ProfileRequest, cached: dict | None = None) -> list[str]:
+    cached_ids = (
+        (((cached or {}).get("payload") or {}).get("identityAudit") or {}).get("mergedAuthorIds")
+        or []
+    )
+    return list(dict.fromkeys([req.author_id, *(req.author_ids or cached_ids)]))[:8]
 
 
 class FavoriteRequest(BaseModel):
@@ -380,7 +389,7 @@ def search(
 ):
     """搜索学者姓名，返回去重后的候选人列表。"""
     _consume_api_quota("search", user, request)
-    candidates = search_authors(name)
+    candidates = enrich_authors_for_disambiguation(search_authors(name))
     merged = dedup_authors(candidates)
     return {
         "candidates": [{
@@ -397,6 +406,7 @@ def search(
             "merged_count": author.get("merged_count", 1),
             "merged_ids": author.get("merged_ids", [author.get("id", "")]),
             "disambiguation": author.get("disambiguation", ""),
+            "identity_confidence": author.get("identity_confidence", "single"),
         } for author in merged]
     }
 
@@ -424,6 +434,7 @@ def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(requ
 
     state = default_state()
     state["target_author_id"] = req.author_id
+    state["target_author_ids"] = _requested_author_ids(req, cached)
     _consume_api_quota("profile", user, request)
 
     result = graph.invoke(state)
@@ -513,6 +524,7 @@ async def profile_stream(
     cached = await asyncio.to_thread(repository.get_profile, req.author_id)
     state = default_state()
     state["target_author_id"] = req.author_id
+    state["target_author_ids"] = _requested_author_ids(req, cached)
 
     ev_q: "queue.Queue" = queue.Queue()
     result_holder: list = []

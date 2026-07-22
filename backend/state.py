@@ -8,7 +8,9 @@ class ScholarProfileState(TypedDict):
 
     # ── 学者身份 ──
     target_author_id: Optional[str]
+    target_author_ids: List[str]
     target_author_profile: Optional[Dict[str, Any]]
+    identity_audit: Dict[str, Any]
 
     # ── 论文数据 ──
     raw_works: List[Dict[str, Any]]
@@ -52,7 +54,9 @@ def default_state() -> Dict[str, Any]:
     """创建一个初始空状态，方便 FastAPI 调用。"""
     return {
         "target_author_id": None,
+        "target_author_ids": [],
         "target_author_profile": None,
+        "identity_audit": {},
         "raw_works": [],
         "deduped_works": [],
         "source_works": {},

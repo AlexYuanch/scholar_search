@@ -144,6 +144,9 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                     <span>h-index {c.h_index}</span>
                     {(c.merged_count ?? 1) > 1 && <span>{c.merged_count} {t("candidate.merged")}</span>}
                   </div>
+                  {(c.merged_count ?? 1) > 1 && (
+                    <p className="mt-1 text-xs text-primary">{t("candidate.merged_hint")}</p>
+                  )}
                 </div>
               </div>
               <ChevronRight className="h-5 w-5 text-muted-foreground" />
@@ -350,7 +353,7 @@ export default function App() {
     localStorage.setItem("accent", accent)
   }, [accent])
 
-  const loadProfile = useCallback(async (authorId: string) => {
+  const loadProfile = useCallback(async (authorId: string, authorIds?: string[]) => {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -420,7 +423,7 @@ export default function App() {
         setLoading(false)
         setWorkflowMessage("")
       },
-    }, { signal: controller.signal })
+    }, { signal: controller.signal, authorIds })
   }, [])
 
   useEffect(() => {
@@ -495,7 +498,7 @@ export default function App() {
     try {
       const results = await searchAuthors(q)
       if (results.length === 1) {
-        await loadProfile(results[0].id)
+        await loadProfile(results[0].id, results[0].merged_ids)
       } else {
         setCandidates(results)
       }
@@ -529,7 +532,7 @@ export default function App() {
 
   const handleCandidateSelect = useCallback((candidate: Candidate) => {
     setQuery(candidate.name)
-    void loadProfile(candidate.id)
+    void loadProfile(candidate.id, candidate.merged_ids)
   }, [loadProfile])
 
   const handleViewProfile = useCallback(async (authorId: string, scholarName: string) => {

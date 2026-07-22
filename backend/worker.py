@@ -25,6 +25,13 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
     try:
         state = default_state()
         state["target_author_id"] = author_id
+        state["target_author_ids"] = list(dict.fromkeys([
+            author_id,
+            *(
+                ((((cached or {}).get("payload") or {}).get("identityAudit") or {}).get("mergedAuthorIds"))
+                or []
+            ),
+        ]))[:8]
         result = workflow_graph.invoke(state)
         assessment = assess_profile_quality(result, cached=cached)
         if not assessment.publishable:
