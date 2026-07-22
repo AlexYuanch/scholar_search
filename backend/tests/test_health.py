@@ -118,6 +118,27 @@ def test_profile_stream_refreshes_cached_profile(monkeypatch, authenticated_clie
     assert '"name": "Ada Byron"' in body
 
 
+def test_mark_favorite_seen_clears_tracking_updates(monkeypatch, authenticated_client):
+    import main
+
+    repository = InMemoryRepository()
+    repository.publish_profile(_state(), query_name="Ada Lovelace")
+    repository.add_favorite("test-user", "A1")
+    updated = _state()
+    updated["web_payload"]["totalPapers"] = 2
+    saved = repository.publish_profile(updated, query_name="Ada Lovelace")
+    assert repository.list_favorites("test-user")[0]["has_updates"] is True
+    monkeypatch.setattr(main, "repository", repository)
+
+    response = authenticated_client.post("/api/favorites/seen", json={
+        "author_id": "A1",
+        "profile_version": saved["profile_version"],
+    })
+
+    assert response.status_code == 200
+    assert repository.list_favorites("test-user")[0]["has_updates"] is False
+
+
 def test_profile_stream_reports_workflow_error(monkeypatch, authenticated_client):
     import main
 

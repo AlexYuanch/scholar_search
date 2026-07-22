@@ -35,7 +35,7 @@ def _workflow_state(work_count=60):
             "last_known_institutions": [],
         },
         "deduped_works": works,
-        "web_payload": {"name": "Ada", "totalPapers": work_count},
+        "web_payload": {"name": "Ada", "totalPapers": work_count, "totalCitations": 100},
         "warnings": [],
         "errors": [],
         "works_complete": True,
@@ -81,6 +81,37 @@ def test_history_and_favorites_are_isolated_by_user():
     assert repository.list_history("user-2", limit=20) == []
     assert len(repository.list_favorites("user-1")) == 1
     assert repository.list_favorites("user-2") == []
+
+
+def test_favorite_reports_profile_changes_until_user_marks_them_seen():
+    repository = InMemoryRepository()
+    repository.publish_profile(_workflow_state(2), query_name="Ada")
+    repository.add_favorite("user-1", "https://openalex.org/A1")
+
+    initial = repository.list_favorites("user-1")[0]
+    assert initial["has_updates"] is False
+    assert initial["new_papers"] == 0
+    assert initial["new_citations"] == 0
+
+    updated_state = _workflow_state(3)
+    updated_state["web_payload"]["totalCitations"] = 130
+    saved = repository.publish_profile(updated_state, query_name="Ada")
+
+    updated = repository.list_favorites("user-1")[0]
+    assert updated["has_updates"] is True
+    assert updated["new_papers"] == 1
+    assert updated["new_citations"] == 30
+
+    repository.mark_favorite_seen(
+        "user-1",
+        "https://openalex.org/A1",
+        saved["profile_version"],
+    )
+
+    seen = repository.list_favorites("user-1")[0]
+    assert seen["has_updates"] is False
+    assert seen["new_papers"] == 0
+    assert seen["new_citations"] == 0
 
 
 def test_password_reset_revokes_existing_sessions():

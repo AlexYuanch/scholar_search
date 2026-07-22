@@ -1,9 +1,22 @@
 import { useEffect, useState } from "react"
-import { BookOpen, Heart, Loader2, LogIn, X } from "lucide-react"
+import { Bell, BookOpen, CheckCircle2, Heart, Loader2, LogIn, RefreshCw, X } from "lucide-react"
 import { useAuth } from "@/auth"
 import { getFavorites, getHistory, removeFavorite, type ScholarListItem } from "@/api"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+
+function updateTime(value?: string) {
+  if (!value) return "—"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "—"
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date)
+}
 
 export function AuthDialog({ open, required = false, onClose, t }: {
   open: boolean
@@ -163,6 +176,12 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
           <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {mode === "favorites" && (
+            <div className="mb-4 flex gap-3 rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+              <Bell className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              <p>{t("tracking.description")}</p>
+            </div>
+          )}
           {loading && <Loader2 className="mx-auto mt-12 h-6 w-6 animate-spin" />}
           {error && <p className="break-words text-sm text-destructive">{error}</p>}
           {!loading && !items.length && <p className="text-sm text-muted-foreground">{t("account.empty")}</p>}
@@ -171,9 +190,31 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
               <Card key={item.author_id} className="cursor-pointer hover:bg-muted/50" onClick={() => onSelect(item.author_id, item.name)}>
                 <CardContent className="flex min-w-0 items-start justify-between gap-2 p-4">
                   <div className="min-w-0">
-                    <p className="break-words text-sm font-medium">{item.name}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="break-words text-sm font-medium">{item.name}</p>
+                      {mode === "favorites" && item.has_updates && (
+                        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">{t("tracking.new_activity")}</Badge>
+                      )}
+                    </div>
                     <p className="break-words text-xs text-muted-foreground">{item.institution}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{item.total_papers ?? 0} {t("candidate.papers")}</p>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <span>{item.total_papers ?? 0} {t("candidate.papers")}</span>
+                      {mode === "favorites" && (item.new_papers ?? 0) > 0 && (
+                        <span className="font-medium text-emerald-700 dark:text-emerald-400">+{item.new_papers} {t("tracking.papers")}</span>
+                      )}
+                      {mode === "favorites" && (item.new_citations ?? 0) > 0 && (
+                        <span className="font-medium text-emerald-700 dark:text-emerald-400">+{item.new_citations?.toLocaleString()} {t("tracking.citations")}</span>
+                      )}
+                    </div>
+                    {mode === "favorites" && (
+                      <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
+                        {item.refresh_status === "queued" || item.refresh_status === "updating" ? (
+                          <><RefreshCw className="h-3 w-3 animate-spin" />{t("tracking.updating")}</>
+                        ) : (
+                          <><CheckCircle2 className="h-3 w-3" />{t(item.has_updates ? "tracking.updated_at" : "tracking.current")} {updateTime(item.updated_at)}</>
+                        )}
+                      </p>
+                    )}
                   </div>
                   {mode === "favorites" && (
                     <Button className="shrink-0" variant="ghost" size="icon" onClick={(event) => {

@@ -12,7 +12,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
 import { useTranslation } from "./i18n"
 import type { Candidate, ScholarProfile } from "./types"
-import { addFavorite, getFavorites, getProfile, profileEventsUrl, removeFavorite, searchAuthors, streamProfile } from "./api"
+import { addFavorite, getFavorites, getProfile, markFavoriteSeen, profileEventsUrl, removeFavorite, searchAuthors, streamProfile } from "./api"
 import { useAuth } from "./auth"
 import SidePanel from "@/components/SidePanel"
 import AllPapers from "@/components/AllPapers"
@@ -424,7 +424,12 @@ export default function App() {
     if (!user || !profile) return
     let active = true
     void getFavorites().then((items) => {
-      if (active) setFavorite(items.some((item) => item.author_id === profile.authorId))
+      if (!active) return
+      const tracked = items.find((item) => item.author_id === profile.authorId)
+      setFavorite(Boolean(tracked))
+      if (tracked && profile.profileVersion > 0) {
+        void markFavoriteSeen(profile.authorId, profile.profileVersion).catch(() => undefined)
+      }
     }).catch(() => {
       if (active) setFavorite(false)
     })

@@ -190,11 +190,17 @@ class InMemoryRepository:
     def add_favorite(self, user_id: str, author_id: str) -> dict:
         with self._lock:
             scholar = self._scholar(author_id)
+            profile = self.profiles.get(author_id) or {}
+            payload = profile.get("payload") or {}
             row = {
                 "author_id": author_id,
                 "scholar_id": scholar["id"],
                 "name": scholar.get("name", ""),
                 "created_at": _iso(),
+                "last_seen_profile_version": int(profile.get("profile_version", 0)),
+                "last_seen_total_papers": int(payload.get("totalPapers", 0)),
+                "last_seen_total_citations": int(payload.get("totalCitations", 0)),
+                "last_seen_at": _iso(),
             }
             self.favorites[(user_id, author_id)] = row
             return deepcopy(row)
@@ -203,8 +209,48 @@ class InMemoryRepository:
         self.favorites.pop((user_id, author_id), None)
 
     def list_favorites(self, user_id: str) -> list[dict]:
-        rows = [deepcopy(v) for (uid, _), v in self.favorites.items() if uid == user_id]
+        rows = []
+        for (uid, author_id), favorite in self.favorites.items():
+            if uid != user_id:
+                continue
+            row = deepcopy(favorite)
+            profile = self.profiles.get(author_id) or {}
+            payload = profile.get("payload") or {}
+            current_papers = int(payload.get("totalPapers", 0))
+            current_citations = int(payload.get("totalCitations", 0))
+            new_papers = max(0, current_papers - int(row.get("last_seen_total_papers", 0)))
+            new_citations = max(0, current_citations - int(row.get("last_seen_total_citations", 0)))
+            row.update({
+                "institution": payload.get("institution", ""),
+                "total_papers": current_papers,
+                "total_citations": current_citations,
+                "h_index": int(payload.get("hIndex", 0)),
+                "updated_at": profile.get("updated_at"),
+                "profile_version": int(profile.get("profile_version", 0)),
+                "refresh_status": profile.get("refresh_status", "ready"),
+                "new_papers": new_papers,
+                "new_citations": new_citations,
+                "has_updates": new_papers > 0 or new_citations > 0,
+            })
+            rows.append(row)
         return sorted(rows, key=lambda row: row["created_at"], reverse=True)
+
+    def mark_favorite_seen(self, user_id: str, author_id: str, profile_version: int) -> None:
+        with self._lock:
+            row = self.favorites.get((user_id, author_id))
+            profile = self.profiles.get(author_id)
+            if not row or not profile:
+                return
+            current_version = int(profile.get("profile_version", 0))
+            row["last_seen_profile_version"] = max(
+                int(row.get("last_seen_profile_version", 0)),
+                min(profile_version, current_version),
+            )
+            if current_version <= profile_version:
+                payload = profile.get("payload") or {}
+                row["last_seen_total_papers"] = int(payload.get("totalPapers", 0))
+                row["last_seen_total_citations"] = int(payload.get("totalCitations", 0))
+            row["last_seen_at"] = _iso()
 
     def enqueue_refresh(self, author_id: str, reason: str) -> str:
         with self._lock:
@@ -736,9 +782,17 @@ class PostgresRepository:
     def add_favorite(self, user_id: str, author_id: str) -> dict:
         with self.engine.begin() as conn:
             row = conn.execute(text("""
-                insert into public.favorites (user_id, scholar_id)
-                select cast(:user_id as uuid), id from public.scholars
-                where source = 'openalex' and source_author_id = :author_id
+                insert into public.favorites (
+                    user_id, scholar_id, last_seen_profile_version,
+                    last_seen_total_papers, last_seen_total_citations, last_seen_at
+                )
+                select cast(:user_id as uuid), s.id, coalesce(ps.version, 0),
+                       coalesce((p.payload ->> 'totalPapers')::integer, 0),
+                       coalesce((p.payload ->> 'totalCitations')::bigint, 0), now()
+                from public.scholars s
+                left join public.profile_status ps on ps.scholar_id = s.id
+                left join public.scholar_profiles p on p.scholar_id = s.id
+                where s.source = 'openalex' and s.source_author_id = :author_id
                 on conflict (user_id, scholar_id) do update set user_id = excluded.user_id
                 returning scholar_id, created_at
             """), {"user_id": user_id, "author_id": author_id}).mappings().first()
@@ -761,14 +815,71 @@ class PostgresRepository:
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
                 select s.id as scholar_id, s.source_author_id as author_id, s.display_name,
-                       p.payload, p.generated_at as updated_at, f.created_at
+                       p.payload, p.generated_at as updated_at, f.created_at,
+                       ps.version as profile_version, ps.status as refresh_status,
+                       f.last_seen_profile_version, f.last_seen_total_papers,
+                       f.last_seen_total_citations, f.last_seen_at
                 from public.favorites f
                 join public.scholars s on s.id = f.scholar_id
                 left join public.scholar_profiles p on p.scholar_id = s.id
+                left join public.profile_status ps on ps.scholar_id = s.id
                 where f.user_id = cast(:user_id as uuid)
                 order by f.created_at desc
             """), {"user_id": user_id}).mappings().all()
-        return [self._scholar_summary(dict(row)) | {"created_at": _iso(row["created_at"])} for row in rows]
+        result = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            summary = self._scholar_summary(row)
+            current_papers = int(summary.get("total_papers") or 0)
+            current_citations = int(summary.get("total_citations") or 0)
+            new_papers = max(0, current_papers - int(row["last_seen_total_papers"] or 0))
+            new_citations = max(0, current_citations - int(row["last_seen_total_citations"] or 0))
+            result.append(summary | {
+                "created_at": _iso(row["created_at"]),
+                "profile_version": int(row["profile_version"] or 0),
+                "refresh_status": row["refresh_status"] or "ready",
+                "last_seen_profile_version": int(row["last_seen_profile_version"] or 0),
+                "last_seen_at": _iso(row["last_seen_at"]) if row["last_seen_at"] else None,
+                "new_papers": new_papers,
+                "new_citations": new_citations,
+                "has_updates": new_papers > 0 or new_citations > 0,
+            })
+        return result
+
+    def mark_favorite_seen(self, user_id: str, author_id: str, profile_version: int) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                with current_profile as (
+                    select s.id as scholar_id, ps.version, p.payload
+                    from public.scholars s
+                    join public.profile_status ps on ps.scholar_id = s.id
+                    join public.scholar_profiles p on p.scholar_id = s.id
+                    where s.source = 'openalex' and s.source_author_id = :author_id
+                )
+                update public.favorites f
+                set last_seen_profile_version = greatest(
+                        f.last_seen_profile_version,
+                        least(:profile_version, cp.version)
+                    ),
+                    last_seen_total_papers = case
+                        when cp.version <= :profile_version
+                        then coalesce((cp.payload ->> 'totalPapers')::integer, 0)
+                        else f.last_seen_total_papers
+                    end,
+                    last_seen_total_citations = case
+                        when cp.version <= :profile_version
+                        then coalesce((cp.payload ->> 'totalCitations')::bigint, 0)
+                        else f.last_seen_total_citations
+                    end,
+                    last_seen_at = now()
+                from current_profile cp
+                where f.scholar_id = cp.scholar_id
+                  and f.user_id = cast(:user_id as uuid)
+            """), {
+                "user_id": user_id,
+                "author_id": author_id,
+                "profile_version": max(0, profile_version),
+            })
 
     def enqueue_refresh(self, author_id: str, reason: str) -> str:
         with self.engine.begin() as conn:

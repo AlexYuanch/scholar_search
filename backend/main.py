@@ -242,6 +242,11 @@ class FavoriteRequest(BaseModel):
     author_id: str
 
 
+class FavoriteSeenRequest(BaseModel):
+    author_id: str
+    profile_version: int = Field(ge=0)
+
+
 class PasswordLoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str = Field(min_length=12, max_length=256)
@@ -450,6 +455,12 @@ def add_favorite(req: FavoriteRequest, user: AuthUser = Depends(require_user)):
         return repository.add_favorite(user.id, req.author_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Scholar profile not found") from exc
+
+
+@app.post("/api/favorites/seen")
+def mark_favorite_seen(req: FavoriteSeenRequest, user: AuthUser = Depends(require_user)):
+    repository.mark_favorite_seen(user.id, req.author_id, req.profile_version)
+    return {"status": "success"}
 
 
 @app.delete("/api/favorites/{author_id:path}")

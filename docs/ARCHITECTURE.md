@@ -53,7 +53,7 @@ flowchart LR
 | `api_rate_limit_events` | 搜索与画像生成的账号、IP、动作和时间窗口计数 |
 | `user_sessions` | 不透明会话 token 摘要、过期和撤销时间 |
 | `user_history` | 用户私有访问历史，同一用户/学者合并次数 |
-| `favorites` | 用户私有收藏，复合主键去重 |
+| `favorites` | 用户私有研究追踪；复合主键去重，并保存上次查看的画像版本、论文数和引用数基线 |
 
 `backend/migrations/*.py` 是唯一结构来源。Alembic 使用数据库所有者账号，运行时使用固定受限角色 `scholar_app`。数据库仅位于服务端私网，不向浏览器开放；所有用户所有权检查由 FastAPI 完成。
 
@@ -74,6 +74,7 @@ flowchart LR
 - 收藏学者使用 24 小时阈值；最近 30 天访问者使用 7 天阈值。
 - 后台维护按阈值原子去重插入 `refresh_jobs`，不改变用户主动查询始终重新获取的行为。
 - 只有完整抓取成功才允许删除已消失的中心作者 authorship。
+- 追踪列表把最新画像中的论文数、引用数与当前用户的 `favorites` 基线比较；只有正向增量才显示动态提醒。用户加载到相应画像版本后调用 `/api/favorites/seen`，事务内更新自己的基线，不影响其他用户。
 
 ### Worker
 

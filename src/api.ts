@@ -27,6 +27,13 @@ export interface ScholarListItem {
   created_at?: string
   last_viewed_at?: string
   view_count?: number
+  profile_version?: number
+  last_seen_profile_version?: number
+  last_seen_at?: string
+  refresh_status?: "ready" | "queued" | "updating" | "failed"
+  new_papers?: number
+  new_citations?: number
+  has_updates?: boolean
 }
 
 export interface WorkPage {
@@ -161,6 +168,13 @@ export async function addFavorite(authorId: string): Promise<void> {
 
 export async function removeFavorite(authorId: string): Promise<void> {
   await authenticatedFetch(`/favorites/${encodeURIComponent(authorId)}`, { method: 'DELETE' })
+}
+
+export async function markFavoriteSeen(authorId: string, profileVersion: number): Promise<void> {
+  await authenticatedFetch('/favorites/seen', {
+    method: 'POST',
+    body: JSON.stringify({ author_id: authorId, profile_version: profileVersion }),
+  })
 }
 
 export async function getAuthorWorks(

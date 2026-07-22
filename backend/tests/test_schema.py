@@ -69,6 +69,23 @@ def test_local_password_user_columns_are_present():
     assert "normalized_email" not in columns
 
 
+def test_favorite_tracking_columns_are_present():
+    with psycopg.connect(DATABASE_URL) as connection:
+        columns = {
+            row[0]: row[1]
+            for row in connection.execute("""
+                select column_name, is_nullable
+                from information_schema.columns
+                where table_schema = 'public' and table_name = 'favorites'
+            """)
+        }
+
+    assert columns["last_seen_profile_version"] == "NO"
+    assert columns["last_seen_total_papers"] == "NO"
+    assert columns["last_seen_total_citations"] == "NO"
+    assert columns["last_seen_at"] == "YES"
+
+
 def test_profile_status_emits_postgres_notification():
     author_id = f"schema-test-{uuid.uuid4()}"
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:

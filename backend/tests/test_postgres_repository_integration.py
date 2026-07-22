@@ -45,7 +45,7 @@ def _state(work_count: int) -> dict:
         },
         "deduped_works": works,
         "works_complete": True,
-        "web_payload": {"name": "Test Scholar", "totalPapers": work_count},
+        "web_payload": {"name": "Test Scholar", "totalPapers": work_count, "totalCitations": 100},
         "warnings": [],
         "errors": [],
     }
@@ -127,6 +127,43 @@ def test_password_user_session_is_revocable():
             conn.execute(text(
                 "delete from public.app_users where normalized_username = :username"
             ), {"username": username})
+
+
+def test_favorite_tracking_reports_and_clears_profile_deltas():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    author_id = f"https://openalex.org/A-TRACK-{unique}"
+    username = f"tracking-{unique}"
+    try:
+        user = repository.create_password_user(username, hash_password("tracking password"))
+        initial_state = _state(1)
+        initial_state["target_author_id"] = author_id
+        initial_state["target_author_profile"]["id"] = author_id
+        initial_state["deduped_works"][0]["authorships"][0]["author"]["id"] = author_id
+        initial_state["web_payload"]["totalCitations"] = 10
+        repository.publish_profile(initial_state, query_name="Tracking Scholar")
+        repository.add_favorite(user["id"], author_id)
+        assert repository.list_favorites(user["id"])[0]["has_updates"] is False
+
+        updated_state = _state(2)
+        updated_state["target_author_id"] = author_id
+        updated_state["target_author_profile"]["id"] = author_id
+        for work in updated_state["deduped_works"]:
+            work["authorships"][0]["author"]["id"] = author_id
+        updated_state["web_payload"]["totalCitations"] = 35
+        saved = repository.publish_profile(updated_state, query_name="Tracking Scholar")
+
+        tracked = repository.list_favorites(user["id"])[0]
+        assert tracked["has_updates"] is True
+        assert tracked["new_papers"] == 1
+        assert tracked["new_citations"] == 25
+
+        repository.mark_favorite_seen(user["id"], author_id, saved["profile_version"])
+        assert repository.list_favorites(user["id"])[0]["has_updates"] is False
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text("delete from public.app_users where normalized_username = :username"), {"username": username})
+            conn.execute(text("delete from public.scholars where source_author_id = :author_id"), {"author_id": author_id})
 
 
 def test_maintenance_recovers_abandoned_running_job():
