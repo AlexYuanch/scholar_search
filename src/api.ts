@@ -8,6 +8,7 @@ async function errorMessage(response: Response, fallback: string): Promise<strin
     const payload = await response.json()
     if (typeof payload.detail === 'string') return payload.detail
   } catch {
+    return fallback
   }
   return fallback
 }

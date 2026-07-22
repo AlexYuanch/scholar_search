@@ -2,7 +2,7 @@ import { Suspense, lazy, useState, useEffect, useCallback, useRef, type Componen
 import {
   Search, BookOpen, Quote, BarChart3, Users,
   ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink,
-  Heart, History, LogIn, LogOut,
+  Heart, History, LogIn, LogOut, ArrowLeftRight,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -17,6 +17,7 @@ import { useAuth } from "./auth"
 import SidePanel from "@/components/SidePanel"
 import AllPapers from "@/components/AllPapers"
 import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
+import ScholarComparison from "@/components/ScholarComparison"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
@@ -164,6 +165,7 @@ function ProfileSection({
   profile,
   favorite,
   onToggleFavorite,
+  onCompare,
   onEdgeClick,
   onNodeClick,
   onFullscreenChange,
@@ -172,6 +174,7 @@ function ProfileSection({
   profile: ScholarProfile
   favorite: boolean
   onToggleFavorite: () => void
+  onCompare: () => void
   onEdgeClick?: (data: { sourceName: string; targetName: string; papers: PanelPaper[]; weight: number }) => void
   onNodeClick?: (data: { id: string; name: string; type: string; papers: PanelPaper[]; weight: number }) => void
   onFullscreenChange?: (fs: boolean) => void
@@ -192,7 +195,11 @@ function ProfileSection({
             <p className="break-words text-sm text-muted-foreground">{profile.institution}</p>
           </div>
         </div>
-        <div className="flex flex-col items-start gap-2 sm:items-end">
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onCompare}>
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+            {t("compare.action")}
+          </Button>
           <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onToggleFavorite}>
             <Heart className={`h-3.5 w-3.5 ${favorite ? "fill-current text-red-500" : ""}`} />
             {t(favorite ? "favorite.remove" : "favorite.add")}
@@ -300,6 +307,7 @@ export default function App() {
 
   // 图谱全屏状态
   const [graphFullscreen, setGraphFullscreen] = useState(false)
+  const [comparisonOpen, setComparisonOpen] = useState(false)
   const [workflowStages, setWorkflowStages] = useState<WorkflowStage[]>([])
   const [workflowProgress, setWorkflowProgress] = useState(0)
   const [workflowMessage, setWorkflowMessage] = useState("")
@@ -345,6 +353,7 @@ export default function App() {
     const isCurrent = () => requestSeqRef.current === requestId && !controller.signal.aborted
     setPanel(null)
     setAccountMode(null)
+    setComparisonOpen(false)
     setLoading(true)
     setError(null)
     setProfile(null)
@@ -470,6 +479,7 @@ export default function App() {
     setCandidates([])
     setPanel(null)
     setAccountMode(null)
+    setComparisonOpen(false)
     setSearched(true)
     try {
       const results = await searchAuthors(q)
@@ -540,6 +550,7 @@ export default function App() {
     setSearched(false)
     setPanel(null)
     setAccountMode(null)
+    setComparisonOpen(false)
   }, [])
 
   useEffect(() => {
@@ -834,11 +845,16 @@ export default function App() {
           profile={profile}
           favorite={Boolean(user) && favorite}
           onToggleFavorite={() => void handleToggleFavorite()}
+          onCompare={() => setComparisonOpen(true)}
           onEdgeClick={handleEdgeClick}
           onNodeClick={handleNodeClick}
           onFullscreenChange={setGraphFullscreen}
           t={t}
         />
+      )}
+
+      {profile && comparisonOpen && (
+        <ScholarComparison profile={profile} onClose={() => setComparisonOpen(false)} t={t} />
       )}
 
       {/* 空状态 */}
