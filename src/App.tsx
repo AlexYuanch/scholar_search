@@ -19,6 +19,7 @@ import AllPapers from "@/components/AllPapers"
 import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
 import ScholarComparison from "@/components/ScholarComparison"
 import ResearchChanges from "@/components/ResearchChanges"
+import DataVerification from "@/components/DataVerification"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
@@ -32,11 +33,11 @@ const dagTiers: Array<{
   nodes: string[]
   mode: "chain" | "parallel" | "fork" | "merge" | "single"
 }> = [
-  { nodes: ["fetch_profile", "collect_works", "dedup_works"], mode: "chain" },
+  { nodes: ["fetch_profile", "collect_works", "dedup_works", "collect_crossref", "adjudicate_sources"], mode: "chain" },
   { nodes: ["analyze_citations", "agent_analyze_topics"], mode: "parallel" },
   { nodes: ["analyze_evolution"], mode: "merge" },
   { nodes: ["analyze_coauthors"], mode: "single" },
-  { nodes: ["build_graph", "generate_report", "format_payload"], mode: "chain" },
+  { nodes: ["build_graph", "generate_report", "review_evidence", "format_payload"], mode: "chain" },
 ]
 
 type Accent = "blue" | "green" | "purple" | "orange"
@@ -223,6 +224,8 @@ function ProfileSection({
             <MetricCard icon={Quote} label={t("metric.total_citations")} value={profile.totalCitations.toLocaleString()} />
             <MetricCard icon={BarChart3} label={t("metric.h_index")} value={profile.hIndex} />
           </div>
+
+          <DataVerification profile={profile} t={t} />
 
           <Card>
             <CardHeader>

@@ -13,6 +13,10 @@ class ScholarProfileState(TypedDict):
     # ── 论文数据 ──
     raw_works: List[Dict[str, Any]]
     deduped_works: List[Dict[str, Any]]
+    source_works: Dict[str, List[Dict[str, Any]]]
+    source_audit: Dict[str, Any]
+    adjudicated_works: List[Dict[str, Any]]
+    data_audit: Dict[str, Any]
     works_complete: bool
 
     # ── 引用分析（含年度趋势） ──
@@ -35,6 +39,8 @@ class ScholarProfileState(TypedDict):
     # ── 最终输出 ──
     profile_summary: str
     profile_evidence: List[Dict[str, Any]]
+    analysis_claims: List[Dict[str, Any]]
+    evidence_review: Dict[str, Any]
     web_payload: Dict[str, Any]
 
     # ── 运行信息 ──
@@ -49,6 +55,10 @@ def default_state() -> Dict[str, Any]:
         "target_author_profile": None,
         "raw_works": [],
         "deduped_works": [],
+        "source_works": {},
+        "source_audit": {},
+        "adjudicated_works": [],
+        "data_audit": {},
         "works_complete": False,
         "citation_summary": {},
         "topic_clusters": [],
@@ -59,6 +69,8 @@ def default_state() -> Dict[str, Any]:
         "graph_edges": [],
         "profile_summary": "",
         "profile_evidence": [],
+        "analysis_claims": [],
+        "evidence_review": {},
         "web_payload": {},
         "warnings": [],
         "errors": [],

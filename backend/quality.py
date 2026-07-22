@@ -23,6 +23,9 @@ def assess_profile_quality(state: dict, cached: dict | None = None) -> QualityAs
         blocking_flags.append("workflow_errors")
     if not state.get("web_payload"):
         blocking_flags.append("missing_payload")
+    evidence_review = state.get("evidence_review") or {}
+    if evidence_review and not evidence_review.get("publishable", False):
+        blocking_flags.append("evidence_review_failed")
 
     allowed_gap = max(5, int(expected * 0.2))
     if expected and expected - fetched > allowed_gap:

@@ -6,7 +6,12 @@
 import json
 import re
 from collections import defaultdict
+from copy import deepcopy
+from datetime import datetime, timezone
 from state import ScholarProfileState
+
+
+CROSSREF_VERIFICATION_LIMIT = 200
 
 
 # ── 工具函数 ─────────────────────────────────────────────────
@@ -65,7 +70,12 @@ def collect_works(state: ScholarProfileState) -> dict:
         expected = state["target_author_profile"].get("works_count", 0)
         if len(works) < expected:
             warnings.append(f"预期 {expected} 篇，实际获取 {len(works)} 篇（OpenAlex 限制）")
-    return {"raw_works": works, "works_complete": works_complete, "warnings": warnings}
+    return {
+        "raw_works": works,
+        "source_works": {"openalex": works},
+        "works_complete": works_complete,
+        "warnings": warnings,
+    }
 
 
 
@@ -84,11 +94,172 @@ def deduplicate_works(state: ScholarProfileState) -> dict:
     return {"deduped_works": deduped, "warnings": new_w}
 
 
+def collect_crossref_records(state: ScholarProfileState) -> dict:
+    """按 DOI 核验 Crossref 出版元数据，不按姓名扩张论文列表。"""
+    from crossref import normalize_doi, verify_dois
+
+    works = state.get("deduped_works") or state.get("raw_works") or []
+    all_dois = list(dict.fromkeys(
+        doi for doi in (normalize_doi(work.get("doi")) for work in works) if doi
+    ))
+    requested_dois = all_dois[:CROSSREF_VERIFICATION_LIMIT]
+    records, report = verify_dois(requested_dois)
+    source_works = dict(state.get("source_works") or {})
+    source_works.setdefault("openalex", state.get("raw_works") or works)
+    source_works["crossref"] = list(records.values())
+    audit = {
+        **report,
+        "available_dois": len(all_dois),
+        "limited": len(all_dois) > len(requested_dois),
+    }
+    warnings = []
+    if report["failed"]:
+        warnings.append(f"Crossref 有 {report['failed']} 个 DOI 暂时无法核验")
+    if audit["limited"]:
+        warnings.append(
+            f"Crossref 本次核验前 {len(requested_dois)} 个 DOI，另有 {len(all_dois) - len(requested_dois)} 个待后续核验"
+        )
+    return {"source_works": source_works, "source_audit": audit, "warnings": warnings}
+
+
+def _normalized_title(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", str(value or "").casefold()).strip()
+
+
+def _work_journal(work: dict) -> str:
+    return str(
+        work.get("adjudicated_journal")
+        or ((work.get("primary_location") or {}).get("source") or {}).get("display_name", "")
+    )
+
+
+def _analysis_works(state: ScholarProfileState) -> list[dict]:
+    return state.get("adjudicated_works") or state.get("deduped_works") or []
+
+
+def adjudicate_sources(state: ScholarProfileState) -> dict:
+    """以 DOI 为首要标识合并来源，保留字段来源、冲突与核验状态。"""
+    from crossref import normalize_doi
+
+    openalex_works = state.get("deduped_works") or []
+    crossref_records = {
+        normalize_doi(record.get("doi")): record
+        for record in (state.get("source_works") or {}).get("crossref", [])
+        if normalize_doi(record.get("doi"))
+    }
+    adjudicated = []
+    conflicts = []
+    verified = 0
+    works_with_doi = 0
+
+    for source_work in openalex_works:
+        work = deepcopy(source_work)
+        doi = normalize_doi(work.get("doi"))
+        source_records = [{
+            "source": "openalex",
+            "id": work.get("id", ""),
+            "url": work.get("id", ""),
+        }]
+        field_sources = {
+            "title": "openalex",
+            "publicationYear": "openalex",
+            "citations": "openalex",
+            "authorships": "openalex",
+            "topics": "openalex",
+        }
+        work_conflicts = []
+        crossref_record = crossref_records.get(doi) if doi else None
+        if doi:
+            works_with_doi += 1
+            work["doi"] = f"https://doi.org/{doi}"
+        if crossref_record:
+            verified += 1
+            source_records.append({
+                "source": "crossref",
+                "id": doi,
+                "url": f"https://doi.org/{doi}",
+            })
+            crossref_title = str(crossref_record.get("title") or "").strip()
+            openalex_title = str(work.get("title") or "").strip()
+            if crossref_title:
+                if openalex_title and _normalized_title(crossref_title) != _normalized_title(openalex_title):
+                    work_conflicts.append({
+                        "field": "title",
+                        "openalex": openalex_title,
+                        "crossref": crossref_title,
+                    })
+                work["title"] = crossref_title
+                field_sources["title"] = "crossref"
+            crossref_year = crossref_record.get("publication_year")
+            openalex_year = work.get("publication_year")
+            if crossref_year:
+                if openalex_year and int(crossref_year) != int(openalex_year):
+                    work_conflicts.append({
+                        "field": "publication_year",
+                        "openalex": openalex_year,
+                        "crossref": crossref_year,
+                    })
+                work["publication_year"] = int(crossref_year)
+                field_sources["publicationYear"] = "crossref"
+            if crossref_record.get("journal"):
+                work["adjudicated_journal"] = crossref_record["journal"]
+                field_sources["journal"] = "crossref"
+            work["crossref"] = crossref_record
+            work["verification_status"] = "verified"
+        else:
+            work["verification_status"] = "doi_unverified" if doi else "no_doi"
+
+        for conflict in work_conflicts:
+            conflicts.append({"workId": work.get("id", ""), "doi": doi, **conflict})
+        work["source_records"] = source_records
+        work["field_sources"] = field_sources
+        work["conflicts"] = work_conflicts
+        adjudicated.append(work)
+
+    source_audit = state.get("source_audit") or {}
+    total = len(adjudicated)
+    verification_ratio = verified / total if total else 0
+    if not state.get("works_complete", False) or source_audit.get("failed"):
+        status = "attention"
+    elif verification_ratio >= 0.7:
+        status = "sufficient"
+    elif verified:
+        status = "partial"
+    else:
+        status = "attention"
+    expected = int((state.get("target_author_profile") or {}).get("works_count") or 0)
+    data_audit = {
+        "status": status,
+        "sources": ["OpenAlex", "Crossref"],
+        "openalexExpected": expected,
+        "openalexFetched": len(state.get("raw_works") or []),
+        "collectedWorks": total,
+        "worksWithDoi": works_with_doi,
+        "crossrefRequested": int(source_audit.get("requested") or 0),
+        "crossrefVerified": verified,
+        "crossrefMissing": int(source_audit.get("missing") or 0),
+        "crossrefFailed": int(source_audit.get("failed") or 0),
+        "crossrefLimited": bool(source_audit.get("limited")),
+        "unverifiedWorks": max(0, total - verified),
+        "duplicateRecordsMerged": max(0, len(state.get("raw_works") or []) - total),
+        "conflictCount": len(conflicts),
+        "conflicts": conflicts[:20],
+        "worksComplete": bool(state.get("works_complete")),
+        "verifiedRatio": round(verification_ratio, 4),
+        "retrievedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    return {
+        "adjudicated_works": adjudicated,
+        "deduped_works": adjudicated,
+        "data_audit": data_audit,
+    }
+
+
 # ── 阶段三: 并行分析 ────────────────────────────────────────
 
 def analyze_citations(state: ScholarProfileState) -> dict:
     """统计总论文数、总引用数、h-index、年度趋势。"""
-    works = state["deduped_works"]
+    works = _analysis_works(state)
     cites = sorted([w.get("cited_by_count", 0) for w in works], reverse=True)
     h = 0
     for i, c in enumerate(cites, 1):
@@ -148,9 +319,10 @@ def _fallback_topic_analysis(works: list) -> dict:
                 "title": w.get("title", ""),
                 "year": w.get("publication_year"),
                 "citations": w.get("cited_by_count", 0),
-                "journal": ((w.get("primary_location") or {}).get("source") or {}).get("display_name", ""),
+                "journal": _work_journal(w),
                 "doi": w.get("doi", ""),
                 "id": w.get("id", ""),
+                "sources": [record.get("source") for record in w.get("source_records") or [] if record.get("source")],
             })
         representative_papers[name] = repr_list
 
@@ -159,7 +331,7 @@ def _fallback_topic_analysis(works: list) -> dict:
 
 def agent_analyze_topics(state: ScholarProfileState) -> dict:
     """使用 LLM Agent 分析研究方向并选择代表论文（每个方向实事求是，不强制数量）。"""
-    works = state["deduped_works"]
+    works = _analysis_works(state)
     if not works:
         return {"topic_clusters": [], "representative_papers": {}}
 
@@ -212,9 +384,10 @@ def agent_analyze_topics(state: ScholarProfileState) -> dict:
                     "title": w.get("title", ""),
                     "year": w.get("publication_year"),
                     "citations": w.get("cited_by_count", 0),
-                    "journal": ((w.get("primary_location") or {}).get("source") or {}).get("display_name", ""),
+                    "journal": _work_journal(w),
                     "doi": w.get("doi", ""),
                     "id": w.get("id", ""),
+                    "sources": [record.get("source") for record in w.get("source_records") or [] if record.get("source")],
                 })
             representative_papers[t.name] = repr_list
 
@@ -245,7 +418,7 @@ def analyze_interest_evolution(state: ScholarProfileState) -> dict:
                 paper_to_topics[idx].append(name)
         else:
             # 回退：按概念名匹配
-            for i, w in enumerate(state["deduped_works"]):
+            for i, w in enumerate(_analysis_works(state)):
                 for c in w.get("concepts") or []:
                     if c["display_name"] == name:
                         paper_to_topics[i].append(name)
@@ -253,7 +426,7 @@ def analyze_interest_evolution(state: ScholarProfileState) -> dict:
 
     # 按年份统计 topic 出现频次
     yearly = defaultdict(lambda: defaultdict(int))
-    for i, w in enumerate(state["deduped_works"]):
+    for i, w in enumerate(_analysis_works(state)):
         y = w.get("publication_year")
         if y is None:
             continue
@@ -288,7 +461,7 @@ def analyze_coauthors(state: ScholarProfileState) -> dict:
         "paper_details": [],
     })
 
-    for i, w in enumerate(state["deduped_works"]):
+    for i, w in enumerate(_analysis_works(state)):
         agent_topics = paper_agent_topics.get(
             i,
             [c["display_name"] for c in (w.get("concepts") or [])[:3]],
@@ -367,14 +540,18 @@ def _flatten_representative_papers(representative_papers: dict) -> list[dict]:
 
 def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[dict]:
     cs = state["citation_summary"]
+    audit = state.get("data_audit") or {}
+    verified = int(audit.get("crossrefVerified") or 0)
     evidence = [{
         "id": "1",
         "type": "metric",
         "text": (
-            f"OpenAlex 统计显示该学者在 {inst_name} 关联档案下共有 "
+            f"本次统一论文集在 {inst_name} 关联档案下收录 "
             f"{cs.get('total_papers', 0)} 篇论文、{cs.get('total_citations', 0)} 次引用，"
-            f"h-index 为 {cs.get('h_index', 0)}。"
+            f"h-index 为 {cs.get('h_index', 0)}；其中 {verified} 篇 DOI 已通过 Crossref 核验，"
+            "引用数采用 OpenAlex 口径。"
         ),
+        "sources": ["OpenAlex", "Crossref"] if verified else ["OpenAlex"],
     }]
     next_id = 2
     topics = [t["topic"] for t in state["topic_clusters"][:5]]
@@ -382,7 +559,8 @@ def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[
         evidence.append({
             "id": str(next_id),
             "type": "topic",
-            "text": "核心研究方向来自论文标题与 OpenAlex concepts 聚合: " + "、".join(topics) + "。",
+            "text": "核心研究方向来自裁决后论文标题与 OpenAlex concepts 聚合: " + "、".join(topics) + "。",
+            "sources": ["OpenAlex", "Crossref"] if verified else ["OpenAlex"],
         })
         next_id += 1
     for paper in _flatten_representative_papers(state["representative_papers"])[:3]:
@@ -394,6 +572,7 @@ def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[
                 f"({paper.get('year', '未知年份')})，引用 {paper.get('citations', 0)} 次。"
             ),
             "url": paper.get("id") or paper.get("doi") or "",
+            "sources": paper.get("sources") or ["OpenAlex"],
         })
         next_id += 1
     if state["coauthors"]:
@@ -402,6 +581,7 @@ def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[
             "id": str(next_id),
             "type": "coauthor",
             "text": "高频合作者包括 " + "、".join(names) + "。",
+            "sources": ["OpenAlex"],
         })
     return evidence
 
@@ -424,7 +604,7 @@ def _fallback_summary(profile: dict, inst_name: str, state: ScholarProfileState,
     coauthor_text = " 合作网络依据可见" + coauthor_refs[0] + "。" if coauthor_refs else ""
     return (
         f"{profile.get('display_name', '')} 是 {inst_name} 的研究人员，"
-        f"OpenAlex 记录显示其发表 {cs.get('total_papers', 0)} 篇论文、"
+        f"本次核验后的论文集收录 {cs.get('total_papers', 0)} 篇论文、"
         f"累计引用 {cs.get('total_citations', 0):,} 次，h-index 为 {cs.get('h_index', 0)}{metric_ref}。"
         f"其研究方向主要集中在 {topic_text}{topic_ref}{paper_text}。"
         f"{coauthor_text}"
@@ -472,12 +652,103 @@ def generate_profile_report(state: ScholarProfileState) -> dict:
     return {"profile_summary": summary, "profile_evidence": evidence}
 
 
+def review_profile_evidence(state: ScholarProfileState) -> dict:
+    """审查总结证据是否能回溯到裁决后的论文和确定性统计。"""
+    from crossref import normalize_doi
+
+    works = _analysis_works(state)
+    traceable_keys = set()
+    sources_by_key: dict[str, list[str]] = {}
+    for work in works:
+        keys = {str(work.get("id") or "")}
+        doi = normalize_doi(work.get("doi"))
+        if doi:
+            keys.update({doi, f"https://doi.org/{doi}"})
+        sources = [record.get("source", "") for record in work.get("source_records") or [] if record.get("source")]
+        for key in filter(None, keys):
+            traceable_keys.add(key)
+            sources_by_key[key] = sources or ["openalex"]
+
+    approved = []
+    rejected = []
+    flags = []
+    audit = state.get("data_audit") or {}
+    for evidence in state.get("profile_evidence") or []:
+        item = deepcopy(evidence)
+        evidence_type = item.get("type")
+        valid = True
+        if evidence_type == "paper":
+            url = str(item.get("url") or "")
+            normalized_url_doi = normalize_doi(url)
+            valid = url in traceable_keys or normalized_url_doi in traceable_keys
+            if valid:
+                item["sources"] = sources_by_key.get(url) or sources_by_key.get(normalized_url_doi) or item.get("sources") or []
+            else:
+                flags.append("untraceable_paper_evidence")
+        elif evidence_type == "topic":
+            valid = bool(state.get("topic_clusters"))
+        elif evidence_type == "coauthor":
+            valid = bool(state.get("coauthors"))
+        elif evidence_type == "metric":
+            valid = int((state.get("citation_summary") or {}).get("total_papers") or 0) == len(works)
+            if not valid:
+                flags.append("metric_recalculation_mismatch")
+        else:
+            valid = False
+            flags.append("unsupported_evidence_type")
+
+        if valid:
+            item["confidence"] = "high" if evidence_type == "metric" and audit.get("status") == "sufficient" else "medium"
+            approved.append(item)
+        else:
+            rejected.append(item)
+
+    approved_ids = [str(item.get("id")) for item in approved]
+    rejected_ids = [str(item.get("id")) for item in rejected]
+    metric_approved = any(item.get("type") == "metric" for item in approved)
+    summary = state.get("profile_summary") or ""
+    if any(f"[{evidence_id}]" in summary for evidence_id in rejected_ids):
+        profile = state.get("target_author_profile") or {}
+        institutions = [
+            item.get("display_name", "")
+            for item in (profile.get("last_known_institutions") or [])
+        ]
+        summary = _fallback_summary(profile, institutions[0] if institutions else "未知机构", state, approved)
+        flags.append("summary_rebuilt_after_evidence_review")
+
+    unique_flags = list(dict.fromkeys(flags))
+    review = {
+        "approvedEvidenceIds": approved_ids,
+        "rejectedEvidenceIds": rejected_ids,
+        "flags": unique_flags,
+        "publishable": metric_approved,
+        "summaryConfidence": (
+            "high" if metric_approved and not unique_flags and audit.get("status") == "sufficient"
+            else "medium" if metric_approved
+            else "low"
+        ),
+    }
+    claims = [{
+        "claimId": f"evidence-{item.get('id')}",
+        "type": item.get("type"),
+        "text": item.get("text", ""),
+        "evidenceIds": [str(item.get("id"))],
+        "confidence": item.get("confidence", "medium"),
+    } for item in approved]
+    return {
+        "profile_summary": summary,
+        "profile_evidence": approved,
+        "analysis_claims": claims,
+        "evidence_review": review,
+    }
+
+
 def format_web_payload(state: ScholarProfileState) -> dict:
     """组装前端渲染所需的 JSON 数据。"""
     profile = state["target_author_profile"] or {}
     insts = [i.get("display_name", "") for i in (profile.get("last_known_institutions") or [])]
     cs = state["citation_summary"]
-    ws = state["deduped_works"]
+    ws = _analysis_works(state)
 
     # top 50 高被引论文，避免大作者 payload 过大
     top_cited = sorted(ws, key=lambda w: -(w.get("cited_by_count") or 0))
@@ -486,7 +757,10 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "title": w.get("title", ""),
         "year": w.get("publication_year"),
         "citations": w.get("cited_by_count", 0),
-        "journal": ((w.get("primary_location") or {}).get("source") or {}).get("display_name", ""),
+        "journal": _work_journal(w),
+        "doi": w.get("doi", ""),
+        "sources": [record.get("source") for record in w.get("source_records") or [] if record.get("source")],
+        "verificationStatus": w.get("verification_status", ""),
     } for w in top_cited[:50]]
 
     # 平铺所有 representative papers 并去重
@@ -522,5 +796,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "graphEdges": state["graph_edges"],
         "profileSummary": state["profile_summary"],
         "profileEvidence": state["profile_evidence"],
+        "dataAudit": state.get("data_audit") or {},
+        "evidenceReview": state.get("evidence_review") or {},
     }
     return {"web_payload": payload}

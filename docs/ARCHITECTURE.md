@@ -10,6 +10,7 @@ flowchart LR
   API -->|"SQLAlchemy + psycopg"| PG["PostgreSQL 17"]
   API -->|"每次交互查询"| WF["LangGraph"]
   WF --> OA["OpenAlex"]
+  WF --> CR["Crossref DOI metadata"]
   MAINT["Worker 每小时维护"] --> JOB["refresh_jobs"]
   WORKER["Refresh worker"] -->|"SKIP LOCKED"| JOB
   WORKER --> WF
@@ -22,7 +23,7 @@ flowchart LR
 |----|------|------|
 | 前端 | Vite + React + TypeScript | 搜索、画像、学者对比、近期变化、登录、历史/收藏、SSE 与论文分页 |
 | API | FastAPI | 密码登录、Cookie 会话、受保护查询、NDJSON 与 SSE |
-| 工作流 | LangGraph | OpenAlex 获取、分析、图谱和载荷格式化 |
+| 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、并行分析、证据审查和载荷格式化 |
 | Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、用户、状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
@@ -33,6 +34,8 @@ flowchart LR
 学者对比由前端编排现有搜索与流式画像接口：当前画像作为基准，用户搜索并确认第二个 OpenAlex 实体后调用 `POST /api/profile/stream` 获取当次数据。比较指标完全从两份同结构画像派生，不新增独立缓存或统计口径；桌面端并排展示，窄屏端纵向排列并在弹层内部滚动。
 
 近期研究变化复用工作流 `analyze_evolution` 生成的 `interestTimeline` 和引用统计节点生成的 `yearlyTrend`。前端以最近有论文的年份作为结束点，构造连续两个三年窗口；论文数量按年度事实汇总，方向升降按各窗口主题关联次数占比计算，降低总发文量变化造成的误判。六年矩阵在手机端使用紧凑固定列，不产生页面级横向滚动。
+
+多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责作者、论文、引用、概念和署名发现，Crossref 只对 OpenAlex 论文中的 DOI 进行出版元数据核验。`adjudicate_sources` 以规范化 DOI 合并记录，Crossref 优先提供标题、年份和期刊，OpenAlex继续提供引用、concepts 和 authorships；所有字段来源、原始记录、核验状态和冲突写入论文 `raw_json`。`review_evidence` 在载荷格式化前检查指标可复算性和论文链接可追溯性，输出结构化审查结果并参与发布门禁。
 
 ## 数据模型
 
@@ -63,9 +66,12 @@ flowchart LR
 
 1. `POST /api/profile/stream` 每次都运行 LangGraph，通过 NDJSON 输出进度，不以已有画像短路查询。
 2. OpenAlex 作者详情和论文游标分页必须完整结束。
-3. 质量检查比较 `works_count`、本次数量和上一成功数量。
-4. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
-5. `profile_status.version + 1` 并设为 `ready`；触发器发送轻量 PostgreSQL 通知。
+3. 对有 DOI 的论文查询 Crossref，并记录已核验、未找到、失败和核验上限。
+4. 数据裁决节点按 DOI 合并来源，保留字段来源与冲突，产出统一论文集和 `dataAudit`。
+5. 引用、方向、演化和合作节点并行消费统一论文集；总结生成后执行证据审查。
+6. 质量检查比较 `works_count`、本次数量、上一成功数量和证据审查结果。
+7. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
+8. `profile_status.version + 1` 并设为 `ready`；触发器发送轻量 PostgreSQL 通知。
 
 ### 最近成功画像与后台更新
 

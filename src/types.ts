@@ -42,6 +42,7 @@ export interface ScholarProfile {
     citations: number
     journal: string
     id?: string
+    sources?: string[]
   }>
   topCitedPapers: Array<{
     title: string
@@ -49,6 +50,9 @@ export interface ScholarProfile {
     citations: number
     journal: string
     id?: string
+    doi?: string
+    sources?: string[]
+    verificationStatus?: string
   }>
   coauthors: Array<{ name: string; institution?: string; papers: number }>
   graphNodes: Array<{ id: string; name: string; institution?: string; type: string }>
@@ -59,5 +63,33 @@ export interface ScholarProfile {
     type: "metric" | "paper" | "topic" | "coauthor"
     text: string
     url?: string
+    sources?: string[]
+    confidence?: "high" | "medium" | "low"
   }>
+  dataAudit?: {
+    status: "sufficient" | "partial" | "attention"
+    sources: string[]
+    openalexExpected: number
+    openalexFetched: number
+    collectedWorks: number
+    worksWithDoi: number
+    crossrefRequested: number
+    crossrefVerified: number
+    crossrefMissing: number
+    crossrefFailed: number
+    crossrefLimited: boolean
+    unverifiedWorks: number
+    duplicateRecordsMerged: number
+    conflictCount: number
+    worksComplete: boolean
+    verifiedRatio: number
+    retrievedAt: string
+  }
+  evidenceReview?: {
+    approvedEvidenceIds: string[]
+    rejectedEvidenceIds: string[]
+    flags: string[]
+    publishable: boolean
+    summaryConfidence: "high" | "medium" | "low"
+  }
 }

@@ -51,12 +51,15 @@ NODE_SIGNAL = {
     "fetch_profile": "target_author_profile",
     "collect_works": "raw_works",
     "dedup_works": "deduped_works",
+    "collect_crossref": "source_audit",
+    "adjudicate_sources": "data_audit",
     "analyze_citations": "citation_summary",
     "agent_analyze_topics": "topic_clusters",
     "analyze_evolution": "interest_timeline",
     "analyze_coauthors": "coauthors",
     "build_graph": "graph_nodes",
     "generate_report": "profile_summary",
+    "review_evidence": "evidence_review",
     "format_payload": "web_payload",
 }
 
@@ -64,27 +67,33 @@ STAGE_LABELS = {
     "fetch_profile": "获取基本信息...",
     "collect_works": "获取论文列表...",
     "dedup_works": "去重论文...",
+    "collect_crossref": "核验出版信息...",
+    "adjudicate_sources": "统一多来源数据...",
     "analyze_citations": "统计引用数据...",
     "agent_analyze_topics": "AI 分析研究方向...",
     "analyze_evolution": "分析兴趣演化...",
     "analyze_coauthors": "分析合作关系...",
     "build_graph": "构建合作网络图...",
     "generate_report": "生成总结...",
+    "review_evidence": "检查结论依据...",
     "format_payload": "组装数据...",
 }
 
 STAGE_ORDER = list(STAGE_LABELS.keys())
 
 PROGRESS_ANCHORS = {
-    "fetch_profile": 8,
-    "collect_works": 35,
-    "dedup_works": 42,
-    "analyze_citations": 54,
-    "agent_analyze_topics": 66,
-    "analyze_evolution": 74,
+    "fetch_profile": 6,
+    "collect_works": 24,
+    "dedup_works": 30,
+    "collect_crossref": 42,
+    "adjudicate_sources": 50,
+    "analyze_citations": 60,
+    "agent_analyze_topics": 69,
+    "analyze_evolution": 76,
     "analyze_coauthors": 83,
-    "build_graph": 91,
-    "generate_report": 97,
+    "build_graph": 89,
+    "generate_report": 95,
+    "review_evidence": 98,
     "format_payload": 100,
 }
 
@@ -95,6 +104,11 @@ PROGRESS_MESSAGES = {
         "论文较多时会分批拉取，请稍候...",
     ],
     "dedup_works": ["正在按 DOI 与 OpenAlex ID 去重..."],
+    "collect_crossref": [
+        "正在通过 DOI 核验出版信息...",
+        "论文较多时会分批核验，请稍候...",
+    ],
+    "adjudicate_sources": ["正在合并来源并记录数据差异..."],
     "analyze_citations": [
         "正在按引用数计算 h-index...",
         "正在整理年度论文与引用趋势...",
@@ -107,6 +121,7 @@ PROGRESS_MESSAGES = {
     "analyze_coauthors": ["正在统计合作作者与合作论文..."],
     "build_graph": ["正在构建合作网络节点和边..."],
     "generate_report": ["正在生成画像总结..."],
+    "review_evidence": ["正在检查结论是否可以回溯到论文依据..."],
     "format_payload": ["正在组装前端展示数据..."],
 }
 

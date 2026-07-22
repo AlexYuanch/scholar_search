@@ -1,11 +1,13 @@
 # 学者画像系统 Scholar Profile
 
-基于 OpenAlex 的学者检索与画像应用。当前版本使用标准 PostgreSQL 17 自托管数据层，不依赖 Supabase、Firebase 或其他 BaaS。
+基于 OpenAlex 发现、Crossref DOI 核验的学者检索与画像应用。当前版本使用标准 PostgreSQL 17 自托管数据层，不依赖 Supabase、Firebase 或其他 BaaS。
 
 ## 当前能力
 
 - 中文姓名同时检索原名、姓在前拼音和姓在后拼音；候选仅按 OpenAlex ID 去重，不按姓名合并。
-- LangGraph 分页获取全部论文，生成引用统计、研究方向、兴趣演化、代表论文和合作网络。
+- LangGraph 分页获取 OpenAlex 论文，以 DOI 查询 Crossref 出版元数据，裁决后再生成引用统计、研究方向、兴趣演化、代表论文和合作网络。
+- 概览展示本次收录、DOI 数、跨来源核验数、待核实数、来源差异和分页完整性；待核实只表示缺少 DOI 或 Crossref 暂无记录。
+- 最终总结经过证据审查，论文依据必须能回溯到裁决后的统一论文集；不通过审查的新画像不会发布。
 - 每次用户发起画像查询都会重新获取 OpenAlex 当前数据，并通过 NDJSON 持续展示进度。
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保留一份最近成功画像用于质量对比和自动更新。
 - 收藏学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
@@ -27,7 +29,7 @@
 | UI / 图谱 | Radix primitives、lucide-react、vis-network |
 | API | FastAPI、Uvicorn、SQLAlchemy 2、psycopg |
 | 工作流 | LangGraph |
-| 数据源 | OpenAlex；可选 OpenAI 兼容 LLM |
+| 数据源 | OpenAlex、Crossref；可选 OpenAI 兼容 LLM |
 | 数据库 | PostgreSQL 17、Alembic |
 | 身份认证 | 本地账号密码、scrypt 密码摘要、服务端会话 Cookie |
 | 实时更新 | PostgreSQL `LISTEN/NOTIFY`、Server-Sent Events |

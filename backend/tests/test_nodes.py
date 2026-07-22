@@ -1,10 +1,13 @@
 from nodes import (
+    adjudicate_sources,
     analyze_coauthors,
     build_collaboration_graph,
+    collect_crossref_records,
     collect_works,
     dedup_authors,
     format_web_payload,
     generate_profile_report,
+    review_profile_evidence,
 )
 from state import default_state
 from workflow import NODES
@@ -126,6 +129,7 @@ def test_collect_works_marks_complete_fetch_for_quality_gate(monkeypatch):
     result = collect_works(state)
 
     assert result["raw_works"] == [{"id": "W1"}]
+    assert result["source_works"]["openalex"] == [{"id": "W1"}]
     assert result["works_complete"] is True
 
 
@@ -145,6 +149,88 @@ def test_collect_works_marks_partial_fetch_for_quality_gate(monkeypatch):
 
     assert result["works_complete"] is False
     assert "OpenAlex partial fetch" in result["warnings"]
+
+
+def test_crossref_collection_and_adjudication_merge_by_doi(monkeypatch):
+    import crossref
+
+    state = default_state()
+    state["target_author_id"] = "A0"
+    state["target_author_profile"] = {"works_count": 2}
+    state["works_complete"] = True
+    state["deduped_works"] = [
+        {
+            "id": "https://openalex.org/W1",
+            "doi": "https://doi.org/10.1000/ONE",
+            "title": "OpenAlex title",
+            "publication_year": 2023,
+            "cited_by_count": 8,
+            "authorships": [],
+            "concepts": [],
+            "primary_location": {"source": {"display_name": "OpenAlex Journal"}},
+        },
+        {
+            "id": "https://openalex.org/W2",
+            "title": "No DOI paper",
+            "publication_year": 2022,
+            "cited_by_count": 2,
+            "authorships": [],
+            "concepts": [],
+        },
+    ]
+
+    monkeypatch.setattr(crossref, "verify_dois", lambda _dois: ({
+        "10.1000/one": {
+            "source": "crossref",
+            "id": "10.1000/one",
+            "doi": "10.1000/one",
+            "title": "Publisher title",
+            "publication_year": 2024,
+            "journal": "Publisher Journal",
+            "authors": ["Ada Lovelace"],
+            "type": "journal-article",
+            "raw": {},
+        },
+    }, {"requested": 1, "verified": 1, "missing": 0, "failed": 0}))
+
+    collected = collect_crossref_records(state)
+    state.update(collected)
+    adjudicated = adjudicate_sources(state)
+
+    assert len(adjudicated["adjudicated_works"]) == 2
+    verified = adjudicated["adjudicated_works"][0]
+    assert verified["title"] == "Publisher title"
+    assert verified["publication_year"] == 2024
+    assert verified["verification_status"] == "verified"
+    assert verified["field_sources"]["title"] == "crossref"
+    assert {item["source"] for item in verified["source_records"]} == {"openalex", "crossref"}
+    assert adjudicated["data_audit"]["crossrefVerified"] == 1
+    assert adjudicated["data_audit"]["unverifiedWorks"] == 1
+    assert adjudicated["data_audit"]["conflictCount"] == 2
+    assert adjudicated["deduped_works"] == adjudicated["adjudicated_works"]
+
+
+def test_evidence_review_rejects_untraceable_paper_claim():
+    state = default_state()
+    state["adjudicated_works"] = [{
+        "id": "https://openalex.org/W1",
+        "doi": "https://doi.org/10.1000/one",
+        "title": "Known paper",
+    }]
+    state["citation_summary"] = {"total_papers": 1, "total_citations": 3, "h_index": 1}
+    state["profile_summary"] = "Summary [1] [2]"
+    state["profile_evidence"] = [
+        {"id": "1", "type": "metric", "text": "One verified paper."},
+        {"id": "2", "type": "paper", "text": "Unknown paper.", "url": "https://openalex.org/W404"},
+    ]
+
+    result = review_profile_evidence(state)
+
+    assert [item["id"] for item in result["profile_evidence"]] == ["1"]
+    assert result["evidence_review"]["approvedEvidenceIds"] == ["1"]
+    assert result["evidence_review"]["rejectedEvidenceIds"] == ["2"]
+    assert "untraceable_paper_evidence" in result["evidence_review"]["flags"]
+    assert result["evidence_review"]["publishable"] is True
 
 
 def test_generate_profile_report_falls_back_to_evidence_when_llm_lacks_citations(monkeypatch):
@@ -188,33 +274,71 @@ def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
     ]
     state["profile_summary"] = "Summary [1]"
     state["profile_evidence"] = [{"id": "1", "type": "metric", "text": "Metric evidence"}]
+    state["data_audit"] = {"status": "partial", "collectedWorks": 60}
+    state["evidence_review"] = {"publishable": True, "summaryConfidence": "medium"}
 
     result = format_web_payload(state)
     payload = result["web_payload"]
 
     assert payload["authorId"] == "A0"
     assert payload["profileEvidence"] == state["profile_evidence"]
+    assert payload["dataAudit"] == state["data_audit"]
+    assert payload["evidenceReview"] == state["evidence_review"]
     assert len(payload["topCitedPapers"]) == 50
     assert payload["topCitedPapers"][0]["title"] == "Paper 59"
 
 
-def test_workflow_uses_openalex_only_nodes():
+def test_workflow_uses_multi_source_adjudication_and_review_nodes():
     node_names = [name for name, _ in NODES]
 
     assert node_names[0] == "fetch_profile"
     assert "collect_works" in node_names
-    assert "resolve_author" not in node_names
-    assert "collect_semantic" not in node_names
-    assert "merge_sources" not in node_names
+    assert "collect_crossref" in node_names
+    assert "adjudicate_sources" in node_names
+    assert "review_evidence" in node_names
+    assert node_names.index("adjudicate_sources") < node_names.index("analyze_citations")
+    assert node_names.index("review_evidence") < node_names.index("format_payload")
 
 
-def test_default_state_has_no_semantic_scholar_fields():
+def test_workflow_parallel_analysis_branches_join_before_report(monkeypatch):
+    import crossref
+    import openalex
+    from workflow import graph
+
+    monkeypatch.setattr(openalex, "get_author", lambda _author_id: {
+        "id": "A0",
+        "display_name": "Empty Scholar",
+        "works_count": 0,
+        "last_known_institutions": [],
+    })
+    monkeypatch.setattr(openalex, "get_works", lambda _author_id: ([], []))
+    monkeypatch.setattr(crossref, "verify_dois", lambda _dois: ({}, {
+        "requested": 0,
+        "verified": 0,
+        "missing": 0,
+        "failed": 0,
+    }))
+    state = default_state()
+    state["target_author_id"] = "A0"
+
+    result = graph.invoke(state)
+
+    assert result["web_payload"]["name"] == "Empty Scholar"
+    assert result["evidence_review"]["publishable"] is True
+    assert result["profile_evidence"][0]["type"] == "metric"
+
+
+def test_default_state_has_multi_source_fields_without_semantic_scholar():
     state = default_state()
 
     assert "raw_works" in state
     assert "deduped_works" in state
+    assert state["source_works"] == {}
+    assert state["source_audit"] == {}
+    assert state["adjudicated_works"] == []
+    assert state["data_audit"] == {}
+    assert state["evidence_review"] == {}
     assert "query_name" not in state
     assert "optional_institution" not in state
     assert "candidate_authors" not in state
     assert "semantic_works" not in state
-    assert "merged_works" not in state

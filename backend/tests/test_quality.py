@@ -23,6 +23,16 @@ def test_complete_profile_is_publishable():
     assert assessment.flags == []
 
 
+def test_failed_evidence_review_blocks_profile_publish():
+    state = _state()
+    state["evidence_review"] = {"publishable": False}
+
+    assessment = assess_profile_quality(state)
+
+    assert not assessment.publishable
+    assert "evidence_review_failed" in assessment.flags
+
+
 def test_partial_openalex_fetch_never_replaces_latest_profile():
     assessment = assess_profile_quality(_state(expected=20, fetched=8, complete=False))
 

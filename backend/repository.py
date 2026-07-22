@@ -52,8 +52,10 @@ def _work_payload(work: dict) -> dict:
         "title": work.get("title", ""),
         "year": work.get("publication_year"),
         "citations": work.get("cited_by_count", 0) or 0,
-        "journal": ((work.get("primary_location") or {}).get("source") or {}).get("display_name", ""),
+        "journal": work.get("adjudicated_journal") or ((work.get("primary_location") or {}).get("source") or {}).get("display_name", ""),
         "doi": work.get("doi", ""),
+        "source_records": deepcopy(work.get("source_records") or []),
+        "verification_status": work.get("verification_status", ""),
     }
 
 
@@ -728,7 +730,13 @@ class PostgresRepository:
             rows = conn.execute(text(f"""
                 select w.source_work_id as id, w.title, w.publication_year as year,
                        w.cited_by_count as citations, w.doi,
-                       coalesce(w.raw_json #>> '{{primary_location,source,display_name}}', '') as journal
+                       coalesce(
+                           w.raw_json ->> 'adjudicated_journal',
+                           w.raw_json #>> '{{primary_location,source,display_name}}',
+                           ''
+                       ) as journal,
+                       coalesce(w.raw_json -> 'source_records', '[]'::jsonb) as source_records,
+                       coalesce(w.raw_json ->> 'verification_status', '') as verification_status
                 from public.works w
                 join public.authorships a on a.work_id = w.id
                 join public.scholars s on s.id = a.scholar_id
