@@ -1,5 +1,5 @@
 from repository import InMemoryRepository
-from worker import process_one_job
+from worker import process_one_job, process_one_search_job
 
 
 class FakeGraph:
@@ -58,3 +58,19 @@ def test_worker_keeps_latest_profile_when_quality_gate_fails():
 
     assert repository.jobs[job_id]["status"] == "pending"
     assert repository.get_profile("A1")["profile_version"] == 1
+
+
+def test_worker_refreshes_stale_search_cache_and_completes_job():
+    repository = InMemoryRepository()
+    job_id = repository.enqueue_openalex_search("ada", "Ada")
+
+    def builder(_repository, query_text):
+        assert query_text == "Ada"
+        return [{"id": "A1", "name": "Ada"}], True
+
+    assert process_one_search_job(repository, builder)
+    assert repository.openalex_search_jobs[job_id]["status"] == "succeeded"
+    assert repository.get_openalex_search_cache("ada")["candidates"] == [{
+        "id": "A1",
+        "name": "Ada",
+    }]

@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from auth import hash_password, verify_password
 from repository import APIQuotaExceeded, PostgresRepository
-from worker import process_one_job
+from worker import process_one_job, process_one_search_job
 
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -261,3 +261,98 @@ def test_maintenance_recovers_abandoned_running_job():
     finally:
         with repository.engine.begin() as conn:
             conn.execute(text("delete from public.scholars where source_author_id = :author_id"), {"author_id": author_id})
+
+
+def test_openalex_cache_jobs_and_budget_are_shared_across_repository_instances():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    query_key = f"integration scholar {unique}"
+    author_id = f"https://openalex.org/A-CACHE-{unique}"
+    provider = f"openalex-integration-{unique}"
+    candidates = [{"id": author_id, "name": "Integration Scholar"}]
+    try:
+        repository.save_openalex_search_cache(
+            query_key,
+            "Integration Scholar",
+            candidates,
+            3600,
+        )
+        repository.save_openalex_identity_cache(
+            author_id,
+            {
+                "sampled_works": 1,
+                "work_ids": ["W1"],
+                "coauthor_ids": [],
+                "topic_ids": ["T1"],
+            },
+            3600,
+        )
+        job_id = repository.enqueue_openalex_search(query_key, "Integration Scholar")
+        assert repository.enqueue_openalex_search(query_key, "Duplicate Text") == job_id
+        repository.record_upstream_rate_limit(provider, 1000, 10, 600)
+
+        reloaded = PostgresRepository(DATABASE_URL)
+        cached = reloaded.get_openalex_search_cache(query_key)
+        identity = reloaded.get_openalex_identity_caches([author_id])
+        claimed = reloaded.claim_openalex_search_job(query_key)
+
+        assert cached["fresh"] is True
+        assert cached["candidates"] == candidates
+        assert identity[author_id]["fresh"] is True
+        assert identity[author_id]["fingerprint"]["topic_ids"] == ["T1"]
+        assert str(claimed["id"]) == job_id
+        assert reloaded.claim_openalex_search_job(query_key) is None
+        assert 1 <= reloaded.get_upstream_retry_after(provider, 200) <= 600
+
+        reloaded.complete_openalex_search_job(job_id)
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text(
+                "delete from public.openalex_search_jobs where query_key = :query_key"
+            ), {"query_key": query_key})
+            conn.execute(text(
+                "delete from public.openalex_search_cache where query_key = :query_key"
+            ), {"query_key": query_key})
+            conn.execute(text(
+                "delete from public.openalex_identity_cache where author_id = :author_id"
+            ), {"author_id": author_id})
+            conn.execute(text(
+                "delete from public.upstream_rate_limits where provider = :provider"
+            ), {"provider": provider})
+
+
+def test_postgres_openalex_search_job_is_processed_by_worker():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    query_key = f"worker scholar {unique}"
+    query_text = f"Worker Scholar {unique}"
+    job_id = repository.enqueue_openalex_search(query_key, query_text)
+
+    def builder(_repository, received_query):
+        assert received_query == query_text
+        return [{"id": f"A-{unique}", "name": query_text}], True
+
+    try:
+        worker_repository = PostgresRepository(DATABASE_URL)
+        assert process_one_search_job(worker_repository, builder) is True
+
+        reloaded = PostgresRepository(DATABASE_URL)
+        cached = reloaded.get_openalex_search_cache(query_key)
+        with reloaded.engine.connect() as conn:
+            status = conn.execute(text("""
+                select status
+                from public.openalex_search_jobs
+                where id = cast(:job_id as uuid)
+            """), {"job_id": job_id}).scalar_one()
+
+        assert status == "succeeded"
+        assert cached["fresh"] is True
+        assert cached["candidates"][0]["name"] == query_text
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text(
+                "delete from public.openalex_search_jobs where query_key = :query_key"
+            ), {"query_key": query_key})
+            conn.execute(text(
+                "delete from public.openalex_search_cache where query_key = :query_key"
+            ), {"query_key": query_key})

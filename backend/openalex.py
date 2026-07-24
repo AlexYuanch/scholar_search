@@ -3,7 +3,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
+from typing import Callable, List
 
 import requests
 
@@ -25,6 +25,8 @@ IDENTITY_FINGERPRINT_WORKS = int(os.getenv("OPENALEX_IDENTITY_FINGERPRINT_WORKS"
 IDENTITY_MAX_WORKERS = int(os.getenv("OPENALEX_IDENTITY_MAX_WORKERS", "8"))
 _SESSION = requests.Session()
 _CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
+_BUDGET_GUARD: Callable[[], int | None] | None = None
+_BUDGET_REPORTER: Callable[[dict], None] | None = None
 
 
 class OpenAlexError(RuntimeError):
@@ -42,8 +44,52 @@ class OpenAlexError(RuntimeError):
         self.retry_after = retry_after
 
 
+def configure_budget_control(
+    guard: Callable[[], int | None] | None,
+    reporter: Callable[[dict], None] | None,
+) -> None:
+    """Configure shared budget protection without coupling the client to storage."""
+    global _BUDGET_GUARD, _BUDGET_REPORTER
+    _BUDGET_GUARD = guard
+    _BUDGET_REPORTER = reporter
+
+
+def _integer_header(response, name: str) -> int | None:
+    try:
+        return max(0, int(response.headers.get(name, "")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _report_budget(response) -> None:
+    if _BUDGET_REPORTER is None:
+        return
+    snapshot = {
+        "limit_credits": _integer_header(response, "X-RateLimit-Limit"),
+        "remaining_credits": _integer_header(response, "X-RateLimit-Remaining"),
+        "reset_after_seconds": _integer_header(response, "X-RateLimit-Reset"),
+    }
+    if all(value is None for value in snapshot.values()):
+        return
+    try:
+        _BUDGET_REPORTER(snapshot)
+    except Exception:
+        return
+
+
 def _get(endpoint: str, **params) -> dict:
     """GET JSON from OpenAlex with retry for transient failures."""
+    if _BUDGET_GUARD is not None:
+        try:
+            budget_retry_after = _BUDGET_GUARD()
+        except Exception:
+            budget_retry_after = None
+        if budget_retry_after is not None:
+            raise OpenAlexError(
+                "OpenAlex shared budget reserve reached",
+                status_code=429,
+                retry_after=str(max(1, budget_retry_after)),
+            )
     last_error: Exception | None = None
     last_status: int | None = None
     last_retry_after: str | None = None
@@ -58,6 +104,7 @@ def _get(endpoint: str, **params) -> dict:
             response = _SESSION.get(url, params=request_params, headers=HEADERS, timeout=30)
             last_status = response.status_code
             last_retry_after = response.headers.get("Retry-After")
+            _report_budget(response)
             if response.status_code in RETRY_STATUSES and attempt < MAX_RETRIES:
                 time.sleep(min(2 ** (attempt - 1), 8))
                 continue

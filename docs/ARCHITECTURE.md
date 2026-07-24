@@ -8,11 +8,14 @@ flowchart LR
   CADDY --> NGINX["React static + Nginx"]
   NGINX -->|"/api 同源代理"| API["FastAPI Web"]
   API -->|"SQLAlchemy + psycopg"| PG["PostgreSQL 17"]
-  API -->|"每次交互查询"| WF["LangGraph"]
+  API -->|"首次画像"| WF["LangGraph"]
+  API -->|"搜索缓存/合并任务"| SEARCH["openalex_search_cache / jobs"]
+  SEARCH --> PG
   WF --> OA["OpenAlex"]
   WF --> CR["Crossref DOI metadata"]
-  MAINT["Worker 每小时维护"] --> JOB["refresh_jobs"]
+  MAINT["Worker 每小时维护"] --> JOB["refresh_jobs / search jobs"]
   WORKER["Refresh worker"] -->|"SKIP LOCKED"| JOB
+  WORKER --> OA
   WORKER --> WF
   WORKER --> PG
   PG -->|"NOTIFY profile_status"| API
@@ -24,7 +27,7 @@ flowchart LR
 | 前端 | Vite + React + TypeScript | 身份确认、线性画像、证据化对比、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
 | API | FastAPI | 密码登录、Cookie 会话、受保护查询、NDJSON 与 SSE |
 | 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、并行分析、证据审查和载荷格式化 |
-| Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、用户、状态和队列 |
+| Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、用户、持久搜索缓存、上游额度状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
 | 公网入口 | Caddy + Nginx | 自动 HTTPS、静态资源、同源 API 代理和日志 |
@@ -40,6 +43,8 @@ flowchart LR
 近期研究变化复用工作流 `analyze_evolution` 生成的 `interestTimeline` 和引用统计节点生成的 `yearlyTrend`。前端以最近有论文的年份作为结束点，构造连续两个三年窗口；论文数量按年度事实汇总，方向升降按各窗口主题关联次数占比计算，降低总发文量变化造成的误判。六年矩阵在手机端使用紧凑固定列，不产生页面级横向滚动。
 
 候选搜索先为同名 OpenAlex 作者抽取最多 100 篇高被引论文的轻量身份指纹。身份裁决采用保守规则：ORCID 相同直接归并；不同 ORCID 默认隔离，不能再由共同机构或主题数量覆盖；缺少 ORCID 时仍需共同论文，或机构、合作者、主题的比例型组合证据。机构履历异常扩散的档案不参与上下文自动归并，避免污染档案在常见姓名中形成连锁误合并。聚类以高引用档案作为主 ID，不通过阈值的同名者保持独立。前端只提交聚类得到的 ID 集合，工作流会再次计算指纹并拒绝不属于主身份组的 ID，避免客户端强制合并任意学者。
+
+搜索先规范化 Unicode、空白和大小写得到共享 `query_key`。新鲜 `openalex_search_cache` 直接返回；过期结果先返回旧值并幂等插入后台刷新，冷请求以 `openalex_search_jobs` 的活跃任务唯一索引合并，多 Web 实例只有一个请求或 worker 访问上游。等待期间完成的请求读取同一缓存。OpenAlex 不可用、限流或共享剩余额度到达保留线时，Repository 可按学者名/别名从已发布的真实 PostgreSQL 学者数据构造保守候选；没有本地事实时才返回明确上游错误。`openalex_identity_cache` 让不同姓名查询复用昂贵的论文/合作者/主题指纹，但不改变既有归并阈值。
 
 多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责作者、论文、引用、topics、keywords 和署名发现，Crossref 只对 OpenAlex 论文中的 DOI 进行出版元数据核验。被验证为同一身份的多个作者档案并发取数，中心 authorship 统一为主 ID。随后建立机构、合作者和主题频率核心，只排除同时具有明确冲突机构、且与核心合作者/主题均断开的微小论文连通簇；无机构论文和较大冲突簇不会自动删除。过滤结果、排除 Work ID 和风险数量写入 `identityAudit`，再按 DOI/OpenAlex Work ID 去重。`adjudicate_sources` 以规范化 DOI 合并记录，Crossref 优先提供标题、年份和期刊，OpenAlex 继续提供引用、主题和 authorships；所有字段来源、原始记录、核验状态和冲突写入论文 `raw_json`。
 
@@ -58,6 +63,10 @@ flowchart LR
 | `scholar_profiles` | 每位学者一份最新成功 JSONB、warnings、工作流版本和数据指纹 |
 | `profile_status` | 轻量状态、版本和更新时间 |
 | `refresh_jobs` | 任务状态、次数、退避、原因和错误 |
+| `openalex_search_cache` | 规范化姓名的候选 JSONB、抓取时间和过期时间 |
+| `openalex_identity_cache` | OpenAlex 作者身份指纹，按作者 ID 去重并独立设置 TTL |
+| `openalex_search_jobs` | 冷搜索/过期搜索刷新队列；同一 `query_key` 只允许一个活跃任务 |
+| `upstream_rate_limits` | OpenAlex 共享额度、恢复时间和最近响应状态 |
 | `app_users` | 应用用户；规范化用户名唯一、scrypt 密码摘要和启停状态 |
 | `auth_login_attempts` | 登录结果、用户名、IP 和时间，用于短时限速与审计 |
 | `auth_registration_attempts` | 注册结果、IP 和时间，用于公开注册防滥用 |
@@ -72,7 +81,7 @@ flowchart LR
 
 ### 交互式查询
 
-1. `POST /api/profile/stream` 每次都运行 LangGraph，通过 NDJSON 输出进度，不以已有画像短路查询。
+1. `POST /api/profile/stream` 先读取最近成功画像：已有画像立即以 NDJSON `result` 返回，超过阈值时只幂等排队；仅首次画像同步运行 LangGraph 并输出四阶段进度。
 2. 对候选身份组再次验证；仅联合获取通过身份阈值的 OpenAlex 作者详情和论文，游标分页必须完整结束。
 3. 对有 DOI 的论文查询 Crossref，并记录已核验、未找到、失败和核验上限。
 4. 数据裁决节点按 DOI 合并来源，保留字段来源与冲突，产出统一论文集和 `dataAudit`。
@@ -84,9 +93,9 @@ flowchart LR
 ### 最近成功画像与后台更新
 
 - PostgreSQL 只保留每位学者最近一次通过质量检查的画像，供质量对比、论文分页和自动换版使用。
-- `POST /api/profile` 读取最近成功画像；前端交互式搜索统一使用 `/api/profile/stream` 获取当前数据。
+- `POST /api/profile` 读取最近成功画像；前端候选确认统一使用 `/api/profile/stream`，已有画像走缓存结果、首次画像走工作流。
 - 研究追踪学者使用 24 小时阈值；最近 30 天访问者使用 7 天阈值。
-- 后台维护按阈值原子去重插入 `refresh_jobs`，不改变用户主动查询始终重新获取的行为。
+- 后台维护和用户打开过期画像都按阈值原子去重插入 `refresh_jobs`；用户立即看到最近成功画像，不在 Web 请求内等待更新。
 - 只有完整抓取成功才允许删除已消失的中心作者 authorship。
 - 追踪列表把最新画像中的论文数、引用数与当前用户的 `favorites` 基线比较，并从当前画像的两个三年窗口确定性识别方向变化提示。用户加载到相应画像版本后调用 `/api/tracking/seen`，事务内更新自己的基线，不影响其他用户。
 - `POST /api/tracking/{author_id}/refresh` 先通过会话确定用户，再验证该用户确实存在对应 `favorites` 记录；随后调用现有 `enqueue_refresh`。数据库活跃任务唯一索引与 Repository 的 `on conflict do nothing` 共同防止重复排队，返回已有或新任务 ID。Web 请求不调用 LangGraph，worker 继续通过 `FOR UPDATE SKIP LOCKED` 领取任务。
@@ -94,7 +103,7 @@ flowchart LR
 
 ### Worker
 
-Worker 使用 `FOR UPDATE SKIP LOCKED` 原子领取任务，支持多实例并发。失败按指数退避，最多 3 次；未通过质量门槛不会进入发布事务。每小时维护使用 PostgreSQL advisory lock，避免多 worker 重复调度，并清理过期登录尝试、session 和 30 天前任务日志。维护任务还会回收锁定超过 30 分钟的失联 worker 任务：未满 3 次则重新排队，否则标记失败，同时同步画像状态。
+Worker 先使用 `FOR UPDATE SKIP LOCKED` 领取 `openalex_search_jobs`，再领取 `refresh_jobs`，支持多实例并发。搜索成功发布共享缓存，失败按上游 `Retry-After` 或指数退避重排；画像失败最多重试 3 次，未通过质量门槛不会进入发布事务。每小时维护使用 PostgreSQL advisory lock，避免多 worker 重复调度，并清理过期登录尝试、session、缓存和任务日志。维护任务还会回收锁定超过 30 分钟的失联 worker 任务：未满次数则重新排队，否则标记失败，同时同步画像状态。
 
 ## 身份认证
 
@@ -112,7 +121,7 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 原子领取任务，支持多实例并�
 ## 进度与错误边界
 
 - NDJSON 仍由既有 LangGraph 节点驱动，但 API 只向前端暴露四个稳定阶段：`verify_identity`、`aggregate_outputs`、`analyze_trajectory`、`verify_evidence`。
-- 搜索使用 30 秒总超时；画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、工作流/worker 失败分别映射为独立前端状态。OpenAlex 客户端通过服务端 `OPENALEX_API_KEY` 使用正常每日额度，在重试耗尽后保留上游状态码和 `Retry-After`，但不会把 key 写入异常；搜索入口把上游 429 映射为带预计恢复时间的可重试 429，其他不可用错误映射为不泄漏内部请求信息的 502。
+- 搜索使用 30 秒总超时；同一冷查询最多等待共享任务 25 秒，超时返回可重试 503。画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、工作流/worker 失败分别映射为独立前端状态。OpenAlex 客户端通过服务端 `OPENALEX_API_KEY` 使用正常每日额度，在重试耗尽后保留上游状态码和 `Retry-After`，但不会把 key 写入异常；每次上游响应把共享额度写入 PostgreSQL，达到保留线后阻止新的冷请求。搜索入口优先返回新鲜/旧缓存或本地真实结果；确实没有可用数据时，429 映射为带预计恢复时间的可重试 429，其他不可用错误映射为不泄漏内部请求信息的 502。
 - 外部数据错误仍通过流式 `error` 事件结束；搜索与流式画像共享当前请求序号，全部论文分页及 SSE 触发的最新版读取也使用 `AbortController`，前端不会把中断或旧请求结果覆盖到新选择的学者。
 - 追踪/历史和全部论文面板分别提供 loading、empty、error 与 retry 状态；错误态不会同时渲染为空态。
 

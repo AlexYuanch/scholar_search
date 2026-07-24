@@ -73,6 +73,7 @@ def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticate
     candidate = response.json()["candidates"][0]
 
     assert response.status_code == 200
+    assert response.json()["source"] == "live"
     assert candidate["identity_confidence"] == "single"
     assert candidate["current_institution"] == "Current Institute"
     assert candidate["historical_institutions"] == ["Previous Institute"]
@@ -82,6 +83,10 @@ def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticate
         "current_institution",
         "independent_profile",
     }
+
+    cached_response = authenticated_client.get("/api/search?name=ada")
+    assert cached_response.status_code == 200
+    assert cached_response.json()["source"] == "cache"
 
 
 def test_search_maps_openalex_rate_limit_to_retryable_response(monkeypatch, authenticated_client):
@@ -218,31 +223,30 @@ def test_cold_profile_publishes_valid_workflow_result(monkeypatch, authenticated
     assert repository.get_profile("A1")["profile_version"] == 1
 
 
-def test_profile_stream_refreshes_cached_profile(monkeypatch, authenticated_client):
+def test_profile_stream_returns_cached_profile_without_running_workflow(
+    monkeypatch, authenticated_client
+):
     import main
 
     repository = InMemoryRepository()
     repository.publish_profile(_state(), query_name="Ada Lovelace")
     monkeypatch.setattr(main, "repository", repository)
 
-    refreshed = _state(name="Ada Byron")
-
-    class RefreshGraph:
+    class ExplodingGraph:
         def stream(self, _state, stream_mode="values"):
-            yield refreshed
+            raise AssertionError("cached profile must not run the workflow")
 
-    monkeypatch.setattr(main, "graph", RefreshGraph())
+    monkeypatch.setattr(main, "graph", ExplodingGraph())
 
     response = authenticated_client.post("/api/profile/stream", json={"author_id": "A1"})
     body = response.text
 
     assert response.status_code == 200
-    assert '"type": "cache_hit"' not in body
     assert '"stages": ["verify_identity", "aggregate_outputs", "analyze_trajectory", "verify_evidence"]' in body
-    assert '"核验身份"' in body
-    assert '"node": "fetch_profile"' not in body
-    assert '"profile_version": 2' in body
-    assert '"name": "Ada Byron"' in body
+    assert '"source": "cache"' in body
+    assert '"profile_version": 1' in body
+    assert '"name": "Ada Lovelace"' in body
+    assert repository.get_profile("A1")["profile_version"] == 1
 
 
 def test_mark_favorite_seen_clears_tracking_updates(monkeypatch, authenticated_client):

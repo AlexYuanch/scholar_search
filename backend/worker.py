@@ -5,13 +5,33 @@ import logging
 import os
 import time
 
+from openalex import configure_budget_control
 from quality import assess_profile_quality
 from repository import create_repository
+from search_service import (
+    OPENALEX_MIN_REMAINING_CREDITS,
+    build_live_candidate_payload,
+    run_claimed_search_job,
+)
 from state import default_state
 from workflow import graph
 
 
 logger = logging.getLogger(__name__)
+
+
+def process_one_search_job(
+    repository,
+    builder=build_live_candidate_payload,
+) -> bool:
+    job = repository.claim_openalex_search_job()
+    if not job:
+        return False
+    try:
+        run_claimed_search_job(repository, job, builder)
+        return True
+    except Exception:
+        return False
 
 
 def process_one_job(repository, workflow_graph=graph) -> bool:
@@ -53,6 +73,13 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
 
 def run_forever() -> None:
     repository = create_repository()
+    configure_budget_control(
+        lambda: repository.get_upstream_retry_after(
+            "openalex",
+            OPENALEX_MIN_REMAINING_CREDITS,
+        ),
+        lambda snapshot: repository.record_upstream_rate_limit("openalex", **snapshot),
+    )
     poll_seconds = float(os.getenv("WORKER_POLL_SECONDS", "3"))
     maintenance_seconds = float(os.getenv("WORKER_MAINTENANCE_SECONDS", "3600"))
     run_once = os.getenv("WORKER_ONCE", "").lower() in {"1", "true", "yes"}
@@ -68,7 +95,9 @@ def run_forever() -> None:
             next_maintenance = now + maintenance_seconds
 
         try:
-            processed = process_one_job(repository)
+            search_processed = process_one_search_job(repository)
+            profile_processed = process_one_job(repository)
+            processed = search_processed or profile_processed
         except Exception:
             logger.exception("Worker queue poll failed")
             processed = False

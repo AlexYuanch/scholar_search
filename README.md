@@ -10,8 +10,9 @@
 - LangGraph 分页获取 OpenAlex 论文，以 DOI 查询 Crossref 出版元数据，裁决后再生成引用统计、研究方向、兴趣演化、代表论文和合作网络。
 - 概览展示本次收录、DOI 数、跨来源核验数、待核实数、来源差异和分页完整性；待核实只表示缺少 DOI 或 Crossref 暂无记录。
 - 最终总结经过证据审查，论文依据必须能回溯到裁决后的统一论文集；不通过审查的新画像不会发布。
-- 每次用户发起画像查询都会重新获取 OpenAlex 当前数据，并通过 NDJSON 持续展示进度。
+- 已有画像立即从 PostgreSQL 返回；超过刷新阈值时只向 `refresh_jobs` 幂等排队，由 worker 异步获取 OpenAlex/Crossref 新数据，Web 请求不再同步重复运行完整工作流。
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保留一份最近成功画像用于质量对比和自动更新。
+- 学者搜索使用 PostgreSQL 持久缓存：相同规范化姓名共享结果，冷请求由 `openalex_search_jobs` 合并为一个上游任务，身份指纹单独缓存 30 天；OpenAlex 限流或共享额度不足时可返回旧缓存或已发布真实学者的本地索引结果。
 - 研究追踪学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
 - 研究追踪记录用户上次看过的论文数、引用数和画像版本；后台发现新增论文、引用或可检测的方向变化后提示，查看最新版后自动清除。
 - 追踪面板展示排队、更新中、成功和失败状态，支持立即检查、重试、查看画像和停止追踪；立即检查只排队，不在 Web 请求中同步运行工作流。
@@ -120,6 +121,8 @@ APP_ENV=production
 
 本地账号不依赖邮箱、短信或第三方平台。`OPENALEX_API_KEY` 用于 OpenAlex 的正常每日额度，可从 `openalex.org/settings/api` 免费获取；未配置时只能使用极小的匿名额度。`LLM_*` 可留空，系统会使用确定性规则分析。
 
+公开部署不能把 OpenAlex 当作无限上游。默认策略是：普通搜索结果缓存 24 小时、空结果缓存 15 分钟、身份指纹缓存 30 天；并发的同名冷请求只允许一个 Web/worker 实际访问上游，其余请求等待同一 PostgreSQL 任务；上游响应中的共享剩余额度和恢复时间写入 `upstream_rate_limits`，达到 `OPENALEX_MIN_REMAINING_CREDITS` 保留线后停止新的冷搜索。热门学者和已发布画像不消耗新的搜索额度，未见过的新学者仍受 OpenAlex 每日额度限制。各 TTL、等待时间和额度保留线都可通过 `.env.example` 中的 `OPENALEX_*` 项调整。
+
 ### 3. 启动并验收
 
 只通过生产检查脚本启动，它会拒绝示例密码、错误的生产开关和不安全的 Cookie 组合：
@@ -222,6 +225,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 
 - 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`authorships`
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
+- 上游搜索缓存与保护：`openalex_search_cache`、`openalex_identity_cache`、`openalex_search_jobs`、`upstream_rate_limits`
 - 用户与会话：`app_users`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`
 
 数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
@@ -231,9 +235,9 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | 接口 | 鉴权 | 说明 |
 |------|------|------|
 | `GET /api/health`、`GET /api/ready` | 公开 | 进程与数据库健康检查 |
-| `GET /api/search?name=...` | 必须登录、限速 | 搜索候选学者 |
+| `GET /api/search?name=...` | 必须登录、限速 | 搜索候选学者；返回共享缓存/本地索引/实时来源和更新时间 |
 | `POST /api/profile` | 必须登录 | 返回最新画像并记录当前用户历史 |
-| `POST /api/profile/stream` | 必须登录、限速 | 重新获取当前数据并输出 NDJSON 进度流 |
+| `POST /api/profile/stream` | 必须登录、限速 | 已有画像立即返回；过期画像异步排队，首次画像输出 NDJSON 进度流 |
 | `GET /api/authors/{author_id}/works` | 必须登录 | 全量论文游标分页 |
 | `POST /api/auth/register` | 公开、限速 | 创建本地账号并自动登录 |
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
@@ -256,7 +260,7 @@ npm run build
 npm run test:db
 ```
 
-`npm test` 使用受控工作流与 in-memory Repository 做快速回归。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、分页、会话、跨用户追踪隔离、重建 Repository 后的数据持久性，以及真实 Worker 入口对数据库任务的领取、发布和完成状态。外部 OpenAlex/Crossref 全链路另以手动真实数据验收，数据库测试中的受控工作流输出不冒充外部数据验证。
+`npm test` 使用受控工作流与 in-memory Repository 做快速回归。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、分页、会话、跨用户追踪隔离、搜索缓存持久性与任务去重、重建 Repository 后的数据持久性，以及真实 Worker 入口对数据库搜索/画像任务的领取、发布和完成状态。外部 OpenAlex/Crossref 全链路另以手动真实数据验收，数据库测试中的受控工作流输出不冒充外部数据验证。
 
 ## 备份
 
@@ -272,7 +276,7 @@ docker compose exec backup backup-postgres
 
 ## 单机容量增长后的拆分
 
-当前版本针对单台 ECS 直接启动优化。数据量或并发增长后，可把 PostgreSQL 迁到同 VPC 的 RDS PostgreSQL，把数据库 URL 改为 RDS 私网地址，并继续让 Web/worker 使用受限账号；迁移账号只在发布阶段使用。旧 SQLite 缓存不迁移，自托管 PostgreSQL 从空库开始。
+当前版本针对单台 ECS 直接启动优化。多个 Web 与 worker 实例可共享 PostgreSQL 缓存、额度状态和 `FOR UPDATE SKIP LOCKED` 队列，不需要 Redis。数据量或并发增长后，可把 PostgreSQL 迁到同 VPC 的 RDS PostgreSQL，把数据库 URL 改为 RDS 私网地址，并水平扩展 Web/worker；迁移账号只在发布阶段使用。若要覆盖近乎无限的不同姓名冷查询，仍需要购买足够的 OpenAlex 额度或部署其公开数据快照，本实现不把第三方 API 包装成无限资源。
 
 ## 目录结构
 

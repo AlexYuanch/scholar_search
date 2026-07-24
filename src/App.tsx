@@ -118,6 +118,10 @@ function CandidateList({ candidates, onSelect, loading, t }: {
         .replace("{topics}", String(evidence.shared_topics ?? 0))
         .replace("{institutions}", String(evidence.shared_institutions ?? 0))
     }
+    if (evidence.type === "published_profile") {
+      return t("candidate.published_profile_evidence")
+        .replace("{count}", String(evidence.merged_count ?? 1))
+    }
     return t("candidate.independent_evidence")
       .replace("{works}", String(evidence.sampled_works ?? 0))
       .replace("{coauthors}", String(evidence.coauthor_count ?? 0))
@@ -609,9 +613,7 @@ export default function App() {
     try {
       const results = await searchAuthors(q, { signal: controller.signal })
       if (!isCurrent()) return
-      if (results.length === 1) {
-        await loadProfile(results[0].id, results[0].merged_ids)
-      } else if (!results.length) {
+      if (!results.length) {
         setNoResults(true)
       } else {
         setCandidates(results)
@@ -626,7 +628,7 @@ export default function App() {
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [loadProfile, query, reportError, t, user])
+  }, [query, reportError, t, user])
 
   // 图谱交互
   const handleEdgeClick = useCallback((data: {

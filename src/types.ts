@@ -20,7 +20,7 @@ export interface Candidate {
   disambiguation?: string
   identity_confidence?: string
   identity_evidence?: Array<{
-    type: "orcid" | "current_institution" | "merged_profile" | "independent_profile"
+    type: "orcid" | "current_institution" | "merged_profile" | "published_profile" | "independent_profile"
     value?: string
     reason?: string
     shared_works?: number
@@ -30,6 +30,7 @@ export interface Candidate {
     sampled_works?: number
     coauthor_count?: number
     topic_count?: number
+    merged_count?: number
   }>
 }
 

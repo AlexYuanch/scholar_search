@@ -34,6 +34,7 @@ const zh: Record<string, string> = {
   "candidate.confidence_low": "身份置信度：低",
   "candidate.confidence_single": "独立档案 · 待确认",
   "candidate.merge_evidence": "归并信号：共同论文 {works}、共同合作者 {coauthors}、共同主题 {topics}、共同机构 {institutions}",
+  "candidate.published_profile_evidence": "已发布画像的身份核验记录：{count} 个 OpenAlex 档案属于当前身份组",
   "candidate.independent_evidence": "独立档案指纹：抽样论文 {works}、合作者 {coauthors}、主题 {topics}；未降低同名合并阈值",
 
   "tab.overview": "概览",

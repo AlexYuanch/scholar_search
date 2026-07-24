@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import uuid
@@ -199,6 +200,10 @@ class InMemoryRepository:
         self.registration_attempts: list[dict] = []
         self.api_rate_limit_events: list[dict] = []
         self.sessions: dict[str, dict] = {}
+        self.openalex_search_cache: dict[str, dict] = {}
+        self.openalex_identity_cache: dict[str, dict] = {}
+        self.openalex_search_jobs: dict[str, dict] = {}
+        self.upstream_rate_limits: dict[str, dict] = {}
 
     def _scholar(self, author_id: str, name: str = "") -> dict:
         if author_id not in self.scholars:
@@ -224,6 +229,7 @@ class InMemoryRepository:
                 raise ValueError("target_author_id is required")
             author_profile = state.get("target_author_profile") or {}
             scholar = self._scholar(author_id, author_profile.get("display_name", query_name))
+            scholar["raw_json"] = deepcopy(author_profile)
             previous = self.profiles.get(author_id)
             version = int((previous or {}).get("profile_version", 0)) + 1
             payload = deepcopy(state.get("web_payload") or {})
@@ -452,6 +458,187 @@ class InMemoryRepository:
                 status = "queued" if retry else "failed"
                 self.profiles[job["author_id"]]["refresh_status"] = status
                 self.profiles[job["author_id"]]["payload"]["refreshStatus"] = status
+
+    def get_openalex_search_cache(self, query_key: str) -> dict | None:
+        with self._lock:
+            row = self.openalex_search_cache.get(query_key)
+            if not row:
+                return None
+            result = deepcopy(row)
+            result["fresh"] = row["expires_at"] > _now()
+            result["expires_at"] = _iso(row["expires_at"])
+            return result
+
+    def search_local_openalex_authors(self, query_text: str, limit: int = 50) -> list[dict]:
+        normalized = " ".join(query_text.casefold().split())
+        with self._lock:
+            matches = []
+            for scholar in self.scholars.values():
+                names = {
+                    str(scholar.get("name") or "").casefold(),
+                    *(
+                        str(value).casefold()
+                        for value in (scholar.get("raw_json") or {}).get(
+                            "display_name_alternatives", []
+                        )
+                    ),
+                }
+                if normalized not in names:
+                    continue
+                author = deepcopy(scholar.get("raw_json") or {})
+                author.setdefault("id", scholar["author_id"])
+                author.setdefault("display_name", scholar.get("name") or query_text)
+                matches.append(author)
+            return matches[:limit]
+
+    def save_openalex_search_cache(
+        self,
+        query_key: str,
+        query_text: str,
+        candidates: list[dict],
+        ttl_seconds: int,
+    ) -> None:
+        with self._lock:
+            previous = self.openalex_search_cache.get(query_key) or {}
+            self.openalex_search_cache[query_key] = {
+                "query_key": query_key,
+                "query_text": query_text,
+                "candidates": deepcopy(candidates),
+                "expires_at": _now() + timedelta(seconds=max(1, ttl_seconds)),
+                "created_at": previous.get("created_at") or _iso(),
+                "updated_at": _iso(),
+            }
+
+    def get_openalex_identity_cache(self, author_id: str) -> dict | None:
+        with self._lock:
+            row = self.openalex_identity_cache.get(author_id)
+            if not row:
+                return None
+            result = deepcopy(row)
+            result["fresh"] = row["expires_at"] > _now()
+            result["expires_at"] = _iso(row["expires_at"])
+            return result
+
+    def get_openalex_identity_caches(self, author_ids: list[str]) -> dict[str, dict]:
+        return {
+            author_id: cached
+            for author_id in dict.fromkeys(author_ids)
+            if (cached := self.get_openalex_identity_cache(author_id)) is not None
+        }
+
+    def save_openalex_identity_cache(
+        self,
+        author_id: str,
+        fingerprint: dict,
+        ttl_seconds: int,
+    ) -> None:
+        with self._lock:
+            previous = self.openalex_identity_cache.get(author_id) or {}
+            self.openalex_identity_cache[author_id] = {
+                "author_id": author_id,
+                "fingerprint": deepcopy(fingerprint),
+                "expires_at": _now() + timedelta(seconds=max(1, ttl_seconds)),
+                "created_at": previous.get("created_at") or _iso(),
+                "updated_at": _iso(),
+            }
+
+    def enqueue_openalex_search(self, query_key: str, query_text: str) -> str:
+        with self._lock:
+            for job in self.openalex_search_jobs.values():
+                if job["query_key"] == query_key and job["status"] in {"pending", "running"}:
+                    return job["id"]
+            job_id = str(uuid.uuid4())
+            self.openalex_search_jobs[job_id] = {
+                "id": job_id,
+                "query_key": query_key,
+                "query_text": query_text,
+                "status": "pending",
+                "attempts": 0,
+                "scheduled_at": _now(),
+                "created_at": _iso(),
+            }
+            return job_id
+
+    def claim_openalex_search_job(self, query_key: str | None = None) -> dict | None:
+        with self._lock:
+            pending = [
+                job for job in self.openalex_search_jobs.values()
+                if job["status"] == "pending"
+                and job["scheduled_at"] <= _now()
+                and (query_key is None or job["query_key"] == query_key)
+            ]
+            if not pending:
+                return None
+            job = sorted(pending, key=lambda row: row["scheduled_at"])[0]
+            job["status"] = "running"
+            job["attempts"] += 1
+            job["started_at"] = _iso()
+            job["locked_at"] = _iso()
+            return deepcopy(job)
+
+    def complete_openalex_search_job(self, job_id: str) -> None:
+        with self._lock:
+            self.openalex_search_jobs[job_id].update(
+                status="succeeded",
+                finished_at=_iso(),
+                updated_at=_iso(),
+            )
+
+    def fail_openalex_search_job(
+        self,
+        job_id: str,
+        error: str,
+        retry: bool,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        with self._lock:
+            job = self.openalex_search_jobs[job_id]
+            delay = retry_after_seconds or (2 ** max(1, int(job["attempts"])) * 60)
+            job.update(
+                status="pending" if retry else "failed",
+                last_error=error[:4000],
+                scheduled_at=_now() + timedelta(seconds=max(1, delay)),
+                locked_at=None,
+                finished_at=None if retry else _iso(),
+                updated_at=_iso(),
+            )
+
+    def record_upstream_rate_limit(
+        self,
+        provider: str,
+        limit_credits: int | None,
+        remaining_credits: int | None,
+        reset_after_seconds: int | None,
+    ) -> None:
+        with self._lock:
+            previous = self.upstream_rate_limits.get(provider) or {}
+            self.upstream_rate_limits[provider] = {
+                "provider": provider,
+                "limit_credits": limit_credits
+                if limit_credits is not None else previous.get("limit_credits"),
+                "remaining_credits": remaining_credits
+                if remaining_credits is not None else previous.get("remaining_credits"),
+                "reset_at": (
+                    _now() + timedelta(seconds=max(0, reset_after_seconds))
+                    if reset_after_seconds is not None
+                    else previous.get("reset_at")
+                ),
+                "updated_at": _iso(),
+            }
+
+    def get_upstream_retry_after(self, provider: str, min_remaining_credits: int) -> int | None:
+        with self._lock:
+            row = self.upstream_rate_limits.get(provider)
+            if not row or row.get("remaining_credits") is None:
+                return None
+            reset_at = row.get("reset_at")
+            if (
+                int(row["remaining_credits"]) > min_remaining_credits
+                or not isinstance(reset_at, datetime)
+                or reset_at <= _now()
+            ):
+                return None
+            return max(1, math.ceil((reset_at - _now()).total_seconds()))
 
     def create_password_user(self, username: str, password_hash: str) -> dict:
         normalized_username = username.strip().casefold()
@@ -1233,6 +1420,287 @@ class PostgresRepository:
                     where scholar_id = :scholar_id
                 """), {"scholar_id": scholar_id, "retry": retry})
 
+    def get_openalex_search_cache(self, query_key: str) -> dict | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(text("""
+                select query_key, query_text, candidates, expires_at, created_at, updated_at,
+                       expires_at > now() as fresh
+                from public.openalex_search_cache
+                where query_key = :query_key
+            """), {"query_key": query_key}).mappings().first()
+        if not row:
+            return None
+        result = dict(row)
+        result["expires_at"] = _iso(result["expires_at"])
+        result["created_at"] = _iso(result["created_at"])
+        result["updated_at"] = _iso(result["updated_at"])
+        return result
+
+    def search_local_openalex_authors(self, query_text: str, limit: int = 50) -> list[dict]:
+        normalized = " ".join(query_text.casefold().split())
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                select s.source_author_id, s.display_name, s.orcid,
+                       s.works_count, s.cited_by_count, s.h_index,
+                       s.raw_json, p.payload
+                from public.scholars s
+                left join public.scholar_profiles p on p.scholar_id = s.id
+                where s.source = 'openalex'
+                  and (
+                      lower(btrim(s.display_name)) = :normalized
+                      or exists (
+                          select 1
+                          from public.scholar_aliases a
+                          where a.scholar_id = s.id
+                            and a.normalized_alias = :normalized
+                      )
+                  )
+                order by s.cited_by_count desc, s.id
+                limit :limit
+            """), {"normalized": normalized, "limit": max(1, min(limit, 100))}).mappings().all()
+        result = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            author = dict(row.get("raw_json") or {})
+            author.update({
+                "id": row["source_author_id"],
+                "display_name": row["display_name"],
+                "orcid": row["orcid"],
+                "works_count": int(row["works_count"] or 0),
+                "cited_by_count": int(row["cited_by_count"] or 0),
+                "summary_stats": {
+                    **(author.get("summary_stats") or {}),
+                    "h_index": int(row["h_index"] or 0),
+                },
+            })
+            payload = row.get("payload") or {}
+            if payload.get("institution") and not author.get("last_known_institutions"):
+                author["last_known_institutions"] = [{
+                    "display_name": payload["institution"],
+                }]
+            result.append(author)
+        return result
+
+    def save_openalex_search_cache(
+        self,
+        query_key: str,
+        query_text: str,
+        candidates: list[dict],
+        ttl_seconds: int,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into public.openalex_search_cache (
+                    query_key, query_text, candidates, expires_at
+                ) values (
+                    :query_key, :query_text, cast(:candidates as jsonb),
+                    now() + (:ttl_seconds * interval '1 second')
+                )
+                on conflict (query_key) do update set
+                    query_text = excluded.query_text,
+                    candidates = excluded.candidates,
+                    expires_at = excluded.expires_at,
+                    updated_at = now()
+            """), {
+                "query_key": query_key,
+                "query_text": query_text,
+                "candidates": _json(candidates),
+                "ttl_seconds": max(1, ttl_seconds),
+            })
+
+    def get_openalex_identity_cache(self, author_id: str) -> dict | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(text("""
+                select author_id, fingerprint, expires_at, created_at, updated_at,
+                       expires_at > now() as fresh
+                from public.openalex_identity_cache
+                where author_id = :author_id
+            """), {"author_id": author_id}).mappings().first()
+        if not row:
+            return None
+        result = dict(row)
+        result["expires_at"] = _iso(result["expires_at"])
+        result["created_at"] = _iso(result["created_at"])
+        result["updated_at"] = _iso(result["updated_at"])
+        return result
+
+    def get_openalex_identity_caches(self, author_ids: list[str]) -> dict[str, dict]:
+        unique_ids = list(dict.fromkeys(author_id for author_id in author_ids if author_id))
+        if not unique_ids:
+            return {}
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                select author_id, fingerprint, expires_at, created_at, updated_at,
+                       expires_at > now() as fresh
+                from public.openalex_identity_cache
+                where author_id = any(cast(:author_ids as text[]))
+            """), {"author_ids": unique_ids}).mappings().all()
+        result = {}
+        for raw_row in rows:
+            row = dict(raw_row)
+            row["expires_at"] = _iso(row["expires_at"])
+            row["created_at"] = _iso(row["created_at"])
+            row["updated_at"] = _iso(row["updated_at"])
+            result[row["author_id"]] = row
+        return result
+
+    def save_openalex_identity_cache(
+        self,
+        author_id: str,
+        fingerprint: dict,
+        ttl_seconds: int,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into public.openalex_identity_cache (
+                    author_id, fingerprint, expires_at
+                ) values (
+                    :author_id, cast(:fingerprint as jsonb),
+                    now() + (:ttl_seconds * interval '1 second')
+                )
+                on conflict (author_id) do update set
+                    fingerprint = excluded.fingerprint,
+                    expires_at = excluded.expires_at,
+                    updated_at = now()
+            """), {
+                "author_id": author_id,
+                "fingerprint": _json(fingerprint),
+                "ttl_seconds": max(1, ttl_seconds),
+            })
+
+    def enqueue_openalex_search(self, query_key: str, query_text: str) -> str:
+        with self.engine.begin() as conn:
+            job_id = conn.execute(text("""
+                insert into public.openalex_search_jobs (
+                    query_key, query_text, status, scheduled_at
+                ) values (:query_key, :query_text, 'pending', now())
+                on conflict do nothing
+                returning id
+            """), {"query_key": query_key, "query_text": query_text}).scalar_one_or_none()
+            if not job_id:
+                job_id = conn.execute(text("""
+                    select id from public.openalex_search_jobs
+                    where query_key = :query_key and status in ('pending', 'running')
+                    order by created_at limit 1
+                """), {"query_key": query_key}).scalar_one()
+            return str(job_id)
+
+    def claim_openalex_search_job(self, query_key: str | None = None) -> dict | None:
+        with self.engine.begin() as conn:
+            row = conn.execute(text("""
+                with candidate as (
+                    select id
+                    from public.openalex_search_jobs
+                    where status = 'pending'
+                      and scheduled_at <= now()
+                      and (
+                          cast(:query_key as text) is null
+                          or query_key = cast(:query_key as text)
+                      )
+                    order by scheduled_at
+                    for update skip locked
+                    limit 1
+                )
+                update public.openalex_search_jobs j set
+                    status = 'running',
+                    attempts = attempts + 1,
+                    started_at = now(),
+                    locked_at = now(),
+                    updated_at = now()
+                from candidate c
+                where j.id = c.id
+                returning j.id, j.query_key, j.query_text, j.attempts, j.status
+            """), {"query_key": query_key}).mappings().first()
+        return dict(row) if row else None
+
+    def complete_openalex_search_job(self, job_id: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                update public.openalex_search_jobs
+                set status = 'succeeded', finished_at = now(), locked_at = null, updated_at = now()
+                where id = cast(:job_id as uuid)
+            """), {"job_id": job_id})
+
+    def fail_openalex_search_job(
+        self,
+        job_id: str,
+        error: str,
+        retry: bool,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                update public.openalex_search_jobs set
+                    status = case when :retry then 'pending' else 'failed' end,
+                    last_error = :error,
+                    scheduled_at = case
+                        when :retry then now() + (
+                            coalesce(:retry_after_seconds, power(2, greatest(attempts, 1))::int * 60)
+                            * interval '1 second'
+                        )
+                        else scheduled_at
+                    end,
+                    locked_at = null,
+                    finished_at = case when :retry then null else now() end,
+                    updated_at = now()
+                where id = cast(:job_id as uuid)
+            """), {
+                "job_id": job_id,
+                "error": error[:4000],
+                "retry": retry,
+                "retry_after_seconds": retry_after_seconds,
+            })
+
+    def record_upstream_rate_limit(
+        self,
+        provider: str,
+        limit_credits: int | None,
+        remaining_credits: int | None,
+        reset_after_seconds: int | None,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into public.upstream_rate_limits (
+                    provider, limit_credits, remaining_credits, reset_at
+                ) values (
+                    :provider, :limit_credits, :remaining_credits,
+                    case
+                        when :reset_after_seconds is null then null
+                        else now() + (:reset_after_seconds * interval '1 second')
+                    end
+                )
+                on conflict (provider) do update set
+                    limit_credits = coalesce(excluded.limit_credits, upstream_rate_limits.limit_credits),
+                    remaining_credits = coalesce(
+                        excluded.remaining_credits,
+                        upstream_rate_limits.remaining_credits
+                    ),
+                    reset_at = coalesce(excluded.reset_at, upstream_rate_limits.reset_at),
+                    updated_at = now()
+            """), {
+                "provider": provider,
+                "limit_credits": limit_credits,
+                "remaining_credits": remaining_credits,
+                "reset_after_seconds": reset_after_seconds,
+            })
+
+    def get_upstream_retry_after(self, provider: str, min_remaining_credits: int) -> int | None:
+        with self.engine.connect() as conn:
+            seconds = conn.execute(text("""
+                select case
+                    when remaining_credits <= :min_remaining_credits
+                         and reset_at > now()
+                    then greatest(1, ceil(extract(epoch from (reset_at - now())))::integer)
+                    else null
+                end
+                from public.upstream_rate_limits
+                where provider = :provider
+            """), {
+                "provider": provider,
+                "min_remaining_credits": max(0, min_remaining_credits),
+            }).scalar_one_or_none()
+        return int(seconds) if seconds is not None else None
+
     def create_password_user(self, username: str, password_hash: str) -> dict:
         normalized_username = username.strip().casefold()
         try:
@@ -1467,6 +1935,17 @@ class PostgresRepository:
                   and locked_at < now() - interval '30 minutes'
             """))
             conn.execute(text("""
+                update public.openalex_search_jobs
+                set status = case when attempts < 3 then 'pending' else 'failed' end,
+                    scheduled_at = case when attempts < 3 then now() else scheduled_at end,
+                    finished_at = case when attempts < 3 then null else now() end,
+                    last_error = 'worker lease expired',
+                    locked_at = null,
+                    updated_at = now()
+                where status = 'running'
+                  and locked_at < now() - interval '10 minutes'
+            """))
+            conn.execute(text("""
                 update public.profile_status ps
                 set status = 'failed', updated_at = now()
                 where exists (
@@ -1509,6 +1988,9 @@ class PostgresRepository:
             deleted = 0
             for statement in (
                 "delete from public.refresh_jobs where status in ('succeeded', 'failed') and updated_at < now() - interval '30 days'",
+                "delete from public.openalex_search_jobs where status in ('succeeded', 'failed') and updated_at < now() - interval '30 days'",
+                "delete from public.openalex_search_cache where updated_at < now() - interval '90 days'",
+                "delete from public.openalex_identity_cache where updated_at < now() - interval '180 days'",
                 "delete from public.auth_login_attempts where created_at < now() - interval '1 day'",
                 "delete from public.auth_registration_attempts where created_at < now() - interval '1 day'",
                 "delete from public.api_rate_limit_events where created_at < now() - interval '1 day'",

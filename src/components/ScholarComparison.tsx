@@ -36,6 +36,10 @@ function identityEvidenceLabel(
       .replace("{topics}", String(evidence.shared_topics ?? 0))
       .replace("{institutions}", String(evidence.shared_institutions ?? 0))
   }
+  if (evidence.type === "published_profile") {
+    return t("candidate.published_profile_evidence")
+      .replace("{count}", String(evidence.merged_count ?? 1))
+  }
   return t("candidate.independent_evidence")
     .replace("{works}", String(evidence.sampled_works ?? 0))
     .replace("{coauthors}", String(evidence.coauthor_count ?? 0))

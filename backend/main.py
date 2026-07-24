@@ -33,8 +33,12 @@ from auth import (
     verify_password,
 )
 from events import ProfileEventBroker
-from nodes import dedup_authors
-from openalex import OpenAlexError, enrich_authors_for_disambiguation, search_authors
+from openalex import (
+    OpenAlexError,
+    configure_budget_control,
+    enrich_authors_for_disambiguation,
+    search_authors,
+)
 from quality import assess_profile_quality
 from repository import (
     APIQuotaExceeded,
@@ -43,6 +47,12 @@ from repository import (
     RepositoryNotConfigured,
     UsernameTaken,
     create_repository,
+)
+from search_service import (
+    OPENALEX_MIN_REMAINING_CREDITS,
+    SearchCoalesceTimeout,
+    build_live_candidate_payload,
+    search_with_cache,
 )
 from state import default_state
 from workflow import graph
@@ -144,6 +154,20 @@ PROFILE_RATE_LIMIT_PER_USER = int(os.getenv("PROFILE_RATE_LIMIT_PER_USER", "12")
 PROFILE_RATE_LIMIT_PER_IP = int(os.getenv("PROFILE_RATE_LIMIT_PER_IP", "60"))
 
 
+def _openalex_budget_guard() -> int | None:
+    return repository.get_upstream_retry_after(
+        "openalex",
+        OPENALEX_MIN_REMAINING_CREDITS,
+    )
+
+
+def _openalex_budget_reporter(snapshot: dict) -> None:
+    repository.record_upstream_rate_limit("openalex", **snapshot)
+
+
+configure_budget_control(_openalex_budget_guard, _openalex_budget_reporter)
+
+
 def _cache_is_fresh(cached: dict | None) -> bool:
     return bool(cached and repository.is_fresh(cached, CACHE_MAX_AGE_DAYS))
 
@@ -160,30 +184,13 @@ def _payload_with_defaults(author_id: str, payload: dict, cached: dict | None = 
     return data
 
 
-def _candidate_identity_evidence(author: dict) -> list[dict]:
-    evidence = []
-    if author.get("orcid"):
-        evidence.append({"type": "orcid", "value": author["orcid"]})
-    if author.get("current_institution"):
-        evidence.append({"type": "current_institution", "value": author["current_institution"]})
-    for match in author.get("identity_signals") or []:
-        evidence.append({
-            "type": "merged_profile",
-            "reason": match.get("reason", ""),
-            "shared_works": int(match.get("sharedWorks") or 0),
-            "shared_coauthors": int(match.get("sharedCoauthors") or 0),
-            "shared_topics": int(match.get("sharedTopics") or 0),
-            "shared_institutions": int(match.get("sharedInstitutions") or 0),
-        })
-    if not author.get("identity_signals"):
-        fingerprint = author.get("identity_fingerprint") or {}
-        evidence.append({
-            "type": "independent_profile",
-            "sampled_works": int(fingerprint.get("sampled_works") or 0),
-            "coauthor_count": len(fingerprint.get("coauthor_ids") or []),
-            "topic_count": len(fingerprint.get("topic_ids") or []),
-        })
-    return evidence
+def _build_live_search(repository_instance, query_text: str) -> tuple[list[dict], bool]:
+    return build_live_candidate_payload(
+        repository_instance,
+        query_text,
+        search_fn=search_authors,
+        enrich_fn=enrich_authors_for_disambiguation,
+    )
 
 
 def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> None:
@@ -439,7 +446,7 @@ def search(
     """搜索学者姓名，返回去重后的候选人列表。"""
     _consume_api_quota("search", user, request)
     try:
-        candidates = enrich_authors_for_disambiguation(search_authors(name))
+        return search_with_cache(repository, name, builder=_build_live_search)
     except OpenAlexError as exc:
         if exc.status_code == 429:
             raise HTTPException(
@@ -451,28 +458,14 @@ def search(
             status_code=502,
             detail="学术数据源暂时不可用，请稍后重试。",
         ) from exc
-    merged = dedup_authors(candidates)
-    return {
-        "candidates": [{
-            "id": author["id"],
-            "name": author["display_name"],
-            "institution": author.get("current_institution") or (author.get("institutions") or [
-                ((author.get("last_known_institutions") or [{}])[0].get("display_name", ""))
-            ])[0],
-            "institutions": author.get("institutions", []),
-            "current_institution": author.get("current_institution", ""),
-            "historical_institutions": author.get("historical_institutions", []),
-            "works_count": author.get("works_count", 0),
-            "cited_by_count": author.get("cited_by_count", 0),
-            "h_index": (author.get("summary_stats") or {}).get("h_index", 0),
-            "orcid": author.get("orcid"),
-            "merged_count": author.get("merged_count", 1),
-            "merged_ids": author.get("merged_ids", [author.get("id", "")]),
-            "disambiguation": author.get("disambiguation", ""),
-            "identity_confidence": author.get("identity_confidence", "single"),
-            "identity_evidence": _candidate_identity_evidence(author),
-        } for author in merged]
-    }
+    except SearchCoalesceTimeout as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="该姓名正在由其他请求核验，请稍后重试。",
+            headers={"Retry-After": "3"},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/profile")
@@ -615,6 +608,38 @@ async def profile_stream(
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
     _consume_api_quota("profile", user, request)
     cached = await asyncio.to_thread(repository.get_profile, req.author_id)
+    if cached:
+        refresh_status = await asyncio.to_thread(
+            _queue_stale_profile,
+            req.author_id,
+            cached,
+        )
+        await asyncio.to_thread(
+            _record_access,
+            req.author_id,
+            req.query_name or cached.get("query_name", ""),
+            user,
+        )
+
+        async def generate_cached():
+            yield json.dumps({
+                "type": "init",
+                "stages": STAGE_ORDER,
+                "labels": STAGE_LABELS,
+            }, ensure_ascii=False) + "\n"
+            yield json.dumps({
+                "type": "result",
+                "source": "cache",
+                "updated_at": cached["updated_at"],
+                "profile_version": cached.get("profile_version", 0),
+                "refresh_status": refresh_status,
+                "data": _payload_with_defaults(req.author_id, cached["payload"], cached) | {
+                    "refreshStatus": refresh_status,
+                },
+            }, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(generate_cached(), media_type="application/x-ndjson")
+
     state = default_state()
     state["target_author_id"] = req.author_id
     state["target_author_ids"] = _requested_author_ids(req, cached)

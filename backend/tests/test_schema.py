@@ -19,6 +19,9 @@ EXPECTED_TABLES = {
     "authorships",
     "favorites",
     "institutions",
+    "openalex_identity_cache",
+    "openalex_search_cache",
+    "openalex_search_jobs",
     "profile_status",
     "refresh_jobs",
     "scholar_aliases",
@@ -27,6 +30,7 @@ EXPECTED_TABLES = {
     "scholars",
     "user_history",
     "user_sessions",
+    "upstream_rate_limits",
     "works",
 }
 

@@ -80,6 +80,44 @@ def test_get_sends_configured_api_key_without_exposing_it(monkeypatch):
     assert "must-not-leak" not in str(captured.value)
 
 
+def test_get_reports_rate_limit_headers(monkeypatch):
+    import openalex
+
+    response = FakeResponse(200, {"results": []})
+    response.headers.update({
+        "X-RateLimit-Limit": "100000",
+        "X-RateLimit-Remaining": "99990",
+        "X-RateLimit-Reset": "3600",
+    })
+    snapshots = []
+    monkeypatch.setattr(openalex, "_SESSION", FakeSession([response]))
+    monkeypatch.setattr(openalex, "_BUDGET_GUARD", None)
+    monkeypatch.setattr(openalex, "_BUDGET_REPORTER", snapshots.append)
+
+    openalex._get("/authors")
+
+    assert snapshots == [{
+        "limit_credits": 100000,
+        "remaining_credits": 99990,
+        "reset_after_seconds": 3600,
+    }]
+
+
+def test_get_honors_shared_budget_guard_without_network_request(monkeypatch):
+    import openalex
+
+    session = FakeSession([FakeResponse(200, {"results": []})])
+    monkeypatch.setattr(openalex, "_SESSION", session)
+    monkeypatch.setattr(openalex, "_BUDGET_GUARD", lambda: 120)
+
+    with pytest.raises(openalex.OpenAlexError) as captured:
+        openalex._get("/authors")
+
+    assert captured.value.status_code == 429
+    assert captured.value.retry_after == "120"
+    assert session.calls == 0
+
+
 def test_get_does_not_reuse_stale_status_after_network_failure(monkeypatch):
     import openalex
 

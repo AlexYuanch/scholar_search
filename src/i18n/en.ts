@@ -34,6 +34,7 @@ const en: Record<string, string> = {
   "candidate.confidence_low": "Identity confidence: Low",
   "candidate.confidence_single": "Independent profile · Confirm",
   "candidate.merge_evidence": "Merge signals: {works} shared papers, {coauthors} coauthors, {topics} topics, and {institutions} institutions",
+  "candidate.published_profile_evidence": "Published identity review: {count} OpenAlex profiles belong to this identity group",
   "candidate.independent_evidence": "Independent fingerprint: {works} sampled papers, {coauthors} coauthors, and {topics} topics; namesake merge thresholds were not relaxed",
 
   "tab.overview": "Overview",
