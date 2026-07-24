@@ -28,7 +28,7 @@ function identityEvidenceLabel(
   t: (key: string) => string,
 ) {
   if (evidence.type === "orcid") return `ORCID ${String(evidence.value || "").replace("https://orcid.org/", "")}`
-  if (evidence.type === "current_institution") return `${t("candidate.current_inst")}: ${evidence.value}`
+  if (evidence.type === "primary_institution") return `${t("candidate.primary_inst")}: ${evidence.value}`
   if (evidence.type === "merged_profile") {
     return t("candidate.merge_evidence")
       .replace("{works}", String(evidence.shared_works ?? 0))
@@ -81,7 +81,7 @@ function ScholarIdentity({
           <h3 className="break-words font-semibold">{profile.name}</h3>
           <p className="break-words text-xs text-muted-foreground">
             {profile.institution
-              ? `${t("identity.latest_publication_affiliation")}: ${profile.institution}`
+              ? `${t("identity.primary_affiliation")}: ${profile.institution}`
               : "—"}
           </p>
         </div>
@@ -548,14 +548,14 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
                               </Badge>
                             </div>
                             <p className="mt-1 break-words text-xs text-muted-foreground">
-                              <span className="font-medium text-foreground">{t("candidate.current_inst")}:</span>{" "}
-                              {candidate.current_institution || candidate.institution || t("candidate.unknown_inst")}
+                              <span className="font-medium text-foreground">{t("candidate.primary_inst")}:</span>{" "}
+                              {candidate.primary_institution || candidate.institution || t("candidate.unknown_inst")}
                             </p>
                             <p className="mt-0.5 break-words text-xs text-muted-foreground">
-                              <span className="font-medium text-foreground">{t("candidate.history_inst")}:</span>{" "}
-                              {candidate.historical_institutions?.length
-                                ? candidate.historical_institutions.join(" · ")
-                                : t("candidate.no_history_inst")}
+                              <span className="font-medium text-foreground">{t("candidate.other_inst")}:</span>{" "}
+                              {candidate.other_institutions?.length
+                                ? candidate.other_institutions.join(" · ")
+                                : t("candidate.no_other_inst")}
                             </p>
                             <p className="mt-0.5 break-words text-xs text-muted-foreground">
                               ORCID {candidate.orcid

@@ -180,12 +180,12 @@ def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticate
     assert response.status_code == 200
     assert response.json()["source"] == "live"
     assert candidate["identity_confidence"] == "single"
-    assert candidate["current_institution"] == "Current Institute"
-    assert candidate["historical_institutions"] == ["Previous Institute"]
+    assert candidate["primary_institution"] == "Current Institute"
+    assert candidate["other_institutions"] == ["Previous Institute"]
     assert candidate["orcid"].endswith("0001")
     assert {item["type"] for item in candidate["identity_evidence"]} == {
         "orcid",
-        "current_institution",
+        "primary_institution",
         "independent_profile",
     }
 

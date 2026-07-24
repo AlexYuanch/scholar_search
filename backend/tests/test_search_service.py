@@ -15,8 +15,11 @@ def _payload(author_id="A1"):
         "name": "Ada Lovelace",
         "institution": "Analytical Engine Institute",
         "institutions": ["Analytical Engine Institute"],
-        "current_institution": "Analytical Engine Institute",
-        "historical_institutions": [],
+        "primary_institution": "Analytical Engine Institute",
+        "other_institutions": [],
+        "affiliation_selection_version": (
+            search_service.AFFILIATION_SELECTION_VERSION
+        ),
         "works_count": 1,
         "cited_by_count": 10,
         "h_index": 1,
@@ -44,6 +47,36 @@ def test_cold_search_is_saved_and_subsequent_users_reuse_cache():
     assert second["source"] == "cache"
     assert first["candidates"] == second["candidates"]
     assert calls == ["Ada Lovelace"]
+
+
+def test_legacy_cached_affiliation_fields_force_a_fresh_selection():
+    repository = InMemoryRepository()
+    key, query_text = search_service.normalize_search_query("Ada")
+    legacy = _payload()
+    legacy[0].pop("affiliation_selection_version")
+    legacy[0]["current_institution"] = legacy[0].pop("primary_institution")
+    legacy[0]["historical_institutions"] = legacy[0].pop("other_institutions")
+    legacy[0]["identity_evidence"] = [{
+        "type": "current_institution",
+        "value": "Analytical Engine Institute",
+    }]
+    repository.save_openalex_search_cache(key, query_text, legacy, 60)
+
+    calls = []
+
+    def builder(_repository, query_text):
+        calls.append(query_text)
+        return _payload(), True
+
+    result = search_service.search_with_cache(repository, "Ada", builder)
+    candidate = result["candidates"][0]
+
+    assert result["source"] == "live"
+    assert calls == ["Ada"]
+    assert candidate["primary_institution"] == "Analytical Engine Institute"
+    assert candidate["other_institutions"] == []
+    assert "current_institution" not in candidate
+    assert "historical_institutions" not in candidate
 
 
 def test_stale_search_returns_immediately_and_enqueues_worker_refresh():

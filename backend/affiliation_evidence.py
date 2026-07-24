@@ -4,6 +4,9 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 
+PRIMARY_AFFILIATION_WINDOW_YEARS = 6
+
+
 def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
@@ -18,6 +21,39 @@ def _years(values: Iterable[Any]) -> list[int]:
         if 1800 <= year <= 2100:
             years.add(year)
     return sorted(years, reverse=True)
+
+
+def select_primary_affiliation(records: Iterable[dict]) -> str:
+    """Choose the most persistent recent publication affiliation.
+
+    Coverage across the latest six-year window is the primary signal. The most
+    recent year and full-career coverage break ties, so one new paper cannot
+    displace a sustained affiliation while genuine career movement can emerge.
+    """
+    normalized = []
+    for record in records:
+        institution = record.get("institution") or {}
+        name = _clean_text(record.get("name") or institution.get("display_name"))
+        if not name:
+            continue
+        years = _years(record.get("years") or [])
+        normalized.append((name, years))
+    latest_year = max(
+        (max(years) for _, years in normalized if years),
+        default=0,
+    )
+    recent_start = latest_year - PRIMARY_AFFILIATION_WINDOW_YEARS + 1
+    candidates = [
+        (
+            sum(year >= recent_start for year in years),
+            max(years, default=0),
+            len(years),
+            name.casefold(),
+            name,
+        )
+        for name, years in normalized
+    ]
+    return max(candidates, default=(0, 0, 0, "", ""))[4]
 
 
 def _openalex_affiliation_history(author_profile: dict) -> list[dict]:
@@ -111,8 +147,10 @@ def build_affiliation_evidence(
     if orcid:
         source_links.append({"label": "ORCID", "url": orcid})
 
+    history = _openalex_affiliation_history(author_profile)
     return {
-        "openAlexAffiliationHistory": _openalex_affiliation_history(author_profile),
+        "primaryAffiliation": select_primary_affiliation(history),
+        "openAlexAffiliationHistory": history,
         "publicationAffiliationStatements": _publication_affiliation_statements(
             works,
             author_ids,

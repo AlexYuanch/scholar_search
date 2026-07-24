@@ -250,7 +250,7 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
                     </div>
                     {item.institution && (
                       <p className="break-words text-xs text-muted-foreground">
-                        {t("identity.latest_publication_affiliation")}: {item.institution}
+                        {t("identity.primary_affiliation")}: {item.institution}
                       </p>
                     )}
                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">

@@ -5,6 +5,7 @@ export interface EdgePaper {
 }
 
 export interface AffiliationEvidence {
+  primaryAffiliation: string
   openAlexAffiliationHistory: Array<{ name: string; years: number[] }>
   publicationAffiliationStatements: Array<{ text: string; years: number[] }>
   verifiedEmployment?: {
@@ -31,8 +32,8 @@ export interface Candidate {
   name: string
   institution: string
   institutions?: string[]
-  current_institution?: string
-  historical_institutions?: string[]
+  primary_institution?: string
+  other_institutions?: string[]
   works_count: number
   cited_by_count: number
   h_index: number
@@ -42,7 +43,7 @@ export interface Candidate {
   disambiguation?: string
   identity_confidence?: string
   identity_evidence?: Array<{
-    type: "orcid" | "current_institution" | "merged_profile" | "published_profile" | "independent_profile"
+    type: "orcid" | "primary_institution" | "merged_profile" | "published_profile" | "independent_profile"
     value?: string
     reason?: string
     shared_works?: number

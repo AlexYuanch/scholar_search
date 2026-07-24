@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-from affiliation_evidence import build_affiliation_evidence
+from affiliation_evidence import build_affiliation_evidence, select_primary_affiliation
 
 
 def _now() -> datetime:
@@ -1125,6 +1125,15 @@ class PostgresRepository:
                         works,
                         target_author_ids,
                     )
+                affiliation_evidence = payload["affiliationEvidence"]
+                primary_affiliation = (
+                    affiliation_evidence.get("primaryAffiliation")
+                    or select_primary_affiliation(
+                        affiliation_evidence.get("openAlexAffiliationHistory") or []
+                    )
+                )
+                affiliation_evidence["primaryAffiliation"] = primary_affiliation
+                payload["institution"] = primary_affiliation
                 row = {**dict(row), "payload": payload}
         if not row:
             return None

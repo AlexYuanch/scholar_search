@@ -10,7 +10,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
-from affiliation_evidence import build_affiliation_evidence
+from affiliation_evidence import build_affiliation_evidence, select_primary_affiliation
 from state import ScholarProfileState
 
 
@@ -159,20 +159,6 @@ def _combine_author_group(group: list[dict], matches: list[dict]) -> dict:
         int(item.get("cited_by_count") or 0),
         int(item.get("works_count") or 0),
     )))
-    primary_institutions = primary.get("last_known_institutions") or []
-    current_institution = str(
-        (primary_institutions[0] if primary_institutions else {}).get("display_name") or ""
-    ).strip()
-    if not current_institution:
-        affiliations = primary.get("affiliations") or []
-        latest_affiliation = max(
-            affiliations,
-            key=lambda item: max(item.get("years") or [0]),
-            default={},
-        )
-        current_institution = str(
-            (latest_affiliation.get("institution") or {}).get("display_name") or ""
-        ).strip()
     unique_by_id = {}
     for author in group:
         unique_by_id.setdefault(author.get("id") or f"missing-{len(unique_by_id)}", author)
@@ -200,9 +186,12 @@ def _combine_author_group(group: list[dict], matches: list[dict]) -> dict:
     primary["summary_stats"] = {**(primary.get("summary_stats") or {}), "h_index": max(h_indices, default=0)}
     primary["institutions"] = institutions
     primary["affiliations"] = _merge_affiliation_records(unique_group)
-    primary["current_institution"] = current_institution
-    primary["historical_institutions"] = [
-        institution for institution in institutions if institution != current_institution
+    primary_institution = select_primary_affiliation(primary["affiliations"])
+    if not primary_institution:
+        primary_institution = institutions[0] if institutions else ""
+    primary["primary_institution"] = primary_institution
+    primary["other_institutions"] = [
+        institution for institution in institutions if institution != primary_institution
     ]
     primary["merged_ids"] = ordered_ids
     primary["merged_count"] = len(ordered_ids)
@@ -1292,7 +1281,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
     payload = {
         "name": profile.get("display_name", ""),
         "authorId": state["target_author_id"],
-        "institution": insts[0] if insts else "",
+        "institution": affiliation_evidence.get("primaryAffiliation") or "",
         "institutions": list(dict.fromkeys(filter(None, institution_names or insts))),
         "orcid": profile.get("orcid"),
         "department": "",

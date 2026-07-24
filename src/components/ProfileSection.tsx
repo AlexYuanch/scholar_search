@@ -138,7 +138,7 @@ export default function ProfileSection({
               </p>
             ) : profile.institution ? (
               <p className="break-words text-sm text-muted-foreground">
-                {t("identity.latest_publication_affiliation")}: {profile.institution}
+                {t("identity.primary_affiliation")}: {profile.institution}
               </p>
             ) : null}
           </div>

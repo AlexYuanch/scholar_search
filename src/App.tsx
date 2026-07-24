@@ -49,7 +49,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
 }) {
   const evidenceLabel = (evidence: NonNullable<Candidate["identity_evidence"]>[number]) => {
     if (evidence.type === "orcid") return `ORCID ${String(evidence.value || "").replace("https://orcid.org/", "")}`
-    if (evidence.type === "current_institution") return `${t("candidate.current_inst")}: ${evidence.value}`
+    if (evidence.type === "primary_institution") return `${t("candidate.primary_inst")}: ${evidence.value}`
     if (evidence.type === "merged_profile") {
       return t("candidate.merge_evidence")
         .replace("{works}", String(evidence.shared_works ?? 0))
@@ -95,14 +95,14 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                     </Badge>
                   </div>
                   <p className="mt-1 max-w-xl break-words text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">{t("candidate.current_inst")}:</span>{" "}
-                    {c.current_institution || c.institution || t("candidate.unknown_inst")}
+                    <span className="font-medium text-foreground">{t("candidate.primary_inst")}:</span>{" "}
+                    {c.primary_institution || c.institution || t("candidate.unknown_inst")}
                   </p>
                   <p className="mt-0.5 max-w-xl break-words text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">{t("candidate.history_inst")}:</span>{" "}
-                    {c.historical_institutions?.length
-                      ? c.historical_institutions.join(" · ")
-                      : t("candidate.no_history_inst")}
+                    <span className="font-medium text-foreground">{t("candidate.other_inst")}:</span>{" "}
+                    {c.other_institutions?.length
+                      ? c.other_institutions.join(" · ")
+                      : t("candidate.no_other_inst")}
                   </p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     ORCID {c.orcid ? c.orcid.replace("https://orcid.org/", "") : t("candidate.orcid_missing")}

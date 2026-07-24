@@ -33,6 +33,7 @@ SEARCH_COALESCE_POLL_SECONDS = float(
 OPENALEX_MIN_REMAINING_CREDITS = int(
     os.getenv("OPENALEX_MIN_REMAINING_CREDITS", "200")
 )
+AFFILIATION_SELECTION_VERSION = 2
 
 
 class SearchCoalesceTimeout(RuntimeError):
@@ -48,10 +49,10 @@ def _candidate_identity_evidence(author: dict) -> list[dict]:
     evidence = []
     if author.get("orcid"):
         evidence.append({"type": "orcid", "value": author["orcid"]})
-    if author.get("current_institution"):
+    if author.get("primary_institution"):
         evidence.append({
-            "type": "current_institution",
-            "value": author["current_institution"],
+            "type": "primary_institution",
+            "value": author["primary_institution"],
         })
     for match in author.get("identity_signals") or []:
         evidence.append({
@@ -82,16 +83,24 @@ def _candidate_identity_evidence(author: dict) -> list[dict]:
 def _candidate_payload(author: dict) -> dict:
     institutions = author.get("institutions") or []
     last_known = author.get("last_known_institutions") or [{}]
+    primary_institution = (
+        author.get("primary_institution")
+        or author.get("current_institution")
+        or (institutions or [last_known[0].get("display_name", "")])[0]
+    )
+    other_institutions = (
+        author.get("other_institutions")
+        or author.get("historical_institutions")
+        or [institution for institution in institutions if institution != primary_institution]
+    )
     return {
         "id": author["id"],
         "name": author["display_name"],
-        "institution": (
-            author.get("current_institution")
-            or (institutions or [last_known[0].get("display_name", "")])[0]
-        ),
+        "institution": primary_institution,
         "institutions": institutions,
-        "current_institution": author.get("current_institution", ""),
-        "historical_institutions": author.get("historical_institutions", []),
+        "primary_institution": primary_institution,
+        "other_institutions": other_institutions,
+        "affiliation_selection_version": AFFILIATION_SELECTION_VERSION,
         "works_count": author.get("works_count", 0),
         "cited_by_count": author.get("cited_by_count", 0),
         "h_index": (author.get("summary_stats") or {}).get("h_index", 0),
@@ -102,6 +111,13 @@ def _candidate_payload(author: dict) -> dict:
         "identity_confidence": author.get("identity_confidence", "single"),
         "identity_evidence": _candidate_identity_evidence(author),
     }
+
+
+def _cache_supports_primary_affiliation(cached: dict | None) -> bool:
+    return bool(cached) and all(
+        candidate.get("affiliation_selection_version") == AFFILIATION_SELECTION_VERSION
+        for candidate in cached.get("candidates") or []
+    )
 
 
 def build_live_candidate_payload(
@@ -295,6 +311,8 @@ def search_with_cache(
         raise ValueError("Scholar name is required")
 
     cached = repository.get_openalex_search_cache(query_key)
+    if not _cache_supports_primary_affiliation(cached):
+        cached = None
     if cached and cached.get("fresh"):
         return _cached_response(cached, "cache")
 
@@ -343,7 +361,7 @@ def search_with_cache(
     while time.monotonic() < deadline:
         time.sleep(max(0.01, SEARCH_COALESCE_POLL_SECONDS))
         cached = repository.get_openalex_search_cache(query_key)
-        if cached:
+        if _cache_supports_primary_affiliation(cached):
             return _cached_response(cached, "coalesced")
         budget_retry_after = repository.get_upstream_retry_after(
             budget_provider,
