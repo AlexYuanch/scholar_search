@@ -29,14 +29,31 @@ _CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 class OpenAlexError(RuntimeError):
     """Raised when OpenAlex cannot satisfy a request."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
 
 def _get(endpoint: str, **params) -> dict:
     """GET JSON from OpenAlex with retry for transient failures."""
     last_error: Exception | None = None
+    last_status: int | None = None
+    last_retry_after: str | None = None
     url = f"{BASE}{endpoint}"
     for attempt in range(1, MAX_RETRIES + 1):
+        last_status = None
+        last_retry_after = None
         try:
             response = _SESSION.get(url, params=params, headers=HEADERS, timeout=30)
+            last_status = response.status_code
+            last_retry_after = response.headers.get("Retry-After")
             if response.status_code in RETRY_STATUSES and attempt < MAX_RETRIES:
                 time.sleep(min(2 ** (attempt - 1), 8))
                 continue
@@ -55,7 +72,11 @@ def _get(endpoint: str, **params) -> dict:
         except requests.RequestException as exc:
             last_error = exc
             break
-    raise OpenAlexError(f"OpenAlex 请求失败: {endpoint}; {last_error}") from last_error
+    raise OpenAlexError(
+        f"OpenAlex 请求失败: {endpoint}; {last_error}",
+        status_code=last_status,
+        retry_after=last_retry_after,
+    ) from last_error
 
 
 def _name_query_variants(name: str) -> list[str]:

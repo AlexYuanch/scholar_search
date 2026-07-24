@@ -1,3 +1,4 @@
+import pytest
 import requests
 
 
@@ -43,6 +44,39 @@ def test_get_retries_retryable_status(monkeypatch):
 
     assert data == {"results": [{"id": "A1"}]}
     assert session.calls == 2
+
+
+def test_get_preserves_upstream_rate_limit_metadata(monkeypatch):
+    import openalex
+
+    responses = [FakeResponse(429, {"error": "rate limited"}) for _ in range(3)]
+    for response in responses:
+        response.headers["Retry-After"] = "17"
+    monkeypatch.setattr(openalex, "_SESSION", FakeSession(responses))
+    monkeypatch.setattr(openalex.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(openalex.OpenAlexError) as captured:
+        openalex._get("/authors")
+
+    assert captured.value.status_code == 429
+    assert captured.value.retry_after == "17"
+
+
+def test_get_does_not_reuse_stale_status_after_network_failure(monkeypatch):
+    import openalex
+
+    monkeypatch.setattr(openalex, "_SESSION", FakeSession([
+        FakeResponse(429, {"error": "rate limited"}),
+        requests.Timeout("network timeout"),
+        requests.Timeout("network timeout"),
+    ]))
+    monkeypatch.setattr(openalex.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(openalex.OpenAlexError) as captured:
+        openalex._get("/authors")
+
+    assert captured.value.status_code is None
+    assert captured.value.retry_after is None
 
 
 def test_get_works_returns_partial_results_with_warning(monkeypatch):

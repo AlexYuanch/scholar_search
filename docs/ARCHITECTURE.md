@@ -112,7 +112,7 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 原子领取任务，支持多实例并�
 ## 进度与错误边界
 
 - NDJSON 仍由既有 LangGraph 节点驱动，但 API 只向前端暴露四个稳定阶段：`verify_identity`、`aggregate_outputs`、`analyze_trajectory`、`verify_evidence`。
-- 搜索使用 30 秒总超时；画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、工作流/worker 失败分别映射为独立前端状态。
+- 搜索使用 30 秒总超时；画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、工作流/worker 失败分别映射为独立前端状态。OpenAlex 客户端在重试耗尽后保留上游状态码和 `Retry-After`；搜索入口把上游 429 映射为可重试的 429，其他不可用错误映射为不泄漏内部请求信息的 502。
 - 外部数据错误仍通过流式 `error` 事件结束；搜索与流式画像共享当前请求序号，全部论文分页及 SSE 触发的最新版读取也使用 `AbortController`，前端不会把中断或旧请求结果覆盖到新选择的学者。
 - 追踪/历史和全部论文面板分别提供 loading、empty、error 与 retry 状态；错误态不会同时渲染为空态。
 

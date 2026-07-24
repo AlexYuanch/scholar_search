@@ -33,7 +33,7 @@ from auth import (
 )
 from events import ProfileEventBroker
 from nodes import dedup_authors
-from openalex import enrich_authors_for_disambiguation, search_authors
+from openalex import OpenAlexError, enrich_authors_for_disambiguation, search_authors
 from quality import assess_profile_quality
 from repository import (
     APIQuotaExceeded,
@@ -423,7 +423,19 @@ def search(
 ):
     """搜索学者姓名，返回去重后的候选人列表。"""
     _consume_api_quota("search", user, request)
-    candidates = enrich_authors_for_disambiguation(search_authors(name))
+    try:
+        candidates = enrich_authors_for_disambiguation(search_authors(name))
+    except OpenAlexError as exc:
+        if exc.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="OpenAlex 当前请求达到限额，请稍后重试。",
+                headers={"Retry-After": exc.retry_after or "60"},
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="学术数据源暂时不可用，请稍后重试。",
+        ) from exc
     merged = dedup_authors(candidates)
     return {
         "candidates": [{

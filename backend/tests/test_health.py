@@ -84,6 +84,44 @@ def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticate
     }
 
 
+def test_search_maps_openalex_rate_limit_to_retryable_response(monkeypatch, authenticated_client):
+    import main
+    from openalex import OpenAlexError
+
+    monkeypatch.setattr(main, "repository", InMemoryRepository())
+
+    def rate_limited(_name):
+        raise OpenAlexError("upstream rejected request", status_code=429, retry_after="17")
+
+    monkeypatch.setattr(main, "search_authors", rate_limited)
+
+    response = authenticated_client.get("/api/search?name=Yunfan%20Gao")
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "17"
+    assert response.json()["detail"] == "OpenAlex 当前请求达到限额，请稍后重试。"
+
+
+def test_search_maps_other_openalex_failures_without_leaking_details(
+    monkeypatch, authenticated_client
+):
+    import main
+    from openalex import OpenAlexError
+
+    monkeypatch.setattr(main, "repository", InMemoryRepository())
+
+    def unavailable(_name):
+        raise OpenAlexError("secret upstream URL", status_code=503)
+
+    monkeypatch.setattr(main, "search_authors", unavailable)
+
+    response = authenticated_client.get("/api/search?name=Yunfan%20Gao")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "学术数据源暂时不可用，请稍后重试。"
+    assert "secret upstream URL" not in response.text
+
+
 def test_profile_returns_latest_payload_without_running_graph(monkeypatch, authenticated_client):
     import main
 
