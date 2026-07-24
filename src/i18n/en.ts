@@ -20,6 +20,7 @@ const en: Record<string, string> = {
   "candidate.citations": "citations",
   "candidate.unknown_inst": "Unknown institution",
   "candidate.merged": "merged entities",
+  "candidate.merged_count": "Consolidated profile count: {count}",
   "candidate.merged_hint": "Consolidated using publications, coauthors, affiliations, and research topics",
   "candidate.confirm_prompt": "Namesakes may belong to different institutions or fields. Check affiliations, ORCID, and identity evidence, then explicitly confirm the correct scholar.",
   "candidate.confirm": "Confirm this scholar",

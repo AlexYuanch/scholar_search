@@ -20,6 +20,7 @@ const zh: Record<string, string> = {
   "candidate.citations": "次引用",
   "candidate.unknown_inst": "未知机构",
   "candidate.merged": "个实体已合并",
+  "candidate.merged_count": "合并档案数：{count}",
   "candidate.merged_hint": "已根据论文、合作者、机构和研究主题综合归并",
   "candidate.confirm_prompt": "同名学者可能属于不同机构或研究领域。请核对机构、ORCID 与区分依据，并明确确认正确身份。",
   "candidate.confirm": "确认这是正确学者",

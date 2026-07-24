@@ -550,7 +550,7 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
                               <span>{candidate.works_count} {t("candidate.papers")}</span>
                               <span>{candidate.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
                               <span>h-index {candidate.h_index}</span>
-                              <span>{candidate.merged_count ?? 1} {t("candidate.merged")}</span>
+                              <span>{t("candidate.merged_count").replace("{count}", String(candidate.merged_count ?? 1))}</span>
                             </div>
                           </div>
                         </div>

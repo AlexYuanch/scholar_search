@@ -168,7 +168,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                     <span>{c.works_count} {t("candidate.papers")}</span>
                     <span>{c.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
                     <span>h-index {c.h_index}</span>
-                    <span>{c.merged_count ?? 1} {t("candidate.merged")}</span>
+                    <span>{t("candidate.merged_count").replace("{count}", String(c.merged_count ?? 1))}</span>
                   </div>
                   {(c.merged_count ?? 1) > 1 && (
                     <p className="mt-1 text-xs text-primary">{t("candidate.merged_hint")}</p>
