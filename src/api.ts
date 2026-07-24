@@ -118,12 +118,13 @@ export async function searchAuthors(name: string, options: { signal?: AbortSigna
   }
 }
 
-export async function getProfile(authorId: string): Promise<ScholarProfile> {
+export async function getProfile(authorId: string, options: { signal?: AbortSignal } = {}): Promise<ScholarProfile> {
   const res = await fetch(`${API_BASE}/profile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ author_id: authorId }),
     credentials: 'include',
+    signal: options.signal,
   })
   if (!res.ok) throw await responseError(res, `Profile request failed (${res.status})`)
   const data = await res.json()
@@ -290,11 +291,13 @@ export async function getAuthorWorks(
   authorId: string,
   cursor?: string | null,
   sort: 'citations' | 'year' = 'citations',
+  options: { signal?: AbortSignal } = {},
 ): Promise<WorkPage> {
   const params = new URLSearchParams({ limit: '50', sort })
   if (cursor) params.set('cursor', cursor)
   const response = await fetch(`${API_BASE}/authors/${encodeURIComponent(authorId)}/works?${params}`, {
     credentials: 'include',
+    signal: options.signal,
   })
   if (!response.ok) throw await responseError(response, `Works request failed (${response.status})`)
   return response.json()

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { ApiError, getAuthorWorks } from "@/api"
 import { useAuth } from "@/auth"
@@ -17,25 +17,37 @@ export default function AllPapers({ profile, t }: {
   const [sort, setSort] = useState<"citations" | "year">("citations")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  const abortRef = useRef<AbortController | null>(null)
 
   const load = useCallback(async (nextCursor?: string | null, replace = false) => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
     setLoading(true)
     setError("")
+    if (replace) {
+      setPapers([])
+      setCursor(null)
+    }
     try {
-      const page = await getAuthorWorks(profile.authorId, nextCursor, sort)
+      const page = await getAuthorWorks(profile.authorId, nextCursor, sort, { signal: controller.signal })
+      if (abortRef.current !== controller) return
       setPapers((current) => replace ? page.items : [...current, ...page.items])
       setCursor(page.next_cursor)
       setTotal(page.total)
     } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return
+      if (abortRef.current !== controller) return
       setError(reason instanceof Error ? reason.message : "Works request failed")
       if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
     } finally {
-      setLoading(false)
+      if (abortRef.current === controller) setLoading(false)
     }
   }, [profile.authorId, refreshUser, sort])
 
   useEffect(() => {
     void Promise.resolve().then(() => load(null, true))
+    return () => abortRef.current?.abort()
   }, [load])
 
   return (
@@ -67,6 +79,9 @@ export default function AllPapers({ profile, t }: {
         </div>
       )}
       {loading && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
+      {!loading && !error && !papers.length && (
+        <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{t("papers.empty")}</p>
+      )}
       {cursor && !loading && <Button variant="outline" className="w-full" onClick={() => void load(cursor)}>{t("papers.load_more")}</Button>}
     </div>
   )

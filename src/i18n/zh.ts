@@ -26,6 +26,7 @@ const zh: Record<string, string> = {
   "candidate.current_inst": "当前机构",
   "candidate.history_inst": "历史机构",
   "candidate.no_history_inst": "暂无公开历史机构",
+  "candidate.orcid_missing": "未公开",
   "candidate.identity_basis": "同名区分与档案归并依据",
   "candidate.confidence_high": "身份置信度：高",
   "candidate.confidence_medium": "身份置信度：中",
@@ -128,6 +129,7 @@ const zh: Record<string, string> = {
   "papers.sort_citations": "按引用排序",
   "papers.sort_year": "按年份排序",
   "papers.load_more": "加载更多",
+  "papers.empty": "暂无可展示的论文。",
   "papers.pagination_desc": "从数据库分页加载该学者的全部论文",
   "realtime.updated": "合作图谱已更新，已自动切换到最新版。",
 

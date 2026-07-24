@@ -88,7 +88,7 @@ flowchart LR
 - 只有完整抓取成功才允许删除已消失的中心作者 authorship。
 - 追踪列表把最新画像中的论文数、引用数与当前用户的 `favorites` 基线比较，并从当前画像的两个三年窗口确定性识别方向变化提示。用户加载到相应画像版本后调用 `/api/tracking/seen`，事务内更新自己的基线，不影响其他用户。
 - `POST /api/tracking/{author_id}/refresh` 先通过会话确定用户，再验证该用户确实存在对应 `favorites` 记录；随后调用现有 `enqueue_refresh`。数据库活跃任务唯一索引与 Repository 的 `on conflict do nothing` 共同防止重复排队，返回已有或新任务 ID。Web 请求不调用 LangGraph，worker 继续通过 `FOR UPDATE SKIP LOCKED` 领取任务。
-- 新前端统一使用 `/api/tracking...`；旧 `/api/favorites...` 仅作为兼容别名保留，数据库表名和历史 migration 不改写。
+- 新前端统一使用 `/api/tracking...`；旧 `/api/favorites...` 仅作为兼容别名保留，数据库表名和历史 migration 不改写。主画像和追踪侧栏在写操作成功后递增本地修订号并重新读取追踪 API，避免同一页面的两个入口显示相互矛盾的状态。
 
 ### Worker
 
@@ -111,7 +111,8 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 原子领取任务，支持多实例并�
 
 - NDJSON 仍由既有 LangGraph 节点驱动，但 API 只向前端暴露四个稳定阶段：`verify_identity`、`aggregate_outputs`、`analyze_trajectory`、`verify_evidence`。
 - 搜索使用 30 秒总超时；画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、工作流/worker 失败分别映射为独立前端状态。
-- 外部数据错误仍通过流式 `error` 事件结束；前端不会把中断或旧请求结果覆盖到新选择的学者。
+- 外部数据错误仍通过流式 `error` 事件结束；搜索与流式画像共享当前请求序号，全部论文分页及 SSE 触发的最新版读取也使用 `AbortController`，前端不会把中断或旧请求结果覆盖到新选择的学者。
+- 追踪/历史和全部论文面板分别提供 loading、empty、error 与 retry 状态；错误态不会同时渲染为空态。
 
 ## 实时更新
 

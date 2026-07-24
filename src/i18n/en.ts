@@ -26,6 +26,7 @@ const en: Record<string, string> = {
   "candidate.current_inst": "Current institution",
   "candidate.history_inst": "Previous institutions",
   "candidate.no_history_inst": "No public institution history",
+  "candidate.orcid_missing": "Not publicly available",
   "candidate.identity_basis": "Namesake distinction and profile-merge evidence",
   "candidate.confidence_high": "Identity confidence: High",
   "candidate.confidence_medium": "Identity confidence: Medium",
@@ -128,6 +129,7 @@ const en: Record<string, string> = {
   "papers.sort_citations": "Sort by citations",
   "papers.sort_year": "Sort by year",
   "papers.load_more": "Load more",
+  "papers.empty": "No papers are available to display.",
   "papers.pagination_desc": "Load every paper for this scholar from the database",
   "realtime.updated": "The collaboration graph was updated and switched to the latest version.",
 

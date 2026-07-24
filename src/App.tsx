@@ -161,12 +161,14 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                       ? c.historical_institutions.join(" · ")
                       : t("candidate.no_history_inst")}
                   </p>
-                  {c.orcid && <p className="mt-0.5 text-xs text-muted-foreground">ORCID {c.orcid.replace("https://orcid.org/", "")}</p>}
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    ORCID {c.orcid ? c.orcid.replace("https://orcid.org/", "") : t("candidate.orcid_missing")}
+                  </p>
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span>{c.works_count} {t("candidate.papers")}</span>
                     <span>{c.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
                     <span>h-index {c.h_index}</span>
-                    {(c.merged_count ?? 1) > 1 && <span>{c.merged_count} {t("candidate.merged")}</span>}
+                    <span>{c.merged_count ?? 1} {t("candidate.merged")}</span>
                   </div>
                   {(c.merged_count ?? 1) > 1 && (
                     <p className="mt-1 text-xs text-primary">{t("candidate.merged_hint")}</p>
@@ -383,6 +385,7 @@ export default function App() {
   const [workflowStages, setWorkflowStages] = useState<WorkflowStage[]>([])
   const [workflowProgress, setWorkflowProgress] = useState(0)
   const [workflowMessage, setWorkflowMessage] = useState("")
+  const [trackingRevision, setTrackingRevision] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const requestSeqRef = useRef(0)
 
@@ -520,16 +523,18 @@ export default function App() {
     if (!user || !profile?.scholarId) return
     const scholarId = profile.scholarId
     const currentVersion = profile.profileVersion
+    const controller = new AbortController()
     const eventSource = new EventSource(profileEventsUrl(scholarId, currentVersion))
     const onProfile = (event: MessageEvent) => {
       try {
         const next = JSON.parse(event.data) as { version?: number; status?: string }
         if ((next.version ?? 0) <= currentVersion || next.status !== "ready") return
-        void getProfile(profile.authorId).then((latest) => {
+        void getProfile(profile.authorId, { signal: controller.signal }).then((latest) => {
           setProfile(latest)
           setLiveUpdateMessage(t("realtime.updated"))
           window.setTimeout(() => setLiveUpdateMessage(""), 5000)
         }).catch((reason: unknown) => {
+          if (reason instanceof DOMException && reason.name === "AbortError") return
           if (reason instanceof ApiError && reason.kind === "auth") reportError(reason.message, "auth")
         })
       } catch {
@@ -537,7 +542,10 @@ export default function App() {
       }
     }
     eventSource.addEventListener("profile", onProfile as EventListener)
-    return () => eventSource.close()
+    return () => {
+      controller.abort()
+      eventSource.close()
+    }
   }, [profile?.authorId, profile?.profileVersion, profile?.scholarId, reportError, t, user])
 
   const handleToggleFavorite = useCallback(async () => {
@@ -550,6 +558,7 @@ export default function App() {
       if (favorite) await removeTracking(profile.authorId)
       else await addTracking(profile.authorId)
       setFavorite((value) => !value)
+      setTrackingRevision((value) => value + 1)
     } catch (reason: unknown) {
       reportError(
         reason instanceof Error ? reason.message : t("favorite.failed"),
@@ -924,7 +933,17 @@ export default function App() {
         t={t}
         fullscreen={graphFullscreen}
       />
-      <AccountPanel mode={accountMode} onClose={() => setAccountMode(null)} onSelect={handleAccountSelect} t={t} />
+      <AccountPanel
+        mode={accountMode}
+        onClose={() => setAccountMode(null)}
+        onSelect={handleAccountSelect}
+        onTrackingChange={(authorId, tracked) => {
+          if (profile?.authorId === authorId) setFavorite(tracked)
+          setTrackingRevision((value) => value + 1)
+        }}
+        trackingRevision={trackingRevision}
+        t={t}
+      />
       </div>
       <AuthDialog
         open={authDialogOpen || (!authLoading && !user)}

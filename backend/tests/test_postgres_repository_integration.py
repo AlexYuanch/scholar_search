@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from auth import hash_password, verify_password
 from repository import APIQuotaExceeded, PostgresRepository
+from worker import process_one_job
 
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -134,8 +135,10 @@ def test_favorite_tracking_reports_and_clears_profile_deltas():
     unique = os.urandom(6).hex()
     author_id = f"https://openalex.org/A-TRACK-{unique}"
     username = f"tracking-{unique}"
+    other_username = f"tracking-other-{unique}"
     try:
         user = repository.create_password_user(username, hash_password("tracking password"))
+        other_user = repository.create_password_user(other_username, hash_password("tracking password"))
         initial_state = _state(1)
         initial_state["target_author_id"] = author_id
         initial_state["target_author_profile"]["id"] = author_id
@@ -143,8 +146,12 @@ def test_favorite_tracking_reports_and_clears_profile_deltas():
         initial_state["web_payload"]["totalCitations"] = 10
         repository.publish_profile(initial_state, query_name="Tracking Scholar")
         repository.add_favorite(user["id"], author_id)
-        assert repository.is_tracking(user["id"], author_id) is True
-        assert repository.list_favorites(user["id"])[0]["has_updates"] is False
+
+        reloaded_repository = PostgresRepository(DATABASE_URL)
+        assert reloaded_repository.is_tracking(user["id"], author_id) is True
+        assert reloaded_repository.list_favorites(user["id"])[0]["has_updates"] is False
+        assert reloaded_repository.is_tracking(other_user["id"], author_id) is False
+        assert reloaded_repository.list_favorites(other_user["id"]) == []
 
         updated_state = _state(2)
         updated_state["target_author_id"] = author_id
@@ -159,11 +166,54 @@ def test_favorite_tracking_reports_and_clears_profile_deltas():
         assert tracked["new_papers"] == 1
         assert tracked["new_citations"] == 25
 
+        repository.mark_favorite_seen(other_user["id"], author_id, saved["profile_version"])
+        assert repository.list_favorites(user["id"])[0]["has_updates"] is True
+
         repository.mark_favorite_seen(user["id"], author_id, saved["profile_version"])
         assert repository.list_favorites(user["id"])[0]["has_updates"] is False
     finally:
         with repository.engine.begin() as conn:
-            conn.execute(text("delete from public.app_users where normalized_username = :username"), {"username": username})
+            conn.execute(text(
+                "delete from public.app_users where normalized_username in (:username, :other_username)"
+            ), {"username": username, "other_username": other_username})
+            conn.execute(text("delete from public.scholars where source_author_id = :author_id"), {"author_id": author_id})
+
+
+def test_postgres_refresh_job_is_persisted_and_processed_by_worker():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    author_id = f"https://openalex.org/A-WORKER-{unique}"
+
+    def state_for_author(work_count: int) -> dict:
+        state = _state(work_count)
+        state["target_author_id"] = author_id
+        state["target_author_profile"]["id"] = author_id
+        for work in state["deduped_works"]:
+            work["authorships"][0]["author"]["id"] = author_id
+        return state
+
+    class DeterministicWorkflowGraph:
+        def invoke(self, state):
+            assert state["target_author_id"] == author_id
+            return state_for_author(2)
+
+    try:
+        repository.publish_profile(state_for_author(1), query_name="Worker Scholar")
+        job_id = repository.enqueue_refresh(author_id, "worker_integration")
+
+        worker_repository = PostgresRepository(DATABASE_URL)
+        assert process_one_job(worker_repository, DeterministicWorkflowGraph()) is True
+
+        reloaded_repository = PostgresRepository(DATABASE_URL)
+        assert reloaded_repository.get_profile(author_id)["profile_version"] == 2
+        assert reloaded_repository.list_works(author_id, 50, 0, "citations")["total"] == 2
+        with reloaded_repository.engine.connect() as conn:
+            job_status = conn.execute(text("""
+                select status from public.refresh_jobs where id = cast(:job_id as uuid)
+            """), {"job_id": job_id}).scalar_one()
+        assert job_status == "succeeded"
+    finally:
+        with repository.engine.begin() as conn:
             conn.execute(text("delete from public.scholars where source_author_id = :author_id"), {"author_id": author_id})
 
 

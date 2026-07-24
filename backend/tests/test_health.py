@@ -205,12 +205,21 @@ def test_tracking_refresh_requires_existing_tracking(monkeypatch, authenticated_
 
     repository = InMemoryRepository()
     repository.publish_profile(_state(), query_name="Ada Lovelace")
+    repository.add_favorite("another-user", "A1")
     monkeypatch.setattr(main, "repository", repository)
 
     response = authenticated_client.post("/api/tracking/A1/refresh")
 
     assert response.status_code == 404
     assert repository.jobs == {}
+    assert repository.is_tracking("another-user", "A1") is True
+    assert repository.is_tracking("test-user", "A1") is False
+
+
+def test_tracking_refresh_requires_authentication():
+    response = TestClient(app).post("/api/tracking/A1/refresh")
+
+    assert response.status_code == 401
 
 
 def test_tracking_refresh_deduplicates_active_jobs(monkeypatch, authenticated_client):

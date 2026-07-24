@@ -123,10 +123,12 @@ export function AuthDialog({ open, required = false, onClose, t }: {
   )
 }
 
-export function AccountPanel({ mode, onClose, onSelect, t }: {
+export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, trackingRevision = 0, t }: {
   mode: "history" | "favorites" | null
   onClose: () => void
   onSelect: (authorId: string, scholarName: string) => void
+  onTrackingChange?: (authorId: string, tracked: boolean) => void
+  trackingRevision?: number
   t: (key: string) => string
 }) {
   const { refreshUser } = useAuth()
@@ -156,7 +158,7 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
       if (active) await loadItems()
     })
     return () => { active = false }
-  }, [loadItems, mode])
+  }, [loadItems, mode, trackingRevision])
 
   useEffect(() => {
     if (mode !== "favorites" || !items.some((item) => item.refresh_status === "queued" || item.refresh_status === "updating")) {
@@ -174,6 +176,7 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
     try {
       await removeTracking(item.author_id)
       setItems((current) => current.filter((row) => row.author_id !== item.author_id))
+      onTrackingChange?.(item.author_id, false)
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Request failed")
       if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
@@ -222,8 +225,15 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
             </div>
           )}
           {loading && <Loader2 className="mx-auto mt-12 h-6 w-6 animate-spin" />}
-          {error && <p className="break-words text-sm text-destructive">{error}</p>}
-          {!loading && !items.length && <p className="text-sm text-muted-foreground">{t("account.empty")}</p>}
+          {error && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+              <p className="min-w-0 flex-1 break-words text-sm text-destructive">{error}</p>
+              <Button size="sm" variant="outline" onClick={() => void loadItems()}>
+                <RefreshCw className="h-3.5 w-3.5" />{t("error.retry")}
+              </Button>
+            </div>
+          )}
+          {!loading && !error && !items.length && <p className="text-sm text-muted-foreground">{t("account.empty")}</p>}
           <div className="space-y-2">
             {items.map((item) => (
               <Card key={item.author_id}>
