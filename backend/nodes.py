@@ -10,6 +10,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
+from professional_identity import build_professional_identity
 from state import ScholarProfileState
 
 
@@ -125,6 +126,34 @@ def _identity_match(left: dict, right: dict, candidate_ids: set[str]) -> dict:
     }
 
 
+def _merge_affiliation_records(profiles: list[dict]) -> list[dict]:
+    """Merge identical OpenAlex affiliation records without changing identity rules."""
+    affiliations_by_key = {}
+    for profile in profiles:
+        for affiliation in profile.get("affiliations") or []:
+            institution = affiliation.get("institution") or {}
+            name = str(institution.get("display_name") or "").strip()
+            if not name:
+                continue
+            key = str(institution.get("id") or name).strip().casefold()
+            merged = affiliations_by_key.setdefault(
+                key,
+                {"institution": deepcopy(institution), "years": set()},
+            )
+            for year in affiliation.get("years") or []:
+                try:
+                    merged["years"].add(int(year))
+                except (TypeError, ValueError):
+                    continue
+    return [
+        {
+            "institution": item["institution"],
+            "years": sorted(item["years"], reverse=True),
+        }
+        for item in affiliations_by_key.values()
+    ]
+
+
 def _combine_author_group(group: list[dict], matches: list[dict]) -> dict:
     primary = dict(max(group, key=lambda item: (
         int(item.get("cited_by_count") or 0),
@@ -170,6 +199,7 @@ def _combine_author_group(group: list[dict], matches: list[dict]) -> dict:
     primary["cited_by_count"] = sum(int(item.get("cited_by_count") or 0) for item in unique_group)
     primary["summary_stats"] = {**(primary.get("summary_stats") or {}), "h_index": max(h_indices, default=0)}
     primary["institutions"] = institutions
+    primary["affiliations"] = _merge_affiliation_records(unique_group)
     primary["current_institution"] = current_institution
     primary["historical_institutions"] = [
         institution for institution in institutions if institution != current_institution
@@ -264,6 +294,7 @@ def fetch_author_profile(state: ScholarProfileState) -> dict:
                 alternatives.append(name)
     primary["works_count"] = sum(int(profile.get("works_count") or 0) for profile in valid_profiles)
     primary["last_known_institutions"] = institutions
+    primary["affiliations"] = _merge_affiliation_records(valid_profiles)
     primary["display_name_alternatives"] = alternatives
     primary["merged_author_ids"] = valid_ids
     audit = {
@@ -1221,6 +1252,17 @@ def format_web_payload(state: ScholarProfileState) -> dict:
     insts = [i.get("display_name", "") for i in (profile.get("last_known_institutions") or [])]
     cs = state["citation_summary"]
     ws = _analysis_works(state)
+    professional_identity = build_professional_identity(
+        profile,
+        ws,
+        state.get("target_author_ids") or [state["target_author_id"]],
+    )
+    institution_history = professional_identity.get("institutionHistory") or []
+    institution_names = [
+        row.get("name", "")
+        for row in institution_history
+        if row.get("name")
+    ]
 
     # top 50 高被引论文，避免大作者 payload 过大
     top_cited = sorted(ws, key=lambda w: -(w.get("cited_by_count") or 0))
@@ -1250,10 +1292,11 @@ def format_web_payload(state: ScholarProfileState) -> dict:
     payload = {
         "name": profile.get("display_name", ""),
         "authorId": state["target_author_id"],
-        "institution": insts[0] if insts else "",
-        "institutions": list(dict.fromkeys(filter(None, insts))),
+        "institution": professional_identity.get("currentInstitution") or (insts[0] if insts else ""),
+        "institutions": list(dict.fromkeys(filter(None, institution_names or insts))),
         "orcid": profile.get("orcid"),
-        "department": "",
+        "department": professional_identity.get("department") or "",
+        "professionalIdentity": professional_identity,
         "totalPapers": cs.get("total_papers", 0),
         "totalCitations": cs.get("total_citations", 0),
         "hIndex": cs.get("h_index", 0),
@@ -1264,7 +1307,7 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "interestTimeline": state["interest_timeline"],
         "representativePapers": unique_repr,
         "topCitedPapers": top_cited_list,
-        "coauthors": [{"name": c["name"], "institution": c.get("institution", ""), "papers": c["papers"]}
+        "coauthors": [{"id": c["id"], "name": c["name"], "institution": c.get("institution", ""), "papers": c["papers"]}
                       for c in state["coauthors"][:15]],
         "graphNodes": state["graph_nodes"],
         "graphEdges": state["graph_edges"],

@@ -4,6 +4,21 @@ export interface EdgePaper {
   topics?: string[]
 }
 
+export interface ProfessionalIdentity {
+  currentInstitution: string
+  institutionHistory: Array<{ name: string; years: number[] }>
+  currentAffiliationStatements: Array<{ text: string; years: number[] }>
+  affiliationStatements: Array<{ text: string; years: number[] }>
+  department?: string | null
+  laboratory?: string | null
+  researchUnit?: string | null
+  academicRole?: string | null
+  degreeStatus?: string | null
+  orcid?: string | null
+  sourceLinks: Array<{ label: string; url: string }>
+  sources: string[]
+}
+
 export interface Candidate {
   id: string
   name: string
@@ -45,6 +60,7 @@ export interface ScholarProfile {
   institutions?: string[]
   orcid?: string | null
   department: string
+  professionalIdentity?: ProfessionalIdentity
   totalPapers: number
   totalCitations: number
   hIndex: number
@@ -74,7 +90,7 @@ export interface ScholarProfile {
     sources?: string[]
     verificationStatus?: string
   }>
-  coauthors: Array<{ name: string; institution?: string; papers: number }>
+  coauthors: Array<{ id?: string; name: string; institution?: string; papers: number }>
   graphNodes: Array<{ id: string; name: string; institution?: string; type: string }>
   graphEdges: Array<{ source: string; target: string; weight: number; papers?: EdgePaper[] }>
   profileSummary: string

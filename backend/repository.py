@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
+from professional_identity import build_professional_identity
 
 
 def _now() -> datetime:
@@ -1087,6 +1088,7 @@ class PostgresRepository:
         with self.engine.connect() as conn:
             row = conn.execute(text("""
                 select s.id as scholar_id, s.source_author_id as author_id,
+                       s.raw_json as author_raw_json,
                        p.query_name, p.payload, p.warnings, p.errors, p.quality_flags,
                        p.data_fingerprint,
                        p.generated_at as updated_at, ps.version as profile_version,
@@ -1096,9 +1098,46 @@ class PostgresRepository:
                 join public.profile_status ps on ps.scholar_id = s.id
                 where s.source = 'openalex' and s.source_author_id = :author_id
             """), {"author_id": author_id}).mappings().first()
+            if row and not (row["payload"] or {}).get("professionalIdentity"):
+                payload = deepcopy(row["payload"] or {})
+                identity_audit = payload.get("identityAudit") or {}
+                target_author_ids = list(dict.fromkeys(filter(None, [
+                    author_id,
+                    *(identity_audit.get("mergedAuthorIds") or []),
+                ])))
+                works = [
+                    work
+                    for work in conn.execute(text("""
+                        select distinct on (w.id) w.raw_json
+                        from public.works w
+                        join public.authorships a on a.work_id = w.id
+                        join public.scholars s_author on s_author.id = a.scholar_id
+                        where s_author.source = 'openalex'
+                          and s_author.source_author_id = any(cast(:author_ids as text[]))
+                    """), {"author_ids": target_author_ids}).scalars().all()
+                    if isinstance(work, dict)
+                ]
+                professional_identity = build_professional_identity(
+                    dict(row["author_raw_json"] or {}),
+                    works,
+                    target_author_ids,
+                )
+                payload["professionalIdentity"] = professional_identity
+                payload["department"] = professional_identity.get("department") or ""
+                history_names = [
+                    item.get("name")
+                    for item in professional_identity.get("institutionHistory") or []
+                    if item.get("name")
+                ]
+                if history_names:
+                    payload["institutions"] = history_names
+                if professional_identity.get("currentInstitution"):
+                    payload["institution"] = professional_identity["currentInstitution"]
+                row = {**dict(row), "payload": payload}
         if not row:
             return None
         result = dict(row)
+        result.pop("author_raw_json", None)
         result["scholar_id"] = str(result["scholar_id"])
         result["updated_at"] = _iso(result["updated_at"])
         return result

@@ -97,6 +97,51 @@ def test_publish_paginate_and_refresh_queue_against_postgres():
             conn.execute(text("delete from public.scholars where source_author_id like 'https://openalex.org/A-CODEX%'"))
 
 
+def test_cached_profile_identity_is_rebuilt_from_persisted_public_metadata():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    author_id = f"https://openalex.org/A-IDENTITY-{unique}"
+    try:
+        state = _state(1)
+        state["target_author_id"] = author_id
+        state["target_author_profile"].update({
+            "id": author_id,
+            "orcid": "https://orcid.org/0000-0000-0000-0001",
+            "last_known_institutions": [
+                {"id": "I1", "display_name": "Tongji University"},
+            ],
+            "affiliations": [{
+                "institution": {"id": "I1", "display_name": "Tongji University"},
+                "years": [2026],
+            }],
+        })
+        authorship = state["deduped_works"][0]["authorships"][0]
+        authorship["author"]["id"] = author_id
+        authorship["raw_affiliation_strings"] = [
+            "Shanghai Research Institute for Intelligent Autonomous Systems, "
+            "Tongji University, Shanghai, China"
+        ]
+        state["web_payload"].pop("professionalIdentity", None)
+
+        saved = repository.publish_profile(state, query_name="Identity Scholar")
+        reloaded = PostgresRepository(DATABASE_URL).get_profile(author_id)
+
+        assert saved["payload"]["professionalIdentity"]["researchUnit"] == (
+            "Shanghai Research Institute for Intelligent Autonomous Systems"
+        )
+        assert reloaded["payload"]["professionalIdentity"] == (
+            saved["payload"]["professionalIdentity"]
+        )
+        assert reloaded["payload"]["professionalIdentity"]["academicRole"] is None
+        assert reloaded["payload"]["professionalIdentity"]["degreeStatus"] is None
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(
+                text("delete from public.scholars where source_author_id = :author_id"),
+                {"author_id": author_id},
+            )
+
+
 def test_password_user_session_is_revocable():
     repository = PostgresRepository(DATABASE_URL)
     unique = os.urandom(8).hex()

@@ -590,12 +590,37 @@ def test_generate_profile_report_falls_back_to_evidence_when_llm_lacks_citations
 def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
     state = default_state()
     state["target_author_id"] = "A0"
-    state["target_author_profile"] = {"display_name": "Ada", "last_known_institutions": []}
+    state["target_author_profile"] = {
+        "id": "A0",
+        "display_name": "Ada",
+        "last_known_institutions": [{"id": "I1", "display_name": "Analytical University"}],
+        "affiliations": [{
+            "institution": {"id": "I1", "display_name": "Analytical University"},
+            "years": [2059],
+        }],
+    }
     state["citation_summary"] = {"total_papers": 60, "total_citations": 100, "h_index": 5}
     state["deduped_works"] = [
-        {"id": f"W{i}", "title": f"Paper {i}", "publication_year": 2000 + i, "cited_by_count": i}
+        {
+            "id": f"W{i}",
+            "title": f"Paper {i}",
+            "publication_year": 2000 + i,
+            "cited_by_count": i,
+            "authorships": [{
+                "author": {"id": "A0"},
+                "raw_affiliation_strings": [
+                    "Analytical Engine Research Institute, Analytical University"
+                ],
+            }],
+        }
         for i in range(60)
     ]
+    state["coauthors"] = [{
+        "id": "A1",
+        "name": "Charles Babbage",
+        "institution": "Analytical University",
+        "papers": 2,
+    }]
     state["profile_summary"] = "Summary [1]"
     state["profile_evidence"] = [{"id": "1", "type": "metric", "text": "Metric evidence"}]
     state["data_audit"] = {"status": "partial", "collectedWorks": 60}
@@ -608,6 +633,11 @@ def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
     assert payload["profileEvidence"] == state["profile_evidence"]
     assert payload["dataAudit"] == state["data_audit"]
     assert payload["evidenceReview"] == state["evidence_review"]
+    assert payload["professionalIdentity"]["researchUnit"] == (
+        "Analytical Engine Research Institute"
+    )
+    assert payload["professionalIdentity"]["academicRole"] is None
+    assert payload["coauthors"][0]["id"] == "A1"
     assert len(payload["topCitedPapers"]) == 50
     assert payload["topCitedPapers"][0]["title"] == "Paper 59"
 

@@ -1,14 +1,13 @@
-import { Suspense, lazy, useState, useEffect, useCallback, useRef, type ComponentType } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
-  Search, BookOpen, Quote, BarChart3, Users,
-  ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink,
-  Heart, History, LogIn, LogOut, ArrowLeftRight, RefreshCw, KeyRound,
+  Search, BarChart3, Users,
+  ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe,
+  Heart, History, LogIn, LogOut, RefreshCw, KeyRound,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Separator } from "@/components/ui/separator"
 import { useTranslation } from "./i18n"
 import type { Candidate, ScholarProfile } from "./types"
 import {
@@ -27,15 +26,10 @@ import {
 } from "./api"
 import { useAuth } from "./auth"
 import SidePanel from "@/components/SidePanel"
-import AllPapers from "@/components/AllPapers"
 import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
 import ScholarComparison from "@/components/ScholarComparison"
-import ResearchChanges from "@/components/ResearchChanges"
-import DataVerification from "@/components/DataVerification"
-import ResearchTimeline, { type TimelinePaperFilter } from "@/components/ResearchTimeline"
 import OpenAlexSettingsDialog from "@/components/OpenAlexSettingsDialog"
-
-const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
+import ProfileSection from "@/components/ProfileSection"
 
 interface WorkflowStage {
   node: string
@@ -44,64 +38,6 @@ interface WorkflowStage {
 }
 type Accent = "blue" | "green" | "purple" | "orange"
 type PanelPaper = string | { title: string; id?: string; topics?: string[] }
-
-// ── 指标卡片 ──────────────────────────────────────────────
-
-function MetricCard({ icon: Icon, label, value, sub }: {
-  icon: ComponentType<{ className?: string }>; label: string; value: string | number; sub?: string
-}) {
-  return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="flex items-center gap-3">
-          <div className="rounded-lg bg-primary/10 p-2">
-            <Icon className="h-5 w-5 text-primary" />
-          </div>
-          <div className="flex flex-col">
-            <span className="text-sm text-muted-foreground">{label}</span>
-            <span className="text-2xl font-bold">{value}</span>
-            {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TopicsSection({ topics }: { topics: string[] }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {topics.map((t) => (
-        <Badge key={t} variant="secondary" className="px-3 py-1 text-sm">{t}</Badge>
-      ))}
-    </div>
-  )
-}
-
-function EvidenceList({ evidence, t }: { evidence: ScholarProfile["profileEvidence"]; t: (k: string) => string }) {
-  if (!evidence?.length) return null
-  return (
-    <div className="mt-4 space-y-2 border-t pt-4">
-      <h4 className="text-xs font-medium text-muted-foreground">{t("section.evidence")}</h4>
-      <div className="space-y-2">
-        {evidence.map((item) => (
-          <div key={item.id} className="flex items-start gap-2 text-xs text-muted-foreground">
-            <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">[{item.id}]</Badge>
-            {item.url ? (
-              <a href={item.url} target="_blank" rel="noopener noreferrer" className="flex items-start gap-1 text-primary hover:underline">
-                <span>{item.text}</span>
-                <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
-              </a>
-            ) : (
-              <span>{item.text}</span>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 
 // ── 候选人列表 ──────────────────────────────────────────────
 
@@ -202,180 +138,6 @@ function CandidateList({ candidates, onSelect, loading, t }: {
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       )}
-    </section>
-  )
-}
-
-
-// ── 学者画像内容 ────────────────────────────────────────────
-
-function ProfileSection({
-  profile,
-  favorite,
-  onToggleFavorite,
-  onCompare,
-  onEdgeClick,
-  onNodeClick,
-  onFullscreenChange,
-  t,
-}: {
-  profile: ScholarProfile
-  favorite: boolean
-  onToggleFavorite: () => void
-  onCompare: () => void
-  onEdgeClick?: (data: { sourceName: string; targetName: string; papers: PanelPaper[]; weight: number }) => void
-  onNodeClick?: (data: { id: string; name: string; type: string; papers: PanelPaper[]; weight: number }) => void
-  onFullscreenChange?: (fs: boolean) => void
-  t: (k: string) => string
-}) {
-  const [paperFilter, setPaperFilter] = useState<TimelinePaperFilter | null>(null)
-  const papersSectionRef = useRef<HTMLDivElement>(null)
-
-  const handleTimelineTopicClick = (filter: TimelinePaperFilter) => {
-    setPaperFilter(filter)
-    papersSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-  }
-
-  return (
-    <section className="mx-auto max-w-5xl px-6 py-10">
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-4">
-          <Avatar className="h-16 w-16 shrink-0 border-2 sm:h-20 sm:w-20">
-            <AvatarFallback className="text-2xl font-semibold bg-primary/10 text-primary">
-              {profile.name.split(" ").map(n => n[0]).join("")}
-            </AvatarFallback>
-          </Avatar>
-          <div className="min-w-0">
-            <h2 className="break-words text-xl font-bold sm:text-2xl">{profile.name}</h2>
-            {profile.department && <p className="break-words text-muted-foreground">{profile.department}</p>}
-            <p className="break-words text-sm text-muted-foreground">{profile.institution}</p>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onCompare}>
-            <ArrowLeftRight className="h-3.5 w-3.5" />
-            {t("compare.action")}
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onToggleFavorite}>
-            <Heart className={`h-3.5 w-3.5 ${favorite ? "fill-current text-red-500" : ""}`} />
-            {t(favorite ? "favorite.remove" : "favorite.add")}
-          </Button>
-        </div>
-      </div>
-
-      <Separator className="my-6" />
-
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.profile_summary")}</CardTitle>
-            <CardDescription>{t("section.profile_summary_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm leading-relaxed text-muted-foreground">
-              {profile.profileSummary || t("section.summary_empty")}
-            </p>
-            <EvidenceList evidence={profile.profileEvidence} t={t} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.research_directions")}</CardTitle>
-            <CardDescription>{t("section.research_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent className="p-3 sm:p-6">
-            <TopicsSection topics={profile.topics} />
-          </CardContent>
-        </Card>
-
-        <ResearchTimeline profile={profile} onTopicClick={handleTimelineTopicClick} t={t} />
-
-        <ResearchChanges profile={profile} t={t} />
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <MetricCard icon={BookOpen} label={t("metric.total_papers")} value={profile.totalPapers} />
-          <MetricCard icon={Quote} label={t("metric.total_citations")} value={profile.totalCitations.toLocaleString()} />
-          <MetricCard icon={BarChart3} label={t("metric.h_index")} value={profile.hIndex} />
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.repr_papers")}</CardTitle>
-            <CardDescription>{t("section.repr_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {(profile.representativePapers.length
-              ? profile.representativePapers
-              : profile.topCitedPapers.slice(0, 5)
-            ).map((paper) => (
-              <div key={paper.id || `${paper.title}-${paper.year}`} className="rounded-lg border p-4">
-                {paper.id ? (
-                  <a href={paper.id} target="_blank" rel="noopener noreferrer" className="flex items-start gap-1 break-words text-sm font-medium text-primary hover:underline">
-                    {paper.title}<ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  </a>
-                ) : (
-                  <p className="break-words text-sm font-medium">{paper.title}</p>
-                )}
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {paper.year || "—"} · {paper.journal || "—"} · {paper.citations.toLocaleString()} {t("candidate.citations")}
-                </p>
-              </div>
-            ))}
-            {!profile.representativePapers.length && !profile.topCitedPapers.length && (
-              <p className="text-sm text-muted-foreground">{t("compare.no_papers")}</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <div ref={papersSectionRef} className="scroll-mt-20">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
-              <CardDescription>{t("papers.pagination_desc")}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <AllPapers
-                profile={profile}
-                filter={paperFilter}
-                onClearFilter={() => setPaperFilter(null)}
-                t={t}
-              />
-            </CardContent>
-          </Card>
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.collab_network")}</CardTitle>
-            <CardDescription>{t("section.collab_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent className="p-3 sm:p-6">
-            <div className="mb-5 flex flex-wrap gap-2">
-              {profile.coauthors.slice(0, 8).map((coauthor) => (
-                <Badge key={`${coauthor.name}-${coauthor.institution || ""}`} variant="secondary" className="whitespace-normal">
-                  {coauthor.name} · {coauthor.papers}
-                </Badge>
-              ))}
-            </div>
-            <Suspense fallback={<div className="flex h-[520px] items-center justify-center text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" /></div>}>
-              <CollaborationGraph
-                name={profile.name}
-                coauthors={profile.coauthors}
-                graphNodes={profile.graphNodes}
-                graphEdges={profile.graphEdges}
-                topics={profile.topics}
-                onEdgeClick={onEdgeClick}
-                onNodeClick={onNodeClick}
-                onFullscreenChange={onFullscreenChange}
-                t={t}
-              />
-            </Suspense>
-          </CardContent>
-        </Card>
-
-        <DataVerification profile={profile} t={t} />
-      </div>
     </section>
   )
 }
@@ -667,19 +429,6 @@ export default function App() {
   }) => {
     setAccountMode(null)
     setPanel({ ...data, type: "edge" })
-  }, [])
-
-  const handleNodeClick = useCallback((data: {
-    id: string; name: string; type: string; papers: PanelPaper[]; weight: number
-  }) => {
-    setAccountMode(null)
-    setPanel({
-      type: data.type === "center" ? "center" : "coauthor",
-      targetName: data.name,
-      papers: data.papers,
-      weight: data.weight,
-      targetId: data.id,
-    })
   }, [])
 
   const handleCandidateSelect = useCallback((candidate: Candidate) => {
@@ -1006,9 +755,10 @@ export default function App() {
           onToggleFavorite={() => void handleToggleFavorite()}
           onCompare={() => setComparisonOpen(true)}
           onEdgeClick={handleEdgeClick}
-          onNodeClick={handleNodeClick}
+          onViewProfile={(authorId, scholarName) => void handleViewProfile(authorId, scholarName)}
           onFullscreenChange={setGraphFullscreen}
           t={t}
+          lang={lang}
         />
       )}
 

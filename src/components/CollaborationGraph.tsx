@@ -10,7 +10,6 @@ type GraphEdge = ScholarProfile["graphEdges"][number]
 
 interface Props {
   name: string
-  coauthors: Array<{ name: string; institution?: string; papers: number }>
   graphNodes: GraphNode[]
   graphEdges: GraphEdge[]
   topics?: string[]

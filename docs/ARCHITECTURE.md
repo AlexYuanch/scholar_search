@@ -36,6 +36,10 @@ flowchart LR
 
 画像主内容不再按标签页割裂，严格按产品顺序线性渲染：学者简介、当前主要研究方向、研究方向时间线、近期变化、核心指标、代表论文、全部论文、合作网络、数据核验与局限。切换学者时，前端通过 `AbortController` 和请求序号共同取消并忽略旧搜索/画像结果。
 
+`professional_identity.py` 从 OpenAlex 作者 `affiliations` 构造带年份的机构履历，并只在裁决后论文中目标 author ID 的 `raw_affiliation_strings` 提取学院、实验室和研究院。它不从指标或主题推断职称/学位，缺少直接来源时返回空值；前端 `ScholarIntroduction` 只条件渲染非空字段，并按当前语言从结构化指标、方向、代表作和合作者重建简介与依据，因此旧缓存中的中文总结不会污染英文界面。PostgreSQL 旧画像读取时通过规范化 `authorships -> scholars -> works` 关系补全该结构，无需修改历史 migration 或同步重跑工作流。
+
+合作摘要保留 coauthor OpenAlex ID；网络上方姓名按钮和图节点直接调用既有画像加载函数，主学者姓名打开 OpenAlex，合作边仍打开共同论文侧栏。画像主体已从 `App.tsx` 拆为 `ProfileSection` 和 `ScholarIntroduction`，语言组装、身份事实与页面编排分离。
+
 时间线方向标签把 `{year, topic}` 传给全部论文组件并滚动到论文区；`GET /api/authors/{author_id}/works` 使用可选 `year`、`topic` 参数在 PostgreSQL 中筛选。新发布画像将工作流 `topic_clusters.paper_indices` 写入每篇论文 `raw_json.analysis_topics`，确保方向与论文精确关联；旧画像兼容使用 OpenAlex topic、keyword、concept 和标题短语匹配。筛选仍使用原有游标分页、登录校验、错误重试和请求取消机制。
 
 学者对比由前端编排现有搜索与流式画像接口：当前画像作为基准，用户搜索并确认第二个 OpenAlex 实体后调用 `POST /api/profile/stream` 获取当次数据。比较指标完全从两份同结构画像派生，不新增独立缓存或统计口径；研究方向、时间线、代表作、论文与引用、影响力、合作者和近期变化模块逐项显示事实或计算口径。桌面端并排展示，窄屏端纵向排列并在弹层内部滚动。
