@@ -64,22 +64,29 @@ NODE_SIGNAL = {
 }
 
 STAGE_LABELS = {
-    "fetch_profile": "获取基本信息...",
-    "collect_works": "获取论文列表...",
-    "dedup_works": "去重论文...",
-    "collect_crossref": "核验出版信息...",
-    "adjudicate_sources": "统一多来源数据...",
-    "analyze_citations": "统计引用数据...",
-    "agent_analyze_topics": "提取细粒度研究方向...",
-    "analyze_evolution": "分析兴趣演化...",
-    "analyze_coauthors": "分析合作关系...",
-    "build_graph": "构建合作网络图...",
-    "generate_report": "生成总结...",
-    "review_evidence": "检查结论依据...",
-    "format_payload": "组装数据...",
+    "verify_identity": "核验身份",
+    "aggregate_outputs": "聚合学术成果",
+    "analyze_trajectory": "分析研究轨迹",
+    "verify_evidence": "核验分析依据",
 }
 
 STAGE_ORDER = list(STAGE_LABELS.keys())
+
+NODE_USER_STAGE = {
+    "fetch_profile": "verify_identity",
+    "collect_works": "aggregate_outputs",
+    "dedup_works": "aggregate_outputs",
+    "collect_crossref": "aggregate_outputs",
+    "adjudicate_sources": "aggregate_outputs",
+    "analyze_citations": "aggregate_outputs",
+    "agent_analyze_topics": "analyze_trajectory",
+    "analyze_evolution": "analyze_trajectory",
+    "analyze_coauthors": "analyze_trajectory",
+    "build_graph": "analyze_trajectory",
+    "generate_report": "analyze_trajectory",
+    "review_evidence": "verify_evidence",
+    "format_payload": "verify_evidence",
+}
 
 PROGRESS_ANCHORS = {
     "fetch_profile": 6,
@@ -148,7 +155,34 @@ def _payload_with_defaults(author_id: str, payload: dict, cached: dict | None = 
         data.setdefault("scholarId", cached.get("scholar_id", ""))
         data.setdefault("profileVersion", cached.get("profile_version", 0))
         data.setdefault("refreshStatus", cached.get("refresh_status", "ready"))
+        data.setdefault("updatedAt", cached.get("updated_at"))
     return data
+
+
+def _candidate_identity_evidence(author: dict) -> list[dict]:
+    evidence = []
+    if author.get("orcid"):
+        evidence.append({"type": "orcid", "value": author["orcid"]})
+    if author.get("current_institution"):
+        evidence.append({"type": "current_institution", "value": author["current_institution"]})
+    for match in author.get("identity_signals") or []:
+        evidence.append({
+            "type": "merged_profile",
+            "reason": match.get("reason", ""),
+            "shared_works": int(match.get("sharedWorks") or 0),
+            "shared_coauthors": int(match.get("sharedCoauthors") or 0),
+            "shared_topics": int(match.get("sharedTopics") or 0),
+            "shared_institutions": int(match.get("sharedInstitutions") or 0),
+        })
+    if not author.get("identity_signals"):
+        fingerprint = author.get("identity_fingerprint") or {}
+        evidence.append({
+            "type": "independent_profile",
+            "sampled_works": int(fingerprint.get("sampled_works") or 0),
+            "coauthor_count": len(fingerprint.get("coauthor_ids") or []),
+            "topic_count": len(fingerprint.get("topic_ids") or []),
+        })
+    return evidence
 
 
 def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> None:
@@ -395,10 +429,12 @@ def search(
         "candidates": [{
             "id": author["id"],
             "name": author["display_name"],
-            "institution": (author.get("institutions") or [
+            "institution": author.get("current_institution") or (author.get("institutions") or [
                 ((author.get("last_known_institutions") or [{}])[0].get("display_name", ""))
             ])[0],
             "institutions": author.get("institutions", []),
+            "current_institution": author.get("current_institution", ""),
+            "historical_institutions": author.get("historical_institutions", []),
             "works_count": author.get("works_count", 0),
             "cited_by_count": author.get("cited_by_count", 0),
             "h_index": (author.get("summary_stats") or {}).get("h_index", 0),
@@ -407,6 +443,7 @@ def search(
             "merged_ids": author.get("merged_ids", [author.get("id", "")]),
             "disambiguation": author.get("disambiguation", ""),
             "identity_confidence": author.get("identity_confidence", "single"),
+            "identity_evidence": _candidate_identity_evidence(author),
         } for author in merged]
     }
 
@@ -471,11 +508,13 @@ def history(
 
 
 @app.get("/api/favorites")
+@app.get("/api/tracking")
 def favorites(user: AuthUser = Depends(require_user)):
     return {"items": repository.list_favorites(user.id)}
 
 
 @app.post("/api/favorites")
+@app.post("/api/tracking")
 def add_favorite(req: FavoriteRequest, user: AuthUser = Depends(require_user)):
     try:
         return repository.add_favorite(user.id, req.author_id)
@@ -484,15 +523,33 @@ def add_favorite(req: FavoriteRequest, user: AuthUser = Depends(require_user)):
 
 
 @app.post("/api/favorites/seen")
+@app.post("/api/tracking/seen")
 def mark_favorite_seen(req: FavoriteSeenRequest, user: AuthUser = Depends(require_user)):
     repository.mark_favorite_seen(user.id, req.author_id, req.profile_version)
     return {"status": "success"}
 
 
 @app.delete("/api/favorites/{author_id:path}")
+@app.delete("/api/tracking/{author_id:path}")
 def remove_favorite(author_id: str, user: AuthUser = Depends(require_user)):
     repository.remove_favorite(user.id, author_id)
     return {"status": "success"}
+
+
+@app.post("/api/tracking/{author_id:path}/refresh")
+def refresh_tracking(author_id: str, user: AuthUser = Depends(require_user)):
+    """Queue a tracked scholar refresh without running the workflow in the Web process."""
+    if not repository.is_tracking(user.id, author_id):
+        raise HTTPException(status_code=404, detail="Research tracking not found")
+    try:
+        job_id = repository.enqueue_refresh(author_id, reason="manual_tracking")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Scholar profile not found") from exc
+    cached = repository.get_profile(author_id) or {}
+    return {
+        "status": cached.get("refresh_status", "queued"),
+        "job_id": job_id,
+    }
 
 
 @app.get("/api/authors/{author_id:path}/works")
@@ -543,6 +600,7 @@ async def profile_stream(
                 return ("progress", None)
 
         current_stage = STAGE_ORDER[0]
+        current_node = "fetch_profile"
         progress = 1
         message_index = 0
         yield json.dumps({
@@ -554,7 +612,7 @@ async def profile_stream(
         yield json.dumps({
             "type": "progress",
             "progress": progress,
-            "message": PROGRESS_MESSAGES[current_stage][0],
+            "message": PROGRESS_MESSAGES[current_node][0],
             "node": current_stage,
         }, ensure_ascii=False) + "\n"
 
@@ -563,18 +621,26 @@ async def profile_stream(
             if msg_type == "done":
                 break
             if msg_type == "error":
+                lowered = str(data).casefold()
+                error_code = (
+                    "rate_limit" if "429" in lowered or "rate limit" in lowered
+                    else "timeout" if "timeout" in lowered or "timed out" in lowered
+                    else "network_error" if "connection" in lowered or "network" in lowered
+                    else "worker_failed"
+                )
                 yield json.dumps({
                     "type": "error",
                     "message": data,
+                    "code": error_code,
                     "node": current_stage,
                 }, ensure_ascii=False) + "\n"
                 thread.join()
                 return
             if msg_type == "progress":
-                target = PROGRESS_ANCHORS.get(current_stage, 99)
+                target = PROGRESS_ANCHORS.get(current_node, 99)
                 if progress < target - 1:
                     progress += 1
-                messages = PROGRESS_MESSAGES.get(current_stage, [STAGE_LABELS.get(current_stage, "")])
+                messages = PROGRESS_MESSAGES.get(current_node, [STAGE_LABELS.get(current_stage, "")])
                 message_index += 1
                 yield json.dumps({
                     "type": "progress",
@@ -584,31 +650,30 @@ async def profile_stream(
                 }, ensure_ascii=False) + "\n"
                 continue
 
-            current_stage = data
+            current_node = data
+            next_stage = NODE_USER_STAGE.get(data, current_stage)
             progress = max(progress, PROGRESS_ANCHORS.get(data, progress))
-            yield json.dumps({
-                "type": "stage",
-                "node": data,
-                "status": "completed",
-                "label": STAGE_LABELS.get(data, data),
-            }, ensure_ascii=False) + "\n"
-            yield json.dumps({
-                "type": "progress",
-                "progress": progress,
-                "message": f"{STAGE_LABELS.get(data, data).replace('...', '')}完成",
-                "node": data,
-            }, ensure_ascii=False) + "\n"
-
-            current_index = STAGE_ORDER.index(data) if data in STAGE_ORDER else -1
-            if current_index + 1 < len(STAGE_ORDER):
-                current_stage = STAGE_ORDER[current_index + 1]
-                message_index = 0
+            if next_stage != current_stage:
+                yield json.dumps({
+                    "type": "stage",
+                    "node": current_stage,
+                    "status": "completed",
+                    "label": STAGE_LABELS[current_stage],
+                }, ensure_ascii=False) + "\n"
+                current_stage = next_stage
                 yield json.dumps({
                     "type": "stage",
                     "node": current_stage,
                     "status": "running",
                     "label": STAGE_LABELS[current_stage],
                 }, ensure_ascii=False) + "\n"
+            yield json.dumps({
+                "type": "progress",
+                "progress": progress,
+                "message": PROGRESS_MESSAGES.get(data, [STAGE_LABELS[current_stage]])[0],
+                "node": current_stage,
+            }, ensure_ascii=False) + "\n"
+            message_index = 0
 
         thread.join()
         if not result_holder:
@@ -628,6 +693,12 @@ async def profile_stream(
                 "node": current_stage,
             }, ensure_ascii=False) + "\n"
             return
+        yield json.dumps({
+            "type": "stage",
+            "node": current_stage,
+            "status": "completed",
+            "label": STAGE_LABELS[current_stage],
+        }, ensure_ascii=False) + "\n"
         saved = await asyncio.to_thread(
             repository.publish_profile,
             final_state,

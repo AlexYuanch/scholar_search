@@ -130,6 +130,20 @@ def _combine_author_group(group: list[dict], matches: list[dict]) -> dict:
         int(item.get("cited_by_count") or 0),
         int(item.get("works_count") or 0),
     )))
+    primary_institutions = primary.get("last_known_institutions") or []
+    current_institution = str(
+        (primary_institutions[0] if primary_institutions else {}).get("display_name") or ""
+    ).strip()
+    if not current_institution:
+        affiliations = primary.get("affiliations") or []
+        latest_affiliation = max(
+            affiliations,
+            key=lambda item: max(item.get("years") or [0]),
+            default={},
+        )
+        current_institution = str(
+            (latest_affiliation.get("institution") or {}).get("display_name") or ""
+        ).strip()
     unique_by_id = {}
     for author in group:
         unique_by_id.setdefault(author.get("id") or f"missing-{len(unique_by_id)}", author)
@@ -146,11 +160,20 @@ def _combine_author_group(group: list[dict], matches: list[dict]) -> dict:
             name = str(institution.get("display_name") or "").strip()
             if name and name not in institutions:
                 institutions.append(name)
+        for affiliation in item.get("affiliations") or []:
+            institution = affiliation.get("institution") or {}
+            name = str(institution.get("display_name") or "").strip()
+            if name and name not in institutions:
+                institutions.append(name)
     h_indices = [int((item.get("summary_stats") or {}).get("h_index") or 0) for item in unique_group]
     primary["works_count"] = sum(int(item.get("works_count") or 0) for item in unique_group)
     primary["cited_by_count"] = sum(int(item.get("cited_by_count") or 0) for item in unique_group)
     primary["summary_stats"] = {**(primary.get("summary_stats") or {}), "h_index": max(h_indices, default=0)}
     primary["institutions"] = institutions
+    primary["current_institution"] = current_institution
+    primary["historical_institutions"] = [
+        institution for institution in institutions if institution != current_institution
+    ]
     primary["merged_ids"] = ordered_ids
     primary["merged_count"] = len(ordered_ids)
     primary["identity_confidence"] = (
@@ -1203,6 +1226,8 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "name": profile.get("display_name", ""),
         "authorId": state["target_author_id"],
         "institution": insts[0] if insts else "",
+        "institutions": list(dict.fromkeys(filter(None, insts))),
+        "orcid": profile.get("orcid"),
         "department": "",
         "totalPapers": cs.get("total_papers", 0),
         "totalCitations": cs.get("total_citations", 0),

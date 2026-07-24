@@ -114,6 +114,33 @@ def test_favorite_reports_profile_changes_until_user_marks_them_seen():
     assert seen["new_citations"] == 0
 
 
+def test_tracking_reports_research_direction_changes_for_unseen_profile():
+    repository = InMemoryRepository()
+    initial = _workflow_state(2)
+    initial["web_payload"]["interestTimeline"] = [
+        {"year": 2020, "topics": [{"topic": "Knowledge Graph", "count": 1}]},
+        {"year": 2021, "topics": [{"topic": "Knowledge Graph", "count": 1}]},
+        {"year": 2022, "topics": [{"topic": "Knowledge Graph", "count": 1}]},
+    ]
+    repository.publish_profile(initial, query_name="Ada")
+    repository.add_favorite("user-1", "https://openalex.org/A1")
+
+    updated = _workflow_state(2)
+    updated["web_payload"]["interestTimeline"] = [
+        *initial["web_payload"]["interestTimeline"],
+        {"year": 2023, "topics": [{"topic": "Large Language Models", "count": 1}]},
+        {"year": 2024, "topics": [{"topic": "Large Language Models", "count": 2}]},
+        {"year": 2025, "topics": [{"topic": "Large Language Models", "count": 2}]},
+    ]
+    repository.publish_profile(updated, query_name="Ada")
+
+    tracked = repository.list_favorites("user-1")[0]
+
+    assert tracked["has_research_changes"] is True
+    assert tracked["research_changes"][0]["topic"] == "Large Language Models"
+    assert tracked["has_updates"] is True
+
+
 def test_password_reset_revokes_existing_sessions():
     repository = InMemoryRepository()
     user = repository.create_password_user("alice", "old-password-hash")

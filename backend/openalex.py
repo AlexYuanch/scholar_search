@@ -98,7 +98,7 @@ def search_authors(name: str, per_page: int = 50) -> List[dict]:
             sort="cited_by_count:desc",
             select=(
                 "id,display_name,display_name_alternatives,orcid,works_count,"
-                "cited_by_count,summary_stats,last_known_institutions"
+                "cited_by_count,summary_stats,last_known_institutions,affiliations"
             ),
         )
         for author in data.get("results", []):

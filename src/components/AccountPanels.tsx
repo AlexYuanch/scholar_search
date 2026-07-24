@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react"
-import { Bell, BookOpen, CheckCircle2, Heart, Loader2, LogIn, RefreshCw, X } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { AlertCircle, Bell, BookOpen, CheckCircle2, Eye, Loader2, LogIn, RefreshCw, X } from "lucide-react"
 import { useAuth } from "@/auth"
-import { getFavorites, getHistory, removeFavorite, type ScholarListItem } from "@/api"
+import { ApiError, getHistory, getTracking, refreshTracking, removeTracking, type ScholarListItem } from "@/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -129,34 +129,73 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
   onSelect: (authorId: string, scholarName: string) => void
   t: (key: string) => string
 }) {
+  const { refreshUser } = useAuth()
   const [items, setItems] = useState<ScholarListItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  const [actingOn, setActingOn] = useState("")
+
+  const loadItems = useCallback(async (silent = false) => {
+    if (!mode) return
+    if (!silent) setLoading(true)
+    setError("")
+    try {
+      setItems(await (mode === "history" ? getHistory() : getTracking()))
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Request failed")
+      if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
+    } finally {
+      if (!silent) setLoading(false)
+    }
+  }, [mode, refreshUser])
 
   useEffect(() => {
     if (!mode) return
     let active = true
     void Promise.resolve().then(async () => {
-      if (!active) return
-      setLoading(true)
-      setError("")
-      try {
-        const nextItems = await (mode === "history" ? getHistory() : getFavorites())
-        if (active) setItems(nextItems)
-      } catch (reason: unknown) {
-        if (active) setError(reason instanceof Error ? reason.message : "Request failed")
-      } finally {
-        if (active) setLoading(false)
-      }
+      if (active) await loadItems()
     })
     return () => { active = false }
-  }, [mode])
+  }, [loadItems, mode])
+
+  useEffect(() => {
+    if (mode !== "favorites" || !items.some((item) => item.refresh_status === "queued" || item.refresh_status === "updating")) {
+      return
+    }
+    const timer = window.setTimeout(() => void loadItems(true), 3000)
+    return () => window.clearTimeout(timer)
+  }, [items, loadItems, mode])
 
   if (!mode) return null
 
   const remove = async (item: ScholarListItem) => {
-    await removeFavorite(item.author_id)
-    setItems((current) => current.filter((row) => row.author_id !== item.author_id))
+    setActingOn(item.author_id)
+    setError("")
+    try {
+      await removeTracking(item.author_id)
+      setItems((current) => current.filter((row) => row.author_id !== item.author_id))
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Request failed")
+      if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
+    } finally {
+      setActingOn("")
+    }
+  }
+
+  const refresh = async (item: ScholarListItem) => {
+    setActingOn(item.author_id)
+    setError("")
+    try {
+      const result = await refreshTracking(item.author_id)
+      setItems((current) => current.map((row) => row.author_id === item.author_id
+        ? { ...row, refresh_status: result.status ?? "queued", refresh_error: "" }
+        : row))
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Request failed")
+      if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
+    } finally {
+      setActingOn("")
+    }
   }
 
   return (
@@ -170,7 +209,7 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
       <aside className="fixed right-0 top-0 z-50 flex h-[100dvh] w-full max-w-md flex-col border-l bg-background shadow-xl lg:sticky lg:right-auto lg:top-14 lg:z-20 lg:h-[calc(100dvh-3.5rem)] lg:max-w-none lg:self-start lg:shadow-none">
         <div className="flex shrink-0 items-center justify-between border-b p-5">
           <h2 className="flex items-center gap-2 font-semibold">
-            {mode === "history" ? <BookOpen className="h-4 w-4" /> : <Heart className="h-4 w-4" />}
+            {mode === "history" ? <BookOpen className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
             {t(mode === "history" ? "account.history" : "account.favorites")}
           </h2>
           <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
@@ -187,8 +226,9 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
           {!loading && !items.length && <p className="text-sm text-muted-foreground">{t("account.empty")}</p>}
           <div className="space-y-2">
             {items.map((item) => (
-              <Card key={item.author_id} className="cursor-pointer hover:bg-muted/50" onClick={() => onSelect(item.author_id, item.name)}>
-                <CardContent className="flex min-w-0 items-start justify-between gap-2 p-4">
+              <Card key={item.author_id}>
+                <CardContent className="min-w-0 p-4">
+                  <div className="flex min-w-0 items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="break-words text-sm font-medium">{item.name}</p>
@@ -207,21 +247,62 @@ export function AccountPanel({ mode, onClose, onSelect, t }: {
                       )}
                     </div>
                     {mode === "favorites" && (
-                      <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
-                        {item.refresh_status === "queued" || item.refresh_status === "updating" ? (
-                          <><RefreshCw className="h-3 w-3 animate-spin" />{t("tracking.updating")}</>
-                        ) : (
-                          <><CheckCircle2 className="h-3 w-3" />{t(item.has_updates ? "tracking.updated_at" : "tracking.current")} {updateTime(item.updated_at)}</>
+                      <>
+                        {(item.research_changes?.length ?? 0) > 0 && (
+                          <div className="mt-2 rounded-md bg-violet-500/10 px-2.5 py-2 text-xs text-violet-700 dark:text-violet-300">
+                            <p className="font-medium">{t("tracking.direction_changes")}</p>
+                            <p className="mt-1 break-words">
+                              {item.research_changes?.slice(0, 3).map((change) => change.topic).join(" · ")}
+                            </p>
+                          </div>
                         )}
-                      </p>
+                        <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
+                          {item.refresh_status === "queued" || item.refresh_status === "updating" ? (
+                            <><RefreshCw className="h-3 w-3 animate-spin" />{t(`tracking.status_${item.refresh_status}`)}</>
+                          ) : item.refresh_status === "failed" ? (
+                            <><AlertCircle className="h-3 w-3 text-destructive" />{t("tracking.status_failed")}</>
+                          ) : (
+                            <><CheckCircle2 className="h-3 w-3" />{t("tracking.status_ready")}</>
+                          )}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {t("tracking.last_updated")} {updateTime(item.updated_at)}
+                        </p>
+                        {item.refresh_status === "failed" && item.refresh_error && (
+                          <p className="mt-1 break-words text-xs text-destructive">{item.refresh_error}</p>
+                        )}
+                      </>
                     )}
                   </div>
-                  {mode === "favorites" && (
-                    <Button className="shrink-0" variant="ghost" size="icon" onClick={(event) => {
-                      event.stopPropagation()
-                      void remove(item)
-                    }}><X className="h-4 w-4" /></Button>
-                  )}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => onSelect(item.author_id, item.name)}>
+                      <Eye className="h-3.5 w-3.5" />{t("tracking.view_profile")}
+                    </Button>
+                    {mode === "favorites" && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={actingOn === item.author_id || item.refresh_status === "queued" || item.refresh_status === "updating"}
+                          onClick={() => void refresh(item)}
+                        >
+                          {actingOn === item.author_id
+                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            : <RefreshCw className="h-3.5 w-3.5" />}
+                          {t(item.refresh_status === "failed" ? "tracking.retry" : "tracking.check_now")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={actingOn === item.author_id}
+                          onClick={() => void remove(item)}
+                        >
+                          <X className="h-3.5 w-3.5" />{t("tracking.stop")}
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             ))}

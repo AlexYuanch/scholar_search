@@ -220,9 +220,10 @@ def test_all_scholar_query_routes_require_authentication():
         client.post("/api/profile/stream", json={"author_id": "A1"}),
         client.get("/api/authors/A1/works"),
         client.get(f"/api/profiles/{scholar_id}/events"),
+        client.post("/api/tracking/A1/refresh"),
     ]
 
-    assert [response.status_code for response in requests] == [401, 401, 401, 401, 401]
+    assert [response.status_code for response in requests] == [401, 401, 401, 401, 401, 401]
 
 
 def test_search_rate_limit_returns_friendly_error(monkeypatch):

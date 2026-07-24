@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Loader2 } from "lucide-react"
-import { getAuthorWorks } from "@/api"
+import { ApiError, getAuthorWorks } from "@/api"
+import { useAuth } from "@/auth"
 import type { ScholarProfile } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -9,6 +10,7 @@ export default function AllPapers({ profile, t }: {
   profile: ScholarProfile
   t: (key: string) => string
 }) {
+  const { refreshUser } = useAuth()
   const [papers, setPapers] = useState<ScholarProfile["topCitedPapers"]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [total, setTotal] = useState(profile.totalPapers)
@@ -26,10 +28,11 @@ export default function AllPapers({ profile, t }: {
       setTotal(page.total)
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Works request failed")
+      if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
     } finally {
       setLoading(false)
     }
-  }, [profile.authorId, sort])
+  }, [profile.authorId, refreshUser, sort])
 
   useEffect(() => {
     void Promise.resolve().then(() => load(null, true))
@@ -57,7 +60,12 @@ export default function AllPapers({ profile, t }: {
           </CardContent>
         </Card>
       ))}
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+          <p className="break-words text-sm text-destructive">{error}</p>
+          <Button size="sm" variant="outline" onClick={() => void load(null, true)}>{t("error.retry")}</Button>
+        </div>
+      )}
       {loading && <Loader2 className="mx-auto h-5 w-5 animate-spin" />}
       {cursor && !loading && <Button variant="outline" className="w-full" onClick={() => void load(cursor)}>{t("papers.load_more")}</Button>}
     </div>

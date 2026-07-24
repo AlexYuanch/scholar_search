@@ -9,6 +9,8 @@ export interface Candidate {
   name: string
   institution: string
   institutions?: string[]
+  current_institution?: string
+  historical_institutions?: string[]
   works_count: number
   cited_by_count: number
   h_index: number
@@ -17,6 +19,18 @@ export interface Candidate {
   merged_ids?: string[]
   disambiguation?: string
   identity_confidence?: string
+  identity_evidence?: Array<{
+    type: "orcid" | "current_institution" | "merged_profile" | "independent_profile"
+    value?: string
+    reason?: string
+    shared_works?: number
+    shared_coauthors?: number
+    shared_topics?: number
+    shared_institutions?: number
+    sampled_works?: number
+    coauthor_count?: number
+    topic_count?: number
+  }>
 }
 
 export interface ScholarProfile {
@@ -24,8 +38,11 @@ export interface ScholarProfile {
   scholarId: string
   profileVersion: number
   refreshStatus: "ready" | "queued" | "updating" | "failed"
+  updatedAt?: string
   name: string
   institution: string
+  institutions?: string[]
+  orcid?: string | null
   department: string
   totalPapers: number
   totalCitations: number

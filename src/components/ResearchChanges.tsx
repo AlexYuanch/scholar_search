@@ -224,7 +224,16 @@ function ActivityMatrix({ analysis, t }: { analysis: ChangeAnalysis; t: (key: st
 
 export default function ResearchChanges({ profile, t }: Props) {
   const analysis = analyzeChanges(profile)
-  if (!analysis) return null
+  if (!analysis) {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="text-base">{t("changes.title")}</CardTitle></CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">{t("changes.insufficient_history")}</p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   const comparable = analysis.previousAssignments > 0 && analysis.currentAssignments > 0
   const directionGroups: DirectionKind[] = ["emerging", "rising", "steady", "falling"]

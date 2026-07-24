@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +42,46 @@ def test_health_returns_ok():
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticated_client):
+    import main
+
+    monkeypatch.setattr(main, "repository", InMemoryRepository())
+    author = {
+        "id": "A1",
+        "display_name": "Ada Lovelace",
+        "orcid": "https://orcid.org/0000-0000-0000-0001",
+        "works_count": 2,
+        "cited_by_count": 10,
+        "summary_stats": {"h_index": 2},
+        "last_known_institutions": [{"display_name": "Current Institute"}],
+        "affiliations": [
+            {"institution": {"display_name": "Current Institute"}, "years": [2025]},
+            {"institution": {"display_name": "Previous Institute"}, "years": [2020]},
+        ],
+        "identity_fingerprint": {
+            "sampled_works": 2,
+            "coauthor_ids": ["C1"],
+            "topic_ids": ["T1"],
+        },
+    }
+    monkeypatch.setattr(main, "search_authors", lambda _name: [author])
+    monkeypatch.setattr(main, "enrich_authors_for_disambiguation", lambda candidates: candidates)
+
+    response = authenticated_client.get("/api/search?name=Ada")
+    candidate = response.json()["candidates"][0]
+
+    assert response.status_code == 200
+    assert candidate["identity_confidence"] == "single"
+    assert candidate["current_institution"] == "Current Institute"
+    assert candidate["historical_institutions"] == ["Previous Institute"]
+    assert candidate["orcid"].endswith("0001")
+    assert {item["type"] for item in candidate["identity_evidence"]} == {
+        "orcid",
+        "current_institution",
+        "independent_profile",
+    }
 
 
 def test_profile_returns_latest_payload_without_running_graph(monkeypatch, authenticated_client):
@@ -114,6 +155,9 @@ def test_profile_stream_refreshes_cached_profile(monkeypatch, authenticated_clie
 
     assert response.status_code == 200
     assert '"type": "cache_hit"' not in body
+    assert '"stages": ["verify_identity", "aggregate_outputs", "analyze_trajectory", "verify_evidence"]' in body
+    assert '"核验身份"' in body
+    assert '"node": "fetch_profile"' not in body
     assert '"profile_version": 2' in body
     assert '"name": "Ada Byron"' in body
 
@@ -137,6 +181,56 @@ def test_mark_favorite_seen_clears_tracking_updates(monkeypatch, authenticated_c
 
     assert response.status_code == 200
     assert repository.list_favorites("test-user")[0]["has_updates"] is False
+
+
+def test_tracking_routes_add_list_and_remove_for_current_user(monkeypatch, authenticated_client):
+    import main
+
+    repository = InMemoryRepository()
+    repository.publish_profile(_state(), query_name="Ada Lovelace")
+    monkeypatch.setattr(main, "repository", repository)
+
+    added = authenticated_client.post("/api/tracking", json={"author_id": "A1"})
+    listed = authenticated_client.get("/api/tracking")
+    removed = authenticated_client.delete("/api/tracking/A1")
+
+    assert added.status_code == 200
+    assert [item["author_id"] for item in listed.json()["items"]] == ["A1"]
+    assert removed.status_code == 200
+    assert repository.list_favorites("test-user") == []
+
+
+def test_tracking_refresh_requires_existing_tracking(monkeypatch, authenticated_client):
+    import main
+
+    repository = InMemoryRepository()
+    repository.publish_profile(_state(), query_name="Ada Lovelace")
+    monkeypatch.setattr(main, "repository", repository)
+
+    response = authenticated_client.post("/api/tracking/A1/refresh")
+
+    assert response.status_code == 404
+    assert repository.jobs == {}
+
+
+def test_tracking_refresh_deduplicates_active_jobs(monkeypatch, authenticated_client):
+    import main
+
+    author_id = "https://openalex.org/A1"
+    repository = InMemoryRepository()
+    repository.publish_profile(_state(author_id=author_id), query_name="Ada Lovelace")
+    repository.add_favorite("test-user", author_id)
+    monkeypatch.setattr(main, "repository", repository)
+    encoded_author_id = quote(author_id, safe="")
+
+    first = authenticated_client.post(f"/api/tracking/{encoded_author_id}/refresh")
+    second = authenticated_client.post(f"/api/tracking/{encoded_author_id}/refresh")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["job_id"] == second.json()["job_id"]
+    assert first.json()["status"] == "queued"
+    assert len(repository.jobs) == 1
 
 
 def test_profile_stream_reports_workflow_error(monkeypatch, authenticated_client):

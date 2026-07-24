@@ -143,6 +143,7 @@ def test_favorite_tracking_reports_and_clears_profile_deltas():
         initial_state["web_payload"]["totalCitations"] = 10
         repository.publish_profile(initial_state, query_name="Tracking Scholar")
         repository.add_favorite(user["id"], author_id)
+        assert repository.is_tracking(user["id"], author_id) is True
         assert repository.list_favorites(user["id"])[0]["has_updates"] is False
 
         updated_state = _state(2)

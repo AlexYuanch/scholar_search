@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { ArrowLeftRight, BookOpen, ChevronRight, Loader2, Search, X } from "lucide-react"
+import { Activity, ArrowLeftRight, BookOpen, CalendarRange, ChevronRight, Loader2, Search, Users, X } from "lucide-react"
 import { searchAuthors, streamProfile } from "@/api"
 import type { Candidate, ScholarProfile } from "@/types"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -124,6 +124,87 @@ function PaperList({ profile, empty }: { profile: ScholarProfile; empty: string 
   )
 }
 
+function EvidenceNote({ children, t }: { children: string; t: (key: string) => string }) {
+  return (
+    <p className="mt-4 rounded-md bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+      <span className="font-medium text-foreground">{t("compare.evidence_prefix")}</span> {children}
+    </p>
+  )
+}
+
+function TimelineCard({ profile, t }: { profile: ScholarProfile; t: (key: string) => string }) {
+  const rows = [...profile.interestTimeline]
+    .filter((item) => item.topics.length)
+    .sort((left, right) => right.year - left.year)
+    .slice(0, 6)
+  return (
+    <div className="min-w-0 rounded-lg border p-4">
+      <h4 className="break-words text-sm font-medium">{profile.name}</h4>
+      <div className="mt-3 space-y-2">
+        {rows.length ? rows.map((row) => (
+          <div key={row.year} className="grid grid-cols-[3rem_minmax(0,1fr)] gap-2 text-xs">
+            <span className="font-medium tabular-nums">{row.year}</span>
+            <span className="break-words text-muted-foreground">
+              {row.topics.slice(0, 3).map((topic) => `${topic.topic} (${topic.count})`).join(" · ")}
+            </span>
+          </div>
+        )) : <p className="text-xs text-muted-foreground">{t("timeline.empty")}</p>}
+      </div>
+    </div>
+  )
+}
+
+function recentDirectionChanges(profile: ScholarProfile) {
+  const usable = profile.interestTimeline.filter((item) => item.topics.length)
+  if (!usable.length) return { period: "—", changes: [] as Array<{ topic: string; kind: string; before: number; after: number }> }
+  const latest = Math.max(...usable.map((item) => item.year))
+  const currentStart = latest - 2
+  const previousStart = latest - 5
+  const previous = new Map<string, number>()
+  const current = new Map<string, number>()
+  for (const row of usable) {
+    const target = row.year >= currentStart && row.year <= latest
+      ? current
+      : row.year >= previousStart && row.year < currentStart
+        ? previous
+        : null
+    if (!target) continue
+    for (const topic of row.topics) target.set(topic.topic, (target.get(topic.topic) ?? 0) + topic.count)
+  }
+  const previousTotal = [...previous.values()].reduce((sum, count) => sum + count, 0)
+  const currentTotal = [...current.values()].reduce((sum, count) => sum + count, 0)
+  const changes = [...new Set([...previous.keys(), ...current.keys()])].map((topic) => {
+    const before = previous.get(topic) ?? 0
+    const after = current.get(topic) ?? 0
+    const beforeShare = previousTotal ? before / previousTotal : 0
+    const afterShare = currentTotal ? after / currentTotal : 0
+    const delta = afterShare - beforeShare
+    const kind = after > 0 && before === 0 ? "emerging" : delta >= 0.04 ? "rising" : delta <= -0.04 ? "falling" : "steady"
+    return { topic, kind, before, after, magnitude: Math.abs(delta) }
+  }).sort((left, right) => right.magnitude - left.magnitude).slice(0, 5)
+  return { period: `${previousStart}–${currentStart - 1} → ${currentStart}–${latest}`, changes }
+}
+
+function ChangeCard({ profile, t }: { profile: ScholarProfile; t: (key: string) => string }) {
+  const summary = recentDirectionChanges(profile)
+  return (
+    <div className="min-w-0 rounded-lg border p-4">
+      <h4 className="break-words text-sm font-medium">{profile.name}</h4>
+      <p className="mt-1 text-xs text-muted-foreground">{summary.period}</p>
+      <div className="mt-3 space-y-2">
+        {summary.changes.length ? summary.changes.map((change) => (
+          <div key={change.topic} className="flex min-w-0 items-start justify-between gap-3 text-xs">
+            <span className="break-words">{change.topic}</span>
+            <span className="shrink-0 text-muted-foreground">
+              {t(`changes.${change.kind}`)} · {change.before} → {change.after}
+            </span>
+          </div>
+        )) : <p className="text-xs text-muted-foreground">{t("changes.none")}</p>}
+      </div>
+    </div>
+  )
+}
+
 function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: ScholarProfile; t: (key: string) => string }) {
   const startYear = new Date().getFullYear() - 4
   const leftRecent = recentSummary(left, startYear)
@@ -139,6 +220,13 @@ function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: Sch
   const rightOnly = [...rightTopics.entries()]
     .filter(([key]) => !leftTopics.has(key))
     .map(([, topic]) => topic)
+  const leftCoauthors = new Map(left.coauthors.map((item) => [item.name.trim().toLocaleLowerCase(), item]))
+  const rightCoauthors = new Map(right.coauthors.map((item) => [item.name.trim().toLocaleLowerCase(), item]))
+  const sharedCoauthors = [...leftCoauthors.entries()]
+    .filter(([key]) => rightCoauthors.has(key))
+    .map(([, item]) => item.name)
+  const leftOnlyCoauthors = [...leftCoauthors.entries()].filter(([key]) => !rightCoauthors.has(key)).map(([, item]) => item.name)
+  const rightOnlyCoauthors = [...rightCoauthors.entries()].filter(([key]) => !leftCoauthors.has(key)).map(([, item]) => item.name)
 
   return (
     <div className="space-y-6">
@@ -155,6 +243,12 @@ function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: Sch
           <ComparisonRow label={t("metric.total_papers")} left={left.totalPapers} right={right.totalPapers} />
           <ComparisonRow label={t("metric.total_citations")} left={left.totalCitations} right={right.totalCitations} />
           <ComparisonRow label={t("metric.h_index")} left={left.hIndex} right={right.hIndex} />
+          <ComparisonRow
+            label={t("compare.citations_per_paper")}
+            left={left.totalPapers ? Math.round(left.totalCitations / left.totalPapers) : 0}
+            right={right.totalPapers ? Math.round(right.totalCitations / right.totalPapers) : 0}
+          />
+          <EvidenceNote t={t}>{t("compare.scale_evidence")}</EvidenceNote>
         </CardContent>
       </Card>
 
@@ -166,6 +260,11 @@ function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: Sch
           <ComparisonRow label={t("compare.recent_papers")} left={leftRecent.papers} right={rightRecent.papers} />
           <ComparisonRow label={t("compare.recent_citations")} left={leftRecent.citations} right={rightRecent.citations} />
           <ComparisonRow label={t("compare.active_years")} left={leftRecent.activeYears} right={rightRecent.activeYears} />
+          <EvidenceNote t={t}>
+            {t("compare.recent_evidence")
+              .replace("{start}", String(startYear))
+              .replace("{end}", String(new Date().getFullYear()))}
+          </EvidenceNote>
         </CardContent>
       </Card>
 
@@ -177,6 +276,20 @@ function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: Sch
           <TopicGroup title={t("compare.shared_topics")} topics={shared} empty={t("compare.no_shared_topics")} />
           <TopicGroup title={`${left.name} ${t("compare.distinct_topics")}`} topics={leftOnly} empty={t("compare.no_distinct_topics")} />
           <TopicGroup title={`${right.name} ${t("compare.distinct_topics")}`} topics={rightOnly} empty={t("compare.no_distinct_topics")} />
+          <div className="lg:col-span-3">
+            <EvidenceNote t={t}>{t("compare.topic_evidence")}</EvidenceNote>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-base"><CalendarRange className="h-4 w-4" />{t("compare.timeline_title")}</CardTitle></CardHeader>
+        <CardContent>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <TimelineCard profile={left} t={t} />
+            <TimelineCard profile={right} t={t} />
+          </div>
+          <EvidenceNote t={t}>{t("compare.timeline_evidence")}</EvidenceNote>
         </CardContent>
       </Card>
 
@@ -190,6 +303,31 @@ function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: Sch
           <CardContent><PaperList profile={right} empty={t("compare.no_papers")} /></CardContent>
         </Card>
       </div>
+
+      <EvidenceNote t={t}>{t("compare.paper_evidence")}</EvidenceNote>
+
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Users className="h-4 w-4" />{t("compare.coauthor_title")}</CardTitle></CardHeader>
+        <CardContent>
+          <div className="grid gap-3 lg:grid-cols-3">
+            <TopicGroup title={t("compare.shared_coauthors")} topics={sharedCoauthors.slice(0, 8)} empty={t("compare.no_shared_coauthors")} />
+            <TopicGroup title={`${left.name} ${t("compare.core_coauthors")}`} topics={leftOnlyCoauthors.slice(0, 8)} empty={t("compare.no_coauthors")} />
+            <TopicGroup title={`${right.name} ${t("compare.core_coauthors")}`} topics={rightOnlyCoauthors.slice(0, 8)} empty={t("compare.no_coauthors")} />
+          </div>
+          <EvidenceNote t={t}>{t("compare.coauthor_evidence")}</EvidenceNote>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Activity className="h-4 w-4" />{t("compare.changes_title")}</CardTitle></CardHeader>
+        <CardContent>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <ChangeCard profile={left} t={t} />
+            <ChangeCard profile={right} t={t} />
+          </div>
+          <EvidenceNote t={t}>{t("compare.changes_evidence")}</EvidenceNote>
+        </CardContent>
+      </Card>
 
       <p className="rounded-lg bg-muted/60 p-4 text-xs leading-relaxed text-muted-foreground">
         {t("compare.caution")}
@@ -254,13 +392,15 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
     const name = query.trim()
     if (!name) return
     abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
     setCandidates([])
     setComparedProfile(null)
     setError("")
     setLoading("search")
     setProgress(0)
     try {
-      const results = await searchAuthors(name)
+      const results = await searchAuthors(name, { signal: controller.signal })
       const alternatives = results.filter((candidate) => candidate.id !== profile.authorId)
       if (!alternatives.length) {
         setError(results.length ? t("compare.same_scholar") : t("compare.no_candidates"))
@@ -270,6 +410,7 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
         setCandidates(alternatives)
       }
     } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return
       setError(reason instanceof Error ? reason.message : t("search.error"))
     } finally {
       setLoading((current) => current === "search" ? null : current)
@@ -322,7 +463,7 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
                         autoFocus
                       />
                     </div>
-                    <Button onClick={() => void search()} disabled={!query.trim() || loading !== null}>
+                    <Button onClick={() => void search()} disabled={!query.trim()}>
                       {loading === "search" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                       {t("compare.search")}
                     </Button>
@@ -355,21 +496,40 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
                 <div className="space-y-2">
                   <p className="text-sm text-muted-foreground">{candidates.length} {t("candidate.title")}</p>
                   {candidates.map((candidate) => (
-                    <Card key={candidate.id} className="cursor-pointer transition-colors hover:bg-muted/50" onClick={() => void loadCandidate(candidate)}>
-                      <CardContent className="flex min-w-0 items-center justify-between gap-3 p-4">
+                    <Card key={candidate.id}>
+                      <CardContent className="min-w-0 p-4">
+                        <div className="flex min-w-0 items-start justify-between gap-3">
                         <div className="flex min-w-0 items-center gap-3">
                           <Avatar className="h-10 w-10 shrink-0">
                             <AvatarFallback className="bg-primary/10 text-xs text-primary">{initials(candidate.name)}</AvatarFallback>
                           </Avatar>
                           <div className="min-w-0">
-                            <p className="break-words text-sm font-medium">{candidate.name}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="break-words text-sm font-medium">{candidate.name}</p>
+                              <Badge variant={candidate.identity_confidence === "high" ? "default" : "outline"}>
+                                {t(`candidate.confidence_${candidate.identity_confidence || "single"}`)}
+                              </Badge>
+                            </div>
                             <p className="break-words text-xs text-muted-foreground">{institutionById.get(candidate.id) || t("candidate.unknown_inst")}</p>
+                            {candidate.orcid && (
+                              <p className="mt-1 break-words text-xs text-muted-foreground">
+                                ORCID {candidate.orcid.replace("https://orcid.org/", "")}
+                              </p>
+                            )}
                             <p className="mt-1 text-xs text-muted-foreground">
                               {candidate.works_count} {t("candidate.papers")} · {candidate.cited_by_count.toLocaleString()} {t("candidate.citations")}
+                              {(candidate.merged_count ?? 1) > 1 ? ` · ${candidate.merged_count} ${t("candidate.merged")}` : ""}
                             </p>
                           </div>
                         </div>
                         <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground" />
+                        </div>
+                        <p className="mt-3 rounded-md bg-muted/60 p-2 text-xs text-muted-foreground">
+                          {t("candidate.confirm_prompt")}
+                        </p>
+                        <Button className="mt-3 w-full" size="sm" onClick={() => void loadCandidate(candidate)}>
+                          {t("candidate.confirm")}
+                        </Button>
                       </CardContent>
                     </Card>
                   ))}

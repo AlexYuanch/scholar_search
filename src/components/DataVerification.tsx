@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Database, FileCheck2 } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Clock3, Database, FileCheck2, ShieldCheck } from "lucide-react"
 import type { ScholarProfile } from "@/types"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,9 +9,11 @@ export default function DataVerification({ profile, t }: {
   t: (key: string) => string
 }) {
   const audit = profile.dataAudit
-  if (!audit || !audit.collectedWorks) return null
+  if (!audit) return null
 
-  const verifiedPercent = Math.round(audit.crossrefVerified / audit.collectedWorks * 100)
+  const verifiedPercent = audit.collectedWorks
+    ? Math.round(audit.crossrefVerified / audit.collectedWorks * 100)
+    : 0
   const statusKey = `verification.status_${audit.status}`
   const StatusIcon = audit.status === "sufficient" ? CheckCircle2 : AlertTriangle
   const detail = t("verification.detail")
@@ -32,6 +34,11 @@ export default function DataVerification({ profile, t }: {
     "{count}",
     String(profile.identityAudit?.largeConflictWorks ?? 0),
   )
+  const updatedAt = profile.updatedAt || audit.retrievedAt
+  const updatedLabel = updatedAt && !Number.isNaN(new Date(updatedAt).getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(updatedAt))
+    : "—"
+  const confidence = profile.evidenceReview?.summaryConfidence || "low"
 
   return (
     <Card>
@@ -86,6 +93,23 @@ export default function DataVerification({ profile, t }: {
           {audit.sources.map((source) => <Badge key={source} variant="secondary">{source}</Badge>)}
         </div>
 
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex items-start gap-2 rounded-lg border p-3 text-xs text-muted-foreground">
+            <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div>
+              <p className="font-medium text-foreground">{t("verification.updated_at")}</p>
+              <p className="mt-1">{updatedLabel}</p>
+            </div>
+          </div>
+          <div className="flex items-start gap-2 rounded-lg border p-3 text-xs text-muted-foreground">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div>
+              <p className="font-medium text-foreground">{t("verification.confidence")}</p>
+              <p className="mt-1">{t(`verification.confidence_${confidence}`)}</p>
+            </div>
+          </div>
+        </div>
+
         {(profile.identityAudit?.mergedCount ?? 1) > 1 && (
           <p className="text-xs leading-relaxed text-primary">{identityDetail}</p>
         )}
@@ -109,6 +133,14 @@ export default function DataVerification({ profile, t }: {
             {failureDetail}
           </p>
         )}
+        <div className="rounded-lg border bg-muted/40 p-4">
+          <p className="text-xs font-medium">{t("verification.limitations")}</p>
+          <ul className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
+            <li>· {t("verification.limit_openalex")}</li>
+            <li>· {t("verification.limit_citations")}</li>
+            <li>· {t("verification.limit_identity")}</li>
+          </ul>
+        </div>
       </CardContent>
     </Card>
   )

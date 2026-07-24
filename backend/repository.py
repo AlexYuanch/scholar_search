@@ -59,6 +59,68 @@ def _work_payload(work: dict) -> dict:
     }
 
 
+def _research_change_summary(payload: dict) -> list[dict]:
+    """Return deterministic recent direction changes from the current profile payload."""
+    timeline = payload.get("interestTimeline") or []
+    usable_years = [
+        int(item.get("year"))
+        for item in timeline
+        if item.get("year") is not None and item.get("topics")
+    ]
+    if not usable_years:
+        return []
+    latest_year = max(usable_years)
+    current_start = latest_year - 2
+    previous_start = current_start - 3
+    previous: dict[str, int] = {}
+    current: dict[str, int] = {}
+    for item in timeline:
+        year = int(item.get("year") or 0)
+        target = (
+            current if current_start <= year <= latest_year
+            else previous if previous_start <= year < current_start
+            else None
+        )
+        if target is None:
+            continue
+        for topic in item.get("topics") or []:
+            name = str(topic.get("topic") or "").strip()
+            count = int(topic.get("count") or 0)
+            if name and count > 0:
+                target[name] = target.get(name, 0) + count
+
+    previous_total = sum(previous.values())
+    current_total = sum(current.values())
+    if not current_total:
+        return []
+    changes = []
+    for topic in set(previous) | set(current):
+        previous_count = previous.get(topic, 0)
+        current_count = current.get(topic, 0)
+        previous_share = previous_count / previous_total if previous_total else 0
+        current_share = current_count / current_total
+        delta = current_share - previous_share
+        kind = ""
+        if current_count > 0 and previous_count == 0:
+            kind = "emerging"
+        elif delta >= 0.04 or (delta >= 0.02 and current_share >= previous_share * 1.5):
+            kind = "rising"
+        elif delta <= -0.04 or (delta <= -0.02 and previous_share >= current_share * 1.5):
+            kind = "falling"
+        if kind:
+            changes.append({
+                "topic": topic,
+                "kind": kind,
+                "previous_count": previous_count,
+                "current_count": current_count,
+            })
+    return sorted(
+        changes,
+        key=lambda item: max(item["previous_count"], item["current_count"]),
+        reverse=True,
+    )[:5]
+
+
 class RepositoryNotConfigured(RuntimeError):
     pass
 
@@ -207,6 +269,9 @@ class InMemoryRepository:
             self.favorites[(user_id, author_id)] = row
             return deepcopy(row)
 
+    def is_tracking(self, user_id: str, author_id: str) -> bool:
+        return (user_id, author_id) in self.favorites
+
     def remove_favorite(self, user_id: str, author_id: str) -> None:
         self.favorites.pop((user_id, author_id), None)
 
@@ -222,17 +287,34 @@ class InMemoryRepository:
             current_citations = int(payload.get("totalCitations", 0))
             new_papers = max(0, current_papers - int(row.get("last_seen_total_papers", 0)))
             new_citations = max(0, current_citations - int(row.get("last_seen_total_citations", 0)))
+            current_version = int(profile.get("profile_version", 0))
+            unseen_version = current_version > int(row.get("last_seen_profile_version", 0))
+            research_changes = _research_change_summary(payload) if unseen_version else []
+            latest_job = next(
+                (
+                    job for job in sorted(
+                        self.jobs.values(),
+                        key=lambda item: item.get("scheduled_at", ""),
+                        reverse=True,
+                    )
+                    if job["author_id"] == author_id
+                ),
+                {},
+            )
             row.update({
                 "institution": payload.get("institution", ""),
                 "total_papers": current_papers,
                 "total_citations": current_citations,
                 "h_index": int(payload.get("hIndex", 0)),
                 "updated_at": profile.get("updated_at"),
-                "profile_version": int(profile.get("profile_version", 0)),
+                "profile_version": current_version,
                 "refresh_status": profile.get("refresh_status", "ready"),
+                "refresh_error": latest_job.get("last_error"),
                 "new_papers": new_papers,
                 "new_citations": new_citations,
-                "has_updates": new_papers > 0 or new_citations > 0,
+                "research_changes": research_changes,
+                "has_research_changes": bool(research_changes),
+                "has_updates": new_papers > 0 or new_citations > 0 or bool(research_changes),
             })
             rows.append(row)
         return sorted(rows, key=lambda row: row["created_at"], reverse=True)
@@ -259,6 +341,12 @@ class InMemoryRepository:
             scholar = self._scholar(author_id)
             for job in self.jobs.values():
                 if job["author_id"] == author_id and job["status"] in {"pending", "running"}:
+                    if author_id in self.profiles:
+                        status = (
+                            "updating" if job["status"] == "running" else "queued"
+                        )
+                        self.profiles[author_id]["refresh_status"] = status
+                        self.profiles[author_id]["payload"]["refreshStatus"] = status
                     return job["id"]
             job_id = str(uuid.uuid4())
             self.jobs[job_id] = {
@@ -270,6 +358,9 @@ class InMemoryRepository:
                 "attempts": 0,
                 "scheduled_at": _iso(),
             }
+            if author_id in self.profiles:
+                self.profiles[author_id]["refresh_status"] = "queued"
+                self.profiles[author_id]["payload"]["refreshStatus"] = "queued"
             return job_id
 
     def claim_refresh_job(self) -> dict | None:
@@ -281,6 +372,9 @@ class InMemoryRepository:
             job["status"] = "running"
             job["attempts"] += 1
             job["started_at"] = _iso()
+            if job["author_id"] in self.profiles:
+                self.profiles[job["author_id"]]["refresh_status"] = "updating"
+                self.profiles[job["author_id"]]["payload"]["refreshStatus"] = "updating"
             return deepcopy(job)
 
     def complete_refresh_job(self, job_id: str) -> None:
@@ -289,12 +383,17 @@ class InMemoryRepository:
 
     def fail_refresh_job(self, job_id: str, error: str, retry: bool) -> None:
         with self._lock:
-            self.jobs[job_id].update(
+            job = self.jobs[job_id]
+            job.update(
                 status="pending" if retry else "failed",
                 last_error=error,
                 finished_at=None if retry else _iso(),
-                scheduled_at=_iso(_now() + timedelta(minutes=2 ** self.jobs[job_id]["attempts"])),
+                scheduled_at=_iso(_now() + timedelta(minutes=2 ** job["attempts"])),
             )
+            if job["author_id"] in self.profiles:
+                status = "queued" if retry else "failed"
+                self.profiles[job["author_id"]]["refresh_status"] = status
+                self.profiles[job["author_id"]]["payload"]["refreshStatus"] = status
 
     def create_password_user(self, username: str, password_hash: str) -> dict:
         normalized_username = username.strip().casefold()
@@ -811,6 +910,19 @@ class PostgresRepository:
             self.enqueue_refresh(author_id, "favorite")
         return {"author_id": author_id, "scholar_id": str(row["scholar_id"]), "created_at": _iso(row["created_at"])}
 
+    def is_tracking(self, user_id: str, author_id: str) -> bool:
+        with self.engine.connect() as conn:
+            return bool(conn.execute(text("""
+                select exists (
+                    select 1
+                    from public.favorites f
+                    join public.scholars s on s.id = f.scholar_id
+                    where f.user_id = cast(:user_id as uuid)
+                      and s.source = 'openalex'
+                      and s.source_author_id = :author_id
+                )
+            """), {"user_id": user_id, "author_id": author_id}).scalar_one())
+
     def remove_favorite(self, user_id: str, author_id: str) -> None:
         with self.engine.begin() as conn:
             conn.execute(text("""
@@ -826,11 +938,19 @@ class PostgresRepository:
                        p.payload, p.generated_at as updated_at, f.created_at,
                        ps.version as profile_version, ps.status as refresh_status,
                        f.last_seen_profile_version, f.last_seen_total_papers,
-                       f.last_seen_total_citations, f.last_seen_at
+                       f.last_seen_total_citations, f.last_seen_at,
+                       latest_job.last_error as refresh_error
                 from public.favorites f
                 join public.scholars s on s.id = f.scholar_id
                 left join public.scholar_profiles p on p.scholar_id = s.id
                 left join public.profile_status ps on ps.scholar_id = s.id
+                left join lateral (
+                    select j.last_error
+                    from public.refresh_jobs j
+                    where j.scholar_id = s.id
+                    order by j.updated_at desc
+                    limit 1
+                ) latest_job on true
                 where f.user_id = cast(:user_id as uuid)
                 order by f.created_at desc
             """), {"user_id": user_id}).mappings().all()
@@ -842,15 +962,21 @@ class PostgresRepository:
             current_citations = int(summary.get("total_citations") or 0)
             new_papers = max(0, current_papers - int(row["last_seen_total_papers"] or 0))
             new_citations = max(0, current_citations - int(row["last_seen_total_citations"] or 0))
+            profile_version = int(row["profile_version"] or 0)
+            unseen_version = profile_version > int(row["last_seen_profile_version"] or 0)
+            research_changes = _research_change_summary(row.get("payload") or {}) if unseen_version else []
             result.append(summary | {
                 "created_at": _iso(row["created_at"]),
-                "profile_version": int(row["profile_version"] or 0),
+                "profile_version": profile_version,
                 "refresh_status": row["refresh_status"] or "ready",
+                "refresh_error": row["refresh_error"],
                 "last_seen_profile_version": int(row["last_seen_profile_version"] or 0),
                 "last_seen_at": _iso(row["last_seen_at"]) if row["last_seen_at"] else None,
                 "new_papers": new_papers,
                 "new_citations": new_citations,
-                "has_updates": new_papers > 0 or new_citations > 0,
+                "research_changes": research_changes,
+                "has_research_changes": bool(research_changes),
+                "has_updates": new_papers > 0 or new_citations > 0 or bool(research_changes),
             })
         return result
 
@@ -909,7 +1035,15 @@ class PostgresRepository:
                     order by created_at limit 1
                 """), {"scholar_id": scholar_id}).scalar_one()
             conn.execute(text("""
-                update public.profile_status set status = 'queued', updated_at = now()
+                update public.profile_status
+                set status = case
+                        when exists (
+                            select 1 from public.refresh_jobs
+                            where scholar_id = :scholar_id and status = 'running'
+                        ) then 'updating'
+                        else 'queued'
+                    end,
+                    updated_at = now()
                 where scholar_id = :scholar_id
             """), {"scholar_id": scholar_id})
             return str(job_id)
