@@ -5,9 +5,12 @@ import { useAuth } from "@/auth"
 import type { ScholarProfile } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import type { TimelinePaperFilter } from "@/components/ResearchTimeline"
 
-export default function AllPapers({ profile, t }: {
+export default function AllPapers({ profile, filter, onClearFilter, t }: {
   profile: ScholarProfile
+  filter?: TimelinePaperFilter | null
+  onClearFilter?: () => void
   t: (key: string) => string
 }) {
   const { refreshUser } = useAuth()
@@ -18,6 +21,8 @@ export default function AllPapers({ profile, t }: {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const abortRef = useRef<AbortController | null>(null)
+  const filterYear = filter?.year
+  const filterTopic = filter?.topic
 
   const load = useCallback(async (nextCursor?: string | null, replace = false) => {
     abortRef.current?.abort()
@@ -28,9 +33,14 @@ export default function AllPapers({ profile, t }: {
     if (replace) {
       setPapers([])
       setCursor(null)
+      if (filterYear !== undefined || filterTopic) setTotal(0)
     }
     try {
-      const page = await getAuthorWorks(profile.authorId, nextCursor, sort, { signal: controller.signal })
+      const page = await getAuthorWorks(profile.authorId, nextCursor, sort, {
+        signal: controller.signal,
+        year: filterYear,
+        topic: filterTopic,
+      })
       if (abortRef.current !== controller) return
       setPapers((current) => replace ? page.items : [...current, ...page.items])
       setCursor(page.next_cursor)
@@ -43,7 +53,7 @@ export default function AllPapers({ profile, t }: {
     } finally {
       if (abortRef.current === controller) setLoading(false)
     }
-  }, [profile.authorId, refreshUser, sort])
+  }, [filterTopic, filterYear, profile.authorId, refreshUser, sort])
 
   useEffect(() => {
     void Promise.resolve().then(() => load(null, true))
@@ -52,13 +62,31 @@ export default function AllPapers({ profile, t }: {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">{total} {t("candidate.papers")}</span>
-        <select value={sort} onChange={(event) => setSort(event.target.value as "citations" | "year")}
-          className="h-8 rounded-md border bg-background px-2 text-xs">
-          <option value="citations">{t("papers.sort_citations")}</option>
-          <option value="year">{t("papers.sort_year")}</option>
-        </select>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <span className="text-sm text-muted-foreground">{total} {t("candidate.papers")}</span>
+          {filter && (
+            <p className="mt-1 text-xs font-medium text-primary">
+              {t("papers.filter_prefix")}：{filter.year} · {filter.topic}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {filter && onClearFilter && (
+            <Button variant="ghost" size="sm" onClick={onClearFilter}>
+              {t("papers.clear_filter")}
+            </Button>
+          )}
+          <select
+            value={sort}
+            aria-label={t("papers.sort_label")}
+            onChange={(event) => setSort(event.target.value as "citations" | "year")}
+            className="h-8 rounded-md border bg-background px-2 text-xs"
+          >
+            <option value="citations">{t("papers.sort_citations")}</option>
+            <option value="year">{t("papers.sort_year")}</option>
+          </select>
+        </div>
       </div>
       {papers.map((paper, index) => (
         <Card key={paper.id ?? `${paper.title}-${index}`}>

@@ -69,6 +69,7 @@ export interface ScholarProfile {
     journal: string
     id?: string
     doi?: string
+    topics?: string[]
     sources?: string[]
     verificationStatus?: string
   }>

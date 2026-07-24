@@ -55,13 +55,28 @@ def _state(work_count: int) -> dict:
 def test_publish_paginate_and_refresh_queue_against_postgres():
     repository = PostgresRepository(DATABASE_URL)
     try:
-        first = repository.publish_profile(_state(55), query_name="Test Scholar")
+        initial_state = _state(55)
+        initial_state["topic_clusters"] = [{
+            "topic": "Knowledge graph",
+            "paper_indices": [0],
+        }]
+        first = repository.publish_profile(initial_state, query_name="Test Scholar")
         page = repository.list_works("https://openalex.org/A-CODEX", 50, 0, "citations")
+        filtered_page = repository.list_works(
+            "https://openalex.org/A-CODEX",
+            50,
+            0,
+            "citations",
+            year=2020,
+            topic="Knowledge graph",
+        )
 
         assert first["profile_version"] == 1
         assert first["data_fingerprint"]
         assert page["total"] == 55
         assert len(page["items"]) == 50
+        assert filtered_page["total"] == 1
+        assert filtered_page["items"][0]["topics"] == ["Knowledge graph"]
 
         second = repository.publish_profile(_state(0), query_name="Test Scholar")
         assert second["profile_version"] == 2

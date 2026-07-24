@@ -30,7 +30,7 @@ import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
 import ScholarComparison from "@/components/ScholarComparison"
 import ResearchChanges from "@/components/ResearchChanges"
 import DataVerification from "@/components/DataVerification"
-import ResearchTimeline from "@/components/ResearchTimeline"
+import ResearchTimeline, { type TimelinePaperFilter } from "@/components/ResearchTimeline"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
@@ -221,6 +221,14 @@ function ProfileSection({
   onFullscreenChange?: (fs: boolean) => void
   t: (k: string) => string
 }) {
+  const [paperFilter, setPaperFilter] = useState<TimelinePaperFilter | null>(null)
+  const papersSectionRef = useRef<HTMLDivElement>(null)
+
+  const handleTimelineTopicClick = (filter: TimelinePaperFilter) => {
+    setPaperFilter(filter)
+    papersSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }
+
   return (
     <section className="mx-auto max-w-5xl px-6 py-10">
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
@@ -274,7 +282,7 @@ function ProfileSection({
           </CardContent>
         </Card>
 
-        <ResearchTimeline profile={profile} t={t} />
+        <ResearchTimeline profile={profile} onTopicClick={handleTimelineTopicClick} t={t} />
 
         <ResearchChanges profile={profile} t={t} />
 
@@ -313,15 +321,22 @@ function ProfileSection({
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
-            <CardDescription>{t("papers.pagination_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <AllPapers profile={profile} t={t} />
-          </CardContent>
-        </Card>
+        <div ref={papersSectionRef} className="scroll-mt-20">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
+              <CardDescription>{t("papers.pagination_desc")}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <AllPapers
+                profile={profile}
+                filter={paperFilter}
+                onClearFilter={() => setPaperFilter(null)}
+                t={t}
+              />
+            </CardContent>
+          </Card>
+        </div>
 
         <Card>
           <CardHeader>
@@ -921,6 +936,7 @@ export default function App() {
       {/* 画像 */}
       {profile && (
         <ProfileSection
+          key={profile.authorId}
           profile={profile}
           favorite={Boolean(user) && favorite}
           onToggleFavorite={() => void handleToggleFavorite()}

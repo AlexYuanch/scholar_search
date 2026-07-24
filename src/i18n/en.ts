@@ -85,9 +85,10 @@ const en: Record<string, string> = {
   "section.summary_empty": "Current data is insufficient for a reliable scholar introduction.",
   "section.evidence": "Evidence",
   "timeline.title": "Research Direction Timeline",
-  "timeline.description": "Major paper-linked research directions by publication year",
+  "timeline.description": "Major paper-linked research directions by publication year; select a direction to view its papers",
   "timeline.empty": "No research direction timeline is available.",
   "timeline.evidence": "Evidence: yearly counts of papers associated with fine-grained topics, keywords, and title phrases; counts do not measure research quality.",
+  "timeline.open_papers": "View matching papers",
 
 
   "auth.title": "Account sign in",
@@ -129,6 +130,9 @@ const en: Record<string, string> = {
   "tracking.stop": "Stop Tracking",
   "papers.sort_citations": "Sort by citations",
   "papers.sort_year": "Sort by year",
+  "papers.sort_label": "Paper sort order",
+  "papers.filter_prefix": "Current filter",
+  "papers.clear_filter": "Clear filter",
   "papers.load_more": "Load more",
   "papers.empty": "No papers are available to display.",
   "papers.pagination_desc": "Load every paper for this scholar from the database",

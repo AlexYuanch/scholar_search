@@ -85,9 +85,10 @@ const zh: Record<string, string> = {
   "section.summary_empty": "当前数据不足以形成可靠的学者简介。",
   "section.evidence": "依据",
   "timeline.title": "研究方向时间线",
-  "timeline.description": "按发表年份展示论文关联的主要研究方向",
+  "timeline.description": "按发表年份展示论文关联的主要研究方向；点击方向查看对应论文",
   "timeline.empty": "暂无可用的研究方向时间线。",
   "timeline.evidence": "依据：每年论文与细粒度主题、关键词和标题短语的关联数量；数量表示相关论文数，不代表研究质量。",
+  "timeline.open_papers": "查看对应论文",
 
 
   "auth.title": "账号登录",
@@ -129,6 +130,9 @@ const zh: Record<string, string> = {
   "tracking.stop": "停止追踪",
   "papers.sort_citations": "按引用排序",
   "papers.sort_year": "按年份排序",
+  "papers.sort_label": "论文排序方式",
+  "papers.filter_prefix": "当前筛选",
+  "papers.clear_filter": "清除筛选",
   "papers.load_more": "加载更多",
   "papers.empty": "暂无可展示的论文。",
   "papers.pagination_desc": "从数据库分页加载该学者的全部论文",

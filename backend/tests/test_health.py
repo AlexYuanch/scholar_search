@@ -104,6 +104,51 @@ def test_profile_returns_latest_payload_without_running_graph(monkeypatch, authe
     assert response.json()["data"]["profileVersion"] == 1
 
 
+def test_author_works_filters_timeline_topic_and_year(monkeypatch, authenticated_client):
+    import main
+
+    repository = InMemoryRepository()
+    state = _state()
+    state["deduped_works"] = [
+        {
+            "id": "W1",
+            "title": "Knowledge Graph Construction",
+            "publication_year": 2025,
+            "cited_by_count": 10,
+            "authorships": [{"author": {"id": "A1", "display_name": "Ada Lovelace"}}],
+        },
+        {
+            "id": "W2",
+            "title": "Unrelated Paper",
+            "publication_year": 2025,
+            "cited_by_count": 5,
+            "authorships": [{"author": {"id": "A1", "display_name": "Ada Lovelace"}}],
+        },
+        {
+            "id": "W3",
+            "title": "Earlier Knowledge Graph Study",
+            "publication_year": 2024,
+            "cited_by_count": 7,
+            "authorships": [{"author": {"id": "A1", "display_name": "Ada Lovelace"}}],
+        },
+    ]
+    state["topic_clusters"] = [{
+        "topic": "Knowledge graph",
+        "paper_indices": [0, 2],
+    }]
+    repository.publish_profile(state, query_name="Ada Lovelace")
+    monkeypatch.setattr(main, "repository", repository)
+
+    response = authenticated_client.get(
+        "/api/authors/A1/works?year=2025&topic=Knowledge%20graph"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["id"] for item in response.json()["items"]] == ["W1"]
+    assert response.json()["items"][0]["topics"] == ["Knowledge graph"]
+
+
 def test_stale_profile_is_returned_and_queued_instead_of_blocking(monkeypatch, authenticated_client):
     import main
 

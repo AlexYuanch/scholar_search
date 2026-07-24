@@ -291,10 +291,12 @@ export async function getAuthorWorks(
   authorId: string,
   cursor?: string | null,
   sort: 'citations' | 'year' = 'citations',
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; year?: number; topic?: string } = {},
 ): Promise<WorkPage> {
   const params = new URLSearchParams({ limit: '50', sort })
   if (cursor) params.set('cursor', cursor)
+  if (options.year !== undefined) params.set('year', String(options.year))
+  if (options.topic) params.set('topic', options.topic)
   const response = await fetch(`${API_BASE}/authors/${encodeURIComponent(authorId)}/works?${params}`, {
     credentials: 'include',
     signal: options.signal,

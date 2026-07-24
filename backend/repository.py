@@ -46,7 +46,48 @@ def _data_fingerprint(author_id: str, works: list[dict]) -> str:
     return sha256(encoded).hexdigest()
 
 
-def _work_payload(work: dict) -> dict:
+def _analysis_topics_by_index(state: dict) -> dict[int, list[str]]:
+    topics_by_index: dict[int, list[str]] = {}
+    for cluster in state.get("topic_clusters") or []:
+        topic = str(cluster.get("topic") or "").strip()
+        if not topic:
+            continue
+        for raw_index in cluster.get("paper_indices") or []:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                continue
+            topics = topics_by_index.setdefault(index, [])
+            if topic not in topics:
+                topics.append(topic)
+    return topics_by_index
+
+
+def _normalize_topic(value: Any) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _work_matches_topic(work: dict, topic: str) -> bool:
+    expected = _normalize_topic(topic)
+    if not expected:
+        return True
+    if expected in _normalize_topic(work.get("title")):
+        return True
+    for value in work.get("analysis_topics") or work.get("topics") or []:
+        label = value if isinstance(value, str) else value.get("display_name")
+        if _normalize_topic(label) == expected:
+            return True
+    primary_topic = work.get("primary_topic") or {}
+    if _normalize_topic(primary_topic.get("display_name")) == expected:
+        return True
+    for field in ("keywords", "concepts"):
+        for value in work.get(field) or []:
+            if _normalize_topic(value.get("display_name")) == expected:
+                return True
+    return False
+
+
+def _work_payload(work: dict, analysis_topics: list[str] | None = None) -> dict:
     return {
         "id": work.get("id", ""),
         "title": work.get("title", ""),
@@ -56,6 +97,7 @@ def _work_payload(work: dict) -> dict:
         "doi": work.get("doi", ""),
         "source_records": deepcopy(work.get("source_records") or []),
         "verification_status": work.get("verification_status", ""),
+        "topics": list(analysis_topics or work.get("analysis_topics") or []),
     }
 
 
@@ -205,7 +247,11 @@ class InMemoryRepository:
                 "data_fingerprint": _data_fingerprint(author_id, state.get("deduped_works") or []),
             }
             self.profiles[author_id] = saved
-            works = [_work_payload(work) for work in state.get("deduped_works") or []]
+            analysis_topics = _analysis_topics_by_index(state)
+            works = [
+                _work_payload(work, analysis_topics.get(index))
+                for index, work in enumerate(state.get("deduped_works") or [])
+            ]
             self.works[author_id] = works
             return deepcopy(saved)
 
@@ -228,8 +274,20 @@ class InMemoryRepository:
             scholar = self._scholar(author_id)
             scholar["last_accessed_at"] = _iso()
 
-    def list_works(self, author_id: str, limit: int, offset: int, sort: str) -> dict:
+    def list_works(
+        self,
+        author_id: str,
+        limit: int,
+        offset: int,
+        sort: str,
+        year: int | None = None,
+        topic: str | None = None,
+    ) -> dict:
         items = list(self.works.get(author_id, []))
+        if year is not None:
+            items = [item for item in items if item.get("year") == year]
+        if topic:
+            items = [item for item in items if _work_matches_topic(item, topic)]
         key = "year" if sort == "year" else "citations"
         items.sort(key=lambda item: (item.get(key) or 0, item.get("id", "")), reverse=True)
         return {"items": deepcopy(items[offset:offset + limit]), "total": len(items)}
@@ -647,10 +705,13 @@ class PostgresRepository:
         with self.engine.begin() as conn:
             scholar_id = self._upsert_scholar(conn, profile, author_id)
             work_source_ids: list[str] = []
-            for work in works:
+            analysis_topics = _analysis_topics_by_index(state)
+            for work_index, work in enumerate(works):
                 work_source_id = work.get("id")
                 if not work_source_id:
                     continue
+                stored_work = deepcopy(work)
+                stored_work["analysis_topics"] = analysis_topics.get(work_index, [])
                 work_source_ids.append(work_source_id)
                 work_id = conn.execute(text("""
                     insert into public.works (
@@ -674,7 +735,7 @@ class PostgresRepository:
                     "title": work.get("title") or "",
                     "year": work.get("publication_year"),
                     "citations": work.get("cited_by_count", 0) or 0,
-                    "raw_json": _json(work),
+                    "raw_json": _json(stored_work),
                 }).scalar_one()
                 conn.execute(text("delete from public.authorships where work_id = :work_id"), {"work_id": work_id})
                 for position, authorship in enumerate(work.get("authorships") or []):
@@ -817,15 +878,88 @@ class PostgresRepository:
                 where source = 'openalex' and source_author_id = :author_id
             """), {"author_id": author_id})
 
-    def list_works(self, author_id: str, limit: int, offset: int, sort: str) -> dict:
+    def list_works(
+        self,
+        author_id: str,
+        limit: int,
+        offset: int,
+        sort: str,
+        year: int | None = None,
+        topic: str | None = None,
+    ) -> dict:
         order = "w.publication_year desc nulls last, w.id" if sort == "year" else "w.cited_by_count desc, w.id"
+        filters = [
+            "s.source = 'openalex'",
+            "s.source_author_id = :author_id",
+        ]
+        params: dict[str, Any] = {
+            "author_id": author_id,
+            "limit": limit,
+            "offset": offset,
+        }
+        if year is not None:
+            filters.append("w.publication_year = :year")
+            params["year"] = year
+        if topic:
+            filters.append("""
+                (
+                    position(lower(:topic) in lower(w.title)) > 0
+                    or lower(coalesce(w.raw_json #>> '{primary_topic,display_name}', '')) = lower(:topic)
+                    or exists (
+                        select 1
+                        from jsonb_array_elements_text(
+                            case
+                                when jsonb_typeof(w.raw_json -> 'analysis_topics') = 'array'
+                                then w.raw_json -> 'analysis_topics'
+                                else '[]'::jsonb
+                            end
+                        ) as item(value)
+                        where lower(item.value) = lower(:topic)
+                    )
+                    or exists (
+                        select 1
+                        from jsonb_array_elements(
+                            case
+                                when jsonb_typeof(w.raw_json -> 'topics') = 'array'
+                                then w.raw_json -> 'topics'
+                                else '[]'::jsonb
+                            end
+                        ) as item(value)
+                        where lower(coalesce(item.value ->> 'display_name', '')) = lower(:topic)
+                    )
+                    or exists (
+                        select 1
+                        from jsonb_array_elements(
+                            case
+                                when jsonb_typeof(w.raw_json -> 'keywords') = 'array'
+                                then w.raw_json -> 'keywords'
+                                else '[]'::jsonb
+                            end
+                        ) as item(value)
+                        where lower(coalesce(item.value ->> 'display_name', '')) = lower(:topic)
+                    )
+                    or exists (
+                        select 1
+                        from jsonb_array_elements(
+                            case
+                                when jsonb_typeof(w.raw_json -> 'concepts') = 'array'
+                                then w.raw_json -> 'concepts'
+                                else '[]'::jsonb
+                            end
+                        ) as item(value)
+                        where lower(coalesce(item.value ->> 'display_name', '')) = lower(:topic)
+                    )
+                )
+            """)
+            params["topic"] = topic.strip()
+        where_clause = " and ".join(filters)
         with self.engine.connect() as conn:
-            total = conn.execute(text("""
+            total = conn.execute(text(f"""
                 select count(*) from public.works w
                 join public.authorships a on a.work_id = w.id
                 join public.scholars s on s.id = a.scholar_id
-                where s.source = 'openalex' and s.source_author_id = :author_id
-            """), {"author_id": author_id}).scalar_one()
+                where {where_clause}
+            """), params).scalar_one()
             rows = conn.execute(text(f"""
                 select w.source_work_id as id, w.title, w.publication_year as year,
                        w.cited_by_count as citations, w.doi,
@@ -835,14 +969,15 @@ class PostgresRepository:
                            ''
                        ) as journal,
                        coalesce(w.raw_json -> 'source_records', '[]'::jsonb) as source_records,
-                       coalesce(w.raw_json ->> 'verification_status', '') as verification_status
+                       coalesce(w.raw_json ->> 'verification_status', '') as verification_status,
+                       coalesce(w.raw_json -> 'analysis_topics', '[]'::jsonb) as topics
                 from public.works w
                 join public.authorships a on a.work_id = w.id
                 join public.scholars s on s.id = a.scholar_id
-                where s.source = 'openalex' and s.source_author_id = :author_id
+                where {where_clause}
                 order by {order}
                 limit :limit offset :offset
-            """), {"author_id": author_id, "limit": limit, "offset": offset}).mappings().all()
+            """), params).mappings().all()
         return {"items": [dict(row) for row in rows], "total": total}
 
     def _scholar_summary(self, row: dict) -> dict:

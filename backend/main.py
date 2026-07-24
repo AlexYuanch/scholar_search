@@ -558,10 +558,19 @@ def author_works(
     limit: int = Query(50, ge=1, le=100),
     cursor: str | None = None,
     sort: str = Query("citations", pattern="^(citations|year)$"),
+    year: int | None = Query(None, ge=1800, le=2100),
+    topic: str | None = Query(None, min_length=1, max_length=200),
     _user: AuthUser = Depends(require_user),
 ):
     offset = _decode_cursor(cursor)
-    page = repository.list_works(author_id, limit=limit, offset=offset, sort=sort)
+    page = repository.list_works(
+        author_id,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+        year=year,
+        topic=topic.strip() if topic else None,
+    )
     next_offset = offset + len(page["items"])
     return {
         "items": page["items"],
