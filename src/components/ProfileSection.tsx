@@ -128,10 +128,19 @@ export default function ProfileSection({
               {profile.name}
               <ExternalLink className="mt-1 h-4 w-4 shrink-0" />
             </a>
-            {profile.department && (
-              <p className="break-words text-muted-foreground">{profile.department}</p>
-            )}
-            <p className="break-words text-sm text-muted-foreground">{profile.institution}</p>
+            {profile.affiliationEvidence?.verifiedEmployment ? (
+              <p className="break-words text-sm text-muted-foreground">
+                {[
+                  profile.affiliationEvidence.verifiedEmployment.role,
+                  profile.affiliationEvidence.verifiedEmployment.unit,
+                  profile.affiliationEvidence.verifiedEmployment.institution,
+                ].filter(Boolean).join(lang === "zh" ? "，" : ", ")}
+              </p>
+            ) : profile.institution ? (
+              <p className="break-words text-sm text-muted-foreground">
+                {t("identity.latest_publication_affiliation")}: {profile.institution}
+              </p>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
@@ -284,7 +293,7 @@ export default function ProfileSection({
           </CardContent>
         </Card>
 
-        <DataVerification profile={profile} t={t} />
+        <DataVerification profile={profile} t={t} lang={lang} />
       </div>
     </section>
   )

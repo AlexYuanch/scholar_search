@@ -633,10 +633,13 @@ def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
     assert payload["profileEvidence"] == state["profile_evidence"]
     assert payload["dataAudit"] == state["data_audit"]
     assert payload["evidenceReview"] == state["evidence_review"]
-    assert payload["professionalIdentity"]["researchUnit"] == (
-        "Analytical Engine Research Institute"
-    )
-    assert payload["professionalIdentity"]["academicRole"] is None
+    assert payload["affiliationEvidence"]["publicationAffiliationStatements"][0] == {
+        "text": "Analytical Engine Research Institute, Analytical University",
+        "years": list(range(2059, 1999, -1)),
+    }
+    assert payload["affiliationEvidence"]["verifiedEmployment"] is None
+    assert "professionalIdentity" not in payload
+    assert payload["department"] == ""
     assert payload["coauthors"][0]["id"] == "A1"
     assert len(payload["topCitedPapers"]) == 50
     assert payload["topCitedPapers"][0]["title"] == "Paper 59"

@@ -97,7 +97,7 @@ def test_publish_paginate_and_refresh_queue_against_postgres():
             conn.execute(text("delete from public.scholars where source_author_id like 'https://openalex.org/A-CODEX%'"))
 
 
-def test_cached_profile_identity_is_rebuilt_from_persisted_public_metadata():
+def test_cached_profile_keeps_publication_affiliations_separate_from_employment():
     repository = PostgresRepository(DATABASE_URL)
     unique = os.urandom(6).hex()
     author_id = f"https://openalex.org/A-IDENTITY-{unique}"
@@ -121,19 +121,41 @@ def test_cached_profile_identity_is_rebuilt_from_persisted_public_metadata():
             "Shanghai Research Institute for Intelligent Autonomous Systems, "
             "Tongji University, Shanghai, China"
         ]
-        state["web_payload"].pop("professionalIdentity", None)
+        state["web_payload"].pop("affiliationEvidence", None)
+        state["web_payload"]["professionalIdentity"] = {
+            "currentInstitution": "Tongji University",
+            "researchUnit": (
+                "Shanghai Research Institute for Intelligent Autonomous Systems"
+            ),
+        }
+        state["web_payload"]["department"] = "Incorrect inferred department"
 
         saved = repository.publish_profile(state, query_name="Identity Scholar")
         reloaded = PostgresRepository(DATABASE_URL).get_profile(author_id)
 
-        assert saved["payload"]["professionalIdentity"]["researchUnit"] == (
-            "Shanghai Research Institute for Intelligent Autonomous Systems"
+        assert "professionalIdentity" not in saved["payload"]
+        assert "professionalIdentity" not in reloaded["payload"]
+        assert saved["payload"]["department"] == ""
+        assert reloaded["payload"]["department"] == ""
+        expected_statement = {
+            "text": (
+                "Shanghai Research Institute for Intelligent Autonomous Systems, "
+                "Tongji University, Shanghai, China"
+            ),
+            "years": [2020],
+        }
+        assert (
+            saved["payload"]["affiliationEvidence"]["publicationAffiliationStatements"]
+            == [expected_statement]
         )
-        assert reloaded["payload"]["professionalIdentity"] == (
-            saved["payload"]["professionalIdentity"]
+        assert (
+            reloaded["payload"]["affiliationEvidence"]
+            == saved["payload"]["affiliationEvidence"]
         )
-        assert reloaded["payload"]["professionalIdentity"]["academicRole"] is None
-        assert reloaded["payload"]["professionalIdentity"]["degreeStatus"] is None
+        assert (
+            reloaded["payload"]["affiliationEvidence"]["verifiedEmployment"]
+            is None
+        )
     finally:
         with repository.engine.begin() as conn:
             conn.execute(

@@ -36,7 +36,7 @@ flowchart LR
 
 画像主内容不再按标签页割裂，严格按产品顺序线性渲染：学者简介、当前主要研究方向、研究方向时间线、近期变化、核心指标、代表论文、全部论文、合作网络、数据核验与局限。切换学者时，前端通过 `AbortController` 和请求序号共同取消并忽略旧搜索/画像结果。
 
-`professional_identity.py` 从 OpenAlex 作者 `affiliations` 构造带年份的机构履历，并只在裁决后论文中目标 author ID 的 `raw_affiliation_strings` 提取学院、实验室和研究院。它不从指标或主题推断职称/学位，缺少直接来源时返回空值；前端 `ScholarIntroduction` 只条件渲染非空字段，并按当前语言从结构化指标、方向、代表作和合作者重建简介与依据，因此旧缓存中的中文总结不会污染英文界面。PostgreSQL 旧画像读取时通过规范化 `authorships -> scholars -> works` 关系补全该结构，无需修改历史 migration 或同步重跑工作流。
+`affiliation_evidence.py` 把 OpenAlex 作者 `affiliations` 和目标 author ID 的论文 `raw_affiliation_strings` 保留为独立的“论文关联证据”。该模块不解析或生成任职机构、院系、实验室、职称、学位或培养阶段，并在结构中将 `verifiedEmployment` 保持为空，直到接入独立任职来源。前端只用中性的“OpenAlex 论文关联机构/论文署名原文”展示已有数据；没有独立证据的身份字段直接不渲染，不向用户展示内部推断规则。`ScholarIntroduction` 按当前语言从结构化指标、方向、代表作和合作者重建简介与依据，因此旧缓存中的中文总结不会污染英文界面。PostgreSQL 读取旧画像时主动移除错误的 `professionalIdentity` 字段，再通过规范化 `authorships -> scholars -> works` 关系重建论文关联证据，无需修改历史 migration 或同步重跑工作流。
 
 合作摘要保留 coauthor OpenAlex ID；网络上方姓名按钮和图节点直接调用既有画像加载函数，主学者姓名打开 OpenAlex，合作边仍打开共同论文侧栏。画像主体已从 `App.tsx` 拆为 `ProfileSection` 和 `ScholarIntroduction`，语言组装、身份事实与页面编排分离。
 

@@ -59,7 +59,15 @@ function normalizedTopics(profile: ScholarProfile) {
   return new Map(profile.topics.map((topic) => [topic.trim().toLocaleLowerCase(), topic]))
 }
 
-function ScholarIdentity({ profile, label }: { profile: ScholarProfile; label: string }) {
+function ScholarIdentity({
+  profile,
+  label,
+  t,
+}: {
+  profile: ScholarProfile
+  label: string
+  t: (key: string) => string
+}) {
   return (
     <Card className="min-w-0">
       <CardContent className="flex min-w-0 items-center gap-3 p-4 sm:p-5">
@@ -71,7 +79,11 @@ function ScholarIdentity({ profile, label }: { profile: ScholarProfile; label: s
         <div className="min-w-0">
           <Badge variant="outline" className="mb-1">{label}</Badge>
           <h3 className="break-words font-semibold">{profile.name}</h3>
-          <p className="break-words text-xs text-muted-foreground">{profile.institution || "—"}</p>
+          <p className="break-words text-xs text-muted-foreground">
+            {profile.institution
+              ? `${t("identity.latest_publication_affiliation")}: ${profile.institution}`
+              : "—"}
+          </p>
         </div>
       </CardContent>
     </Card>
@@ -254,8 +266,8 @@ function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: Sch
   return (
     <div className="space-y-6">
       <div className="grid gap-3 md:grid-cols-2">
-        <ScholarIdentity profile={left} label={t("compare.scholar_a")} />
-        <ScholarIdentity profile={right} label={t("compare.scholar_b")} />
+        <ScholarIdentity profile={left} label={t("compare.scholar_a")} t={t} />
+        <ScholarIdentity profile={right} label={t("compare.scholar_b")} t={t} />
       </div>
 
       <Card>

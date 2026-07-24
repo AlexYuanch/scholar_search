@@ -10,7 +10,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
-from professional_identity import build_professional_identity
+from affiliation_evidence import build_affiliation_evidence
 from state import ScholarProfileState
 
 
@@ -1252,12 +1252,12 @@ def format_web_payload(state: ScholarProfileState) -> dict:
     insts = [i.get("display_name", "") for i in (profile.get("last_known_institutions") or [])]
     cs = state["citation_summary"]
     ws = _analysis_works(state)
-    professional_identity = build_professional_identity(
+    affiliation_evidence = build_affiliation_evidence(
         profile,
         ws,
         state.get("target_author_ids") or [state["target_author_id"]],
     )
-    institution_history = professional_identity.get("institutionHistory") or []
+    institution_history = affiliation_evidence.get("openAlexAffiliationHistory") or []
     institution_names = [
         row.get("name", "")
         for row in institution_history
@@ -1292,11 +1292,11 @@ def format_web_payload(state: ScholarProfileState) -> dict:
     payload = {
         "name": profile.get("display_name", ""),
         "authorId": state["target_author_id"],
-        "institution": professional_identity.get("currentInstitution") or (insts[0] if insts else ""),
+        "institution": insts[0] if insts else "",
         "institutions": list(dict.fromkeys(filter(None, institution_names or insts))),
         "orcid": profile.get("orcid"),
-        "department": professional_identity.get("department") or "",
-        "professionalIdentity": professional_identity,
+        "department": "",
+        "affiliationEvidence": affiliation_evidence,
         "totalPapers": cs.get("total_papers", 0),
         "totalCitations": cs.get("total_citations", 0),
         "hIndex": cs.get("h_index", 0),

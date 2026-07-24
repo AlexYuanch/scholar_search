@@ -5,12 +5,13 @@ import { ApiError, getHistory, getTracking, refreshTracking, removeTracking, typ
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import type { Lang } from "@/i18n"
 
-function updateTime(value?: string) {
+function updateTime(value: string | undefined, lang: Lang) {
   if (!value) return "—"
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return "—"
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -123,13 +124,14 @@ export function AuthDialog({ open, required = false, onClose, t }: {
   )
 }
 
-export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, trackingRevision = 0, t }: {
+export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, trackingRevision = 0, t, lang }: {
   mode: "history" | "favorites" | null
   onClose: () => void
   onSelect: (authorId: string, scholarName: string) => void
   onTrackingChange?: (authorId: string, tracked: boolean) => void
   trackingRevision?: number
   t: (key: string) => string
+  lang: Lang
 }) {
   const { refreshUser } = useAuth()
   const [items, setItems] = useState<ScholarListItem[]>([])
@@ -246,7 +248,11 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
                         <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">{t("tracking.new_activity")}</Badge>
                       )}
                     </div>
-                    <p className="break-words text-xs text-muted-foreground">{item.institution}</p>
+                    {item.institution && (
+                      <p className="break-words text-xs text-muted-foreground">
+                        {t("identity.latest_publication_affiliation")}: {item.institution}
+                      </p>
+                    )}
                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       <span>{item.total_papers ?? 0} {t("candidate.papers")}</span>
                       {mode === "favorites" && (item.new_papers ?? 0) > 0 && (
@@ -276,7 +282,7 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
                           )}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {t("tracking.last_updated")} {updateTime(item.updated_at)}
+                          {t("tracking.last_updated")} {updateTime(item.updated_at, lang)}
                         </p>
                         {item.refresh_status === "failed" && item.refresh_error && (
                           <p className="mt-1 break-words text-xs text-destructive">{item.refresh_error}</p>

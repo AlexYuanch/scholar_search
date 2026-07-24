@@ -1,12 +1,14 @@
 import { AlertTriangle, CheckCircle2, Clock3, Database, FileCheck2, ShieldCheck } from "lucide-react"
 import type { ScholarProfile } from "@/types"
+import type { Lang } from "@/i18n"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 
-export default function DataVerification({ profile, t }: {
+export default function DataVerification({ profile, t, lang }: {
   profile: ScholarProfile
   t: (key: string) => string
+  lang: Lang
 }) {
   const audit = profile.dataAudit
   if (!audit) return null
@@ -36,7 +38,10 @@ export default function DataVerification({ profile, t }: {
   )
   const updatedAt = profile.updatedAt || audit.retrievedAt
   const updatedLabel = updatedAt && !Number.isNaN(new Date(updatedAt).getTime())
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(updatedAt))
+    ? new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(updatedAt))
     : "—"
   const confidence = profile.evidenceReview?.summaryConfidence || "low"
 

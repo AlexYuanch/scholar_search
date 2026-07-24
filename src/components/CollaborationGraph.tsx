@@ -108,14 +108,18 @@ export default function CollaborationGraph({
         const weight = weightByNode.get(node.id) ?? 1
         const color = isCenter ? "#2563eb" : heatColor(weight, maxWeight)
         const shortId = node.id.split("/").filter(Boolean).at(-1) ?? node.id
-        const identity = node.institution?.trim() || shortId
-        const displayLabel = isCenter ? node.name : `${node.name} · ${identity}`
+        const publicationAffiliation = node.institution?.trim()
+        const identity = publicationAffiliation || shortId
         return {
           id: node.id,
-          label: displayLabel,
+          label: node.name,
           title: isCenter
             ? `${node.name}\n${t("graph.center_author")}`
-            : `${node.name}\n${identity}\n${weight} ${t("graph.papers_coauthored")}`,
+            : `${node.name}\n${
+                publicationAffiliation
+                  ? `${t("graph.publication_affiliation")}: ${publicationAffiliation}`
+                  : identity
+              }\n${weight} ${t("graph.papers_coauthored")}`,
           shape: isCenter ? "star" : "dot",
           size: isCenter ? 32 : 16 + Math.log2(weight + 1) * 4,
           color: {

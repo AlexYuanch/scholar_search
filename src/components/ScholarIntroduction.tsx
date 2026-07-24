@@ -33,27 +33,15 @@ function citation(id?: string) {
 }
 
 function localizedIntroduction(profile: ScholarProfile, lang: Lang, t: Translate) {
-  const identity = profile.professionalIdentity
-  const institution = identity?.currentInstitution || profile.institution
-  const unit = identity?.researchUnit || identity?.department || identity?.laboratory
-  const role = identity?.academicRole || identity?.degreeStatus
-  const firstSentence = role
-    ? fill(t(unit ? "intro.identity_with_role" : "intro.identity_with_role_only"), {
+  const employment = profile.affiliationEvidence?.verifiedEmployment
+  const firstSentence = employment
+    ? fill(t("intro.verified_employment"), {
         name: profile.name,
-        role,
-        unit: unit || "",
-        institution,
+        details: [employment.role, employment.unit, employment.institution]
+          .filter(Boolean)
+          .join(lang === "zh" ? "，" : ", "),
       })
-    : unit
-      ? fill(t("intro.identity_with_unit"), {
-          name: profile.name,
-          unit,
-          institution,
-        })
-      : fill(t("intro.identity_basic"), {
-          name: profile.name,
-          institution,
-        })
+    : fill(t("intro.publication_profile_only"), { name: profile.name })
 
   const numberFormat = new Intl.NumberFormat(lang === "zh" ? "zh-CN" : "en-US")
   const paragraphs = [
@@ -108,7 +96,6 @@ function localizedEvidence(
   const numberFormat = new Intl.NumberFormat(lang === "zh" ? "zh-CN" : "en-US")
   if (item.type === "metric") {
     return fill(t("evidence.metric"), {
-      institution: profile.professionalIdentity?.currentInstitution || profile.institution,
       papers: numberFormat.format(profile.totalPapers),
       citations: numberFormat.format(profile.totalCitations),
       hindex: numberFormat.format(profile.hIndex),
@@ -170,13 +157,13 @@ export default function ScholarIntroduction({
   lang: Lang
   t: Translate
 }) {
-  const identity = profile.professionalIdentity
-  const currentInstitution = identity?.currentInstitution || profile.institution
-  const currentAffiliation = identity?.currentAffiliationStatements?.[0]
-  const history = identity?.institutionHistory?.length
-    ? identity.institutionHistory
+  const affiliationEvidence = profile.affiliationEvidence
+  const employment = affiliationEvidence?.verifiedEmployment
+  const education = affiliationEvidence?.verifiedEducation || []
+  const history = affiliationEvidence?.openAlexAffiliationHistory?.length
+    ? affiliationEvidence.openAlexAffiliationHistory
     : (profile.institutions || []).map((name) => ({ name, years: [] }))
-  const pastInstitutions = history.filter((item) => item.name !== currentInstitution)
+  const statements = affiliationEvidence?.publicationAffiliationStatements || []
   const paragraphs = localizedIntroduction(profile, lang, t)
   const paperEvidenceIndexById = new Map(
     profile.profileEvidence
@@ -198,52 +185,60 @@ export default function ScholarIntroduction({
         </div>
 
         <dl className="grid gap-3 sm:grid-cols-2">
-          {currentInstitution && (
-            <IdentityField label={t("identity.current_institution")}>
-              {currentInstitution}
-            </IdentityField>
-          )}
-          {currentAffiliation?.text && (
-            <IdentityField label={t("identity.current_affiliation")}>
-              {currentAffiliation.text}
-              {currentAffiliation.years.length > 0 && (
-                <span className="ml-1 text-xs text-muted-foreground">
-                  ({formatYears(currentAffiliation.years)})
-                </span>
+          {employment && (
+            <IdentityField label={t("identity.verified_employment")}>
+              <p>
+                {[employment.role, employment.unit, employment.institution]
+                  .filter(Boolean)
+                  .join(lang === "zh" ? "，" : ", ")}
+              </p>
+              {employment.sourceUrl ? (
+                <a
+                  href={employment.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                >
+                  {employment.sourceLabel}<ExternalLink className="h-3 w-3" />
+                </a>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">{employment.sourceLabel}</p>
               )}
             </IdentityField>
           )}
-          {identity?.researchUnit && (
-            <IdentityField label={t("identity.research_unit")}>
-              {identity.researchUnit}
-            </IdentityField>
-          )}
-          {identity?.department && (
-            <IdentityField label={t("identity.department")}>
-              {identity.department}
-            </IdentityField>
-          )}
-          {identity?.laboratory && (
-            <IdentityField label={t("identity.laboratory")}>
-              {identity.laboratory}
-            </IdentityField>
-          )}
-          {identity?.academicRole && (
-            <IdentityField label={t("identity.academic_role")}>
-              {identity.academicRole}
-            </IdentityField>
-          )}
-          {identity?.degreeStatus && (
-            <IdentityField label={t("identity.degree_status")}>
-              {identity.degreeStatus}
-            </IdentityField>
-          )}
-          {pastInstitutions.length > 0 && (
-            <IdentityField label={t("identity.institution_history")}>
+          {education.length > 0 && (
+            <IdentityField label={t("identity.verified_education")}>
               <ul className="space-y-1">
-                {pastInstitutions.map((item) => (
+                {education.map((item, index) => (
+                  <li key={`${item.institution}-${index}`}>
+                    {[item.degree, item.unit, item.institution].filter(Boolean).join(lang === "zh" ? "，" : ", ")}
+                  </li>
+                ))}
+              </ul>
+            </IdentityField>
+          )}
+          {history.length > 0 && (
+            <IdentityField label={t("identity.openalex_affiliation_history")}>
+              <ul className="space-y-1">
+                {history.map((item) => (
                   <li key={item.name}>
                     {item.name}
+                    {item.years.length > 0 && (
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        ({formatYears(item.years)})
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </IdentityField>
+          )}
+          {statements.length > 0 && (
+            <IdentityField label={t("identity.publication_affiliation_statements")}>
+              <ul className="space-y-1">
+                {statements.slice(0, 5).map((item) => (
+                  <li key={item.text}>
+                    {item.text}
                     {item.years.length > 0 && (
                       <span className="ml-1 text-xs text-muted-foreground">
                         ({formatYears(item.years)})
@@ -257,8 +252,8 @@ export default function ScholarIntroduction({
           {profile.authorId && (
             <IdentityField label={t("identity.public_identifiers")}>
               <div className="flex flex-wrap gap-2">
-                {(identity?.sourceLinks?.length
-                  ? identity.sourceLinks
+                {(affiliationEvidence?.sourceLinks?.length
+                  ? affiliationEvidence.sourceLinks
                   : [
                       { label: "OpenAlex", url: profile.authorId },
                       ...(profile.orcid ? [{ label: "ORCID", url: profile.orcid }] : []),
@@ -278,8 +273,6 @@ export default function ScholarIntroduction({
             </IdentityField>
           )}
         </dl>
-        <p className="text-xs text-muted-foreground">{t("identity.source_note")}</p>
-
         {profile.profileEvidence.length > 0 && (
           <div className="space-y-2 border-t pt-4">
             <h4 className="text-xs font-medium text-muted-foreground">{t("section.evidence")}</h4>

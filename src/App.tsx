@@ -794,6 +794,7 @@ export default function App() {
         }}
         trackingRevision={trackingRevision}
         t={t}
+        lang={lang}
       />
       </div>
       <AuthDialog

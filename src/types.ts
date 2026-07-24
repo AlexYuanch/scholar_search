@@ -4,16 +4,23 @@ export interface EdgePaper {
   topics?: string[]
 }
 
-export interface ProfessionalIdentity {
-  currentInstitution: string
-  institutionHistory: Array<{ name: string; years: number[] }>
-  currentAffiliationStatements: Array<{ text: string; years: number[] }>
-  affiliationStatements: Array<{ text: string; years: number[] }>
-  department?: string | null
-  laboratory?: string | null
-  researchUnit?: string | null
-  academicRole?: string | null
-  degreeStatus?: string | null
+export interface AffiliationEvidence {
+  openAlexAffiliationHistory: Array<{ name: string; years: number[] }>
+  publicationAffiliationStatements: Array<{ text: string; years: number[] }>
+  verifiedEmployment?: {
+    institution: string
+    unit?: string | null
+    role?: string | null
+    sourceLabel: string
+    sourceUrl?: string | null
+  } | null
+  verifiedEducation?: Array<{
+    institution: string
+    unit?: string | null
+    degree?: string | null
+    sourceLabel: string
+    sourceUrl?: string | null
+  }>
   orcid?: string | null
   sourceLinks: Array<{ label: string; url: string }>
   sources: string[]
@@ -60,7 +67,7 @@ export interface ScholarProfile {
   institutions?: string[]
   orcid?: string | null
   department: string
-  professionalIdentity?: ProfessionalIdentity
+  affiliationEvidence?: AffiliationEvidence
   totalPapers: number
   totalCitations: number
   hIndex: number

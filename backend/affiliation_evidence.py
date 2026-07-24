@@ -1,34 +1,7 @@
-"""Build traceable professional-identity details from public scholarly metadata."""
+"""Build publication-affiliation evidence without inferring employment."""
 from __future__ import annotations
 
-import re
-from collections import defaultdict
 from typing import Any, Iterable
-
-
-_DEPARTMENT_MARKERS = (
-    "college of ",
-    "department of ",
-    "faculty of ",
-    "school of ",
-    "学院",
-    "学部",
-    "系",
-)
-_LABORATORY_MARKERS = (
-    "laboratory",
-    " lab ",
-    "key lab",
-    "实验室",
-)
-_RESEARCH_UNIT_MARKERS = (
-    "research institute",
-    "research center",
-    "research centre",
-    "研究院",
-    "研究所",
-    "研究中心",
-)
 
 
 def _clean_text(value: Any) -> str:
@@ -47,7 +20,8 @@ def _years(values: Iterable[Any]) -> list[int]:
     return sorted(years, reverse=True)
 
 
-def _institution_history(author_profile: dict) -> list[dict]:
+def _openalex_affiliation_history(author_profile: dict) -> list[dict]:
+    """Return affiliations OpenAlex derived from the author's publications."""
     by_key: dict[str, dict] = {}
     for affiliation in author_profile.get("affiliations") or []:
         institution = affiliation.get("institution") or {}
@@ -76,10 +50,11 @@ def _institution_history(author_profile: dict) -> list[dict]:
     )
 
 
-def _authorship_statements(
+def _publication_affiliation_statements(
     works: Iterable[dict],
     target_author_ids: set[str],
 ) -> list[dict]:
+    """Collect raw strings only from the target author's work authorships."""
     statements: dict[str, dict] = {}
     for work in works:
         try:
@@ -109,49 +84,16 @@ def _authorship_statements(
     )
 
 
-def _current_statements(statements: list[dict], current_institution: str) -> list[dict]:
-    if not statements:
-        return []
-    latest_year = max(
-        (max(row["years"], default=0) for row in statements),
-        default=0,
-    )
-    latest = [
-        row for row in statements
-        if max(row["years"], default=0) == latest_year
-    ]
-    institution_key = current_institution.casefold()
-    matching = [
-        row for row in latest
-        if institution_key and institution_key in row["text"].casefold()
-    ]
-    return matching or latest
-
-
-def _unit_segment(statements: list[dict], markers: tuple[str, ...]) -> str | None:
-    for row in statements:
-        parts = [
-            _clean_text(part)
-            for part in re.split(r"[,;，；]", row["text"])
-            if _clean_text(part)
-        ]
-        for part in parts:
-            normalized = f" {part.casefold()} "
-            if any(marker in normalized for marker in markers):
-                return part
-    return None
-
-
-def build_professional_identity(
+def build_affiliation_evidence(
     author_profile: dict,
     works: Iterable[dict],
     target_author_ids: Iterable[str],
 ) -> dict:
-    """Return only directly traceable affiliation facts.
+    """Return OpenAlex publication-affiliation evidence with explicit semantics.
 
-    OpenAlex authorship strings can establish organizational units, but they do
-    not establish academic rank or degree status. Those fields intentionally
-    remain null until a dedicated public source supplies them.
+    Publication bylines can help distinguish namesakes. They do not establish
+    current employment, academic rank, degree status, department membership,
+    or laboratory membership, so this function never emits those claims.
     """
     author_ids = {
         _clean_text(author_id)
@@ -162,19 +104,6 @@ def build_professional_identity(
     if primary_author_id:
         author_ids.add(primary_author_id)
 
-    history = _institution_history(author_profile)
-    last_known = author_profile.get("last_known_institutions") or []
-    current_institution = _clean_text(
-        author_profile.get("current_institution")
-        or ((last_known[0] if last_known else {}).get("display_name"))
-        or (history[0]["name"] if history else "")
-    )
-    statements = _authorship_statements(works, author_ids)
-    current_statements = _current_statements(statements, current_institution)
-    department = _unit_segment(current_statements, _DEPARTMENT_MARKERS)
-    laboratory = _unit_segment(current_statements, _LABORATORY_MARKERS)
-    research_unit = _unit_segment(current_statements, _RESEARCH_UNIT_MARKERS)
-
     source_links = []
     if primary_author_id:
         source_links.append({"label": "OpenAlex", "url": primary_author_id})
@@ -183,22 +112,17 @@ def build_professional_identity(
         source_links.append({"label": "ORCID", "url": orcid})
 
     return {
-        "currentInstitution": current_institution,
-        "institutionHistory": history,
-        "currentAffiliationStatements": current_statements,
-        "affiliationStatements": statements,
-        "department": department,
-        "laboratory": laboratory,
-        "researchUnit": research_unit,
-        "academicRole": None,
-        "degreeStatus": None,
+        "openAlexAffiliationHistory": _openalex_affiliation_history(author_profile),
+        "publicationAffiliationStatements": _publication_affiliation_statements(
+            works,
+            author_ids,
+        ),
+        "verifiedEmployment": None,
+        "verifiedEducation": [],
         "orcid": orcid or None,
         "sourceLinks": source_links,
         "sources": [
-            "OpenAlex author affiliations",
-            *(
-                ["OpenAlex publication authorship strings"]
-                if statements else []
-            ),
+            "OpenAlex author publication affiliations",
+            "OpenAlex work authorship affiliation strings",
         ],
     }

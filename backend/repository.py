@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-from professional_identity import build_professional_identity
+from affiliation_evidence import build_affiliation_evidence
 
 
 def _now() -> datetime:
@@ -1098,41 +1098,33 @@ class PostgresRepository:
                 join public.profile_status ps on ps.scholar_id = s.id
                 where s.source = 'openalex' and s.source_author_id = :author_id
             """), {"author_id": author_id}).mappings().first()
-            if row and not (row["payload"] or {}).get("professionalIdentity"):
+            if row:
                 payload = deepcopy(row["payload"] or {})
+                payload.pop("professionalIdentity", None)
+                payload["department"] = ""
                 identity_audit = payload.get("identityAudit") or {}
                 target_author_ids = list(dict.fromkeys(filter(None, [
                     author_id,
                     *(identity_audit.get("mergedAuthorIds") or []),
                 ])))
-                works = [
-                    work
-                    for work in conn.execute(text("""
-                        select distinct on (w.id) w.raw_json
-                        from public.works w
-                        join public.authorships a on a.work_id = w.id
-                        join public.scholars s_author on s_author.id = a.scholar_id
-                        where s_author.source = 'openalex'
-                          and s_author.source_author_id = any(cast(:author_ids as text[]))
-                    """), {"author_ids": target_author_ids}).scalars().all()
-                    if isinstance(work, dict)
-                ]
-                professional_identity = build_professional_identity(
-                    dict(row["author_raw_json"] or {}),
-                    works,
-                    target_author_ids,
-                )
-                payload["professionalIdentity"] = professional_identity
-                payload["department"] = professional_identity.get("department") or ""
-                history_names = [
-                    item.get("name")
-                    for item in professional_identity.get("institutionHistory") or []
-                    if item.get("name")
-                ]
-                if history_names:
-                    payload["institutions"] = history_names
-                if professional_identity.get("currentInstitution"):
-                    payload["institution"] = professional_identity["currentInstitution"]
+                if not payload.get("affiliationEvidence"):
+                    works = [
+                        work
+                        for work in conn.execute(text("""
+                            select distinct on (w.id) w.raw_json
+                            from public.works w
+                            join public.authorships a on a.work_id = w.id
+                            join public.scholars s_author on s_author.id = a.scholar_id
+                            where s_author.source = 'openalex'
+                              and s_author.source_author_id = any(cast(:author_ids as text[]))
+                        """), {"author_ids": target_author_ids}).scalars().all()
+                        if isinstance(work, dict)
+                    ]
+                    payload["affiliationEvidence"] = build_affiliation_evidence(
+                        dict(row["author_raw_json"] or {}),
+                        works,
+                        target_author_ids,
+                    )
                 row = {**dict(row), "payload": payload}
         if not row:
             return None
