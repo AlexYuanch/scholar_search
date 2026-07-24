@@ -105,17 +105,27 @@ def test_worker_uses_requesting_users_encrypted_key_for_search(monkeypatch):
     assert repository.openalex_search_jobs[job_id]["status"] == "succeeded"
 
 
-def test_worker_fails_job_when_requesting_user_removed_key():
+def test_worker_uses_server_key_when_requesting_user_has_no_key(monkeypatch):
+    import worker
+
     repository = InMemoryRepository()
     job_id = repository.enqueue_openalex_search(
         "ada",
         "Ada",
         requested_by_user_id="user-a",
     )
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
 
-    assert process_one_search_job(repository) is False
-    assert repository.openalex_search_jobs[job_id]["status"] == "failed"
-    assert "no OpenAlex credential" in repository.openalex_search_jobs[job_id]["last_error"]
+    def build(_repository, query_text, *, api_key, budget_provider):
+        assert query_text == "Ada"
+        assert api_key == "server-openalex-key"
+        assert budget_provider == "openalex:server"
+        return [{"id": "A1", "name": "Ada"}], True
+
+    monkeypatch.setattr(worker, "build_live_candidate_payload", build)
+
+    assert process_one_search_job(repository) is True
+    assert repository.openalex_search_jobs[job_id]["status"] == "succeeded"
 
 
 def test_profile_worker_decrypts_key_from_persisted_job_owner():
@@ -137,6 +147,26 @@ def test_profile_worker_decrypts_key_from_persisted_job_owner():
         def invoke(self, state):
             assert state["openalex_api_key"] == "owned-openalex-key"
             assert state["openalex_budget_provider"] == "openalex:user:user-a"
+            return super().invoke(state)
+
+    assert process_one_job(repository, CredentialCheckingGraph()) is True
+    assert repository.jobs[job_id]["status"] == "succeeded"
+
+
+def test_profile_worker_prefers_server_key_without_user_credential(monkeypatch):
+    repository = InMemoryRepository()
+    _seed(repository)
+    job_id = repository.enqueue_refresh(
+        "A1",
+        "manual_tracking",
+        requested_by_user_id="user-a",
+    )
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
+
+    class CredentialCheckingGraph(FakeGraph):
+        def invoke(self, state):
+            assert state["openalex_api_key"] == "server-openalex-key"
+            assert state["openalex_budget_provider"] == "openalex:server"
             return super().invoke(state)
 
     assert process_one_job(repository, CredentialCheckingGraph()) is True

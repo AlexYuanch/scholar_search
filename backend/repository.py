@@ -2183,9 +2183,6 @@ class PostgresRepository:
                         from public.user_history h
                         where h.scholar_id = s.id
                     ) candidate
-                    join public.user_api_credentials credential
-                      on credential.user_id = candidate.user_id
-                     and credential.provider = 'openalex'
                     order by candidate.priority, candidate.activity_at desc
                     limit 1
                 ) requester

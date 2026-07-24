@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { Activity, ArrowLeftRight, BookOpen, CalendarRange, ChevronRight, Loader2, Search, Users, X } from "lucide-react"
-import { searchAuthors, streamProfile } from "@/api"
+import { ApiError, searchAuthors, streamProfile } from "@/api"
 import type { Candidate, ScholarProfile } from "@/types"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -411,8 +411,8 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
         setLoading(null)
         setProgress(100)
       },
-      onError: (message) => {
-        setError(message)
+      onError: (_message, kind) => {
+        setError(t(`error.detail.${kind ?? "worker"}`))
         setLoading(null)
       },
     }, { signal: controller.signal, authorIds: candidate.merged_ids })
@@ -441,7 +441,11 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
       }
     } catch (reason: unknown) {
       if (reason instanceof DOMException && reason.name === "AbortError") return
-      setError(reason instanceof Error ? reason.message : t("search.error"))
+      setError(
+        reason instanceof ApiError
+          ? t(`error.detail.${reason.kind}`)
+          : t("search.error"),
+      )
     } finally {
       setLoading((current) => current === "search" ? null : current)
     }

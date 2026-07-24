@@ -159,7 +159,12 @@ export async function streamProfile(
   callbacks: {
     onInit: (stages: string[], labels: Record<string, string>) => void
     onStage: (node: string, status: string, label: string) => void
-    onProgress?: (progress: number, message: string, node?: string) => void
+    onProgress?: (
+      progress: number,
+      message: string,
+      node?: string,
+      messageCode?: string,
+    ) => void
     onResult: (data: ScholarProfile, meta: {
       profileVersion?: number
       refreshStatus?: string
@@ -214,7 +219,9 @@ export async function streamProfile(
           const msg = JSON.parse(line)
           if (msg.type === 'init') onInit(msg.stages, msg.labels)
           else if (msg.type === 'stage') onStage(msg.node, msg.status, msg.label)
-          else if (msg.type === 'progress') onProgress?.(msg.progress, msg.message, msg.node)
+          else if (msg.type === 'progress') {
+            onProgress?.(msg.progress, msg.message, msg.node, msg.message_code)
+          }
           else if (msg.type === 'result') {
             completed = true
             onResult(msg.data, {

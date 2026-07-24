@@ -138,6 +138,11 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [actingOn, setActingOn] = useState("")
+  const localizedError = useCallback((reason: unknown) => (
+    reason instanceof ApiError
+      ? t(`error.detail.${reason.kind}`)
+      : t("error.detail.server")
+  ), [t])
 
   const loadItems = useCallback(async (silent = false) => {
     if (!mode) return
@@ -146,12 +151,12 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
     try {
       setItems(await (mode === "history" ? getHistory() : getTracking()))
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Request failed")
+      setError(localizedError(reason))
       if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [mode, refreshUser])
+  }, [localizedError, mode, refreshUser])
 
   useEffect(() => {
     if (!mode) return
@@ -180,7 +185,7 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
       setItems((current) => current.filter((row) => row.author_id !== item.author_id))
       onTrackingChange?.(item.author_id, false)
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Request failed")
+      setError(localizedError(reason))
       if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
     } finally {
       setActingOn("")
@@ -196,7 +201,7 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
         ? { ...row, refresh_status: result.status ?? "queued", refresh_error: "" }
         : row))
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Request failed")
+      setError(localizedError(reason))
       if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
     } finally {
       setActingOn("")

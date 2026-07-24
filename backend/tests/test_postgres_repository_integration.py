@@ -387,6 +387,51 @@ def test_maintenance_recovers_abandoned_running_job():
             conn.execute(text("delete from public.scholars where source_author_id = :author_id"), {"author_id": author_id})
 
 
+def test_maintenance_queues_tracked_scholar_without_user_openalex_credential():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    author_id = f"https://openalex.org/A-SHARED-KEY-{unique}"
+    username = f"shared-key-{unique}"
+    state = _state(1)
+    state["target_author_id"] = author_id
+    state["target_author_profile"]["id"] = author_id
+    state["deduped_works"][0]["authorships"][0]["author"]["id"] = author_id
+    user = repository.create_password_user(
+        username,
+        hash_password("shared key password"),
+    )
+    try:
+        repository.publish_profile(state, query_name="Shared Key Scholar")
+        repository.add_favorite(user["id"], author_id)
+        with repository.engine.begin() as conn:
+            conn.execute(text("""
+                update public.scholars
+                set last_synced_at = now() - interval '2 days'
+                where source_author_id = :author_id
+            """), {"author_id": author_id})
+
+        result = repository.run_maintenance()
+
+        assert result["enqueued"] >= 1
+        with repository.engine.connect() as conn:
+            requester = conn.execute(text("""
+                select j.requested_by_user_id
+                from public.refresh_jobs j
+                join public.scholars s on s.id = j.scholar_id
+                where s.source_author_id = :author_id
+                  and j.status = 'pending'
+            """), {"author_id": author_id}).scalar_one()
+        assert str(requester) == user["id"]
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text(
+                "delete from public.app_users where normalized_username = :username"
+            ), {"username": username})
+            conn.execute(text(
+                "delete from public.scholars where source_author_id = :author_id"
+            ), {"author_id": author_id})
+
+
 def test_openalex_cache_jobs_and_budget_are_shared_across_repository_instances():
     repository = PostgresRepository(DATABASE_URL)
     unique = os.urandom(6).hex()

@@ -229,11 +229,14 @@ def _openalex_provider(user_id: str) -> str:
 
 
 def _require_openalex_credential(user: AuthUser) -> tuple[str, str]:
+    server_api_key = os.getenv("OPENALEX_API_KEY", "").strip()
+    if server_api_key:
+        return server_api_key, "openalex:server"
     stored = repository.get_user_api_credential(user.id, "openalex")
     if not stored:
         raise HTTPException(
-            status_code=428,
-            detail="请先在 API 设置中添加你的 OpenAlex API key。",
+            status_code=503,
+            detail="学术数据源尚未配置，请联系管理员。",
         )
     try:
         return decrypt_secret(stored["encrypted_secret"]), _openalex_provider(user.id)
@@ -329,7 +332,8 @@ def _run_graph_stream(state, ev_q, result):
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    validate_credential_configuration()
+    if os.getenv("CREDENTIAL_ENCRYPTION_KEY", "").strip():
+        validate_credential_configuration()
     event_broker.start()
     yield
     event_broker.stop()
@@ -620,7 +624,6 @@ def search(
 @app.post("/api/profile")
 def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(require_user)):
     """返回最新画像；过期画像立即返回并在后台排队更新。"""
-    api_key, budget_provider = _require_openalex_credential(user)
     cached = repository.get_profile(req.author_id)
     if cached:
         refresh_status = _queue_stale_profile(req.author_id, cached, user.id)
@@ -639,6 +642,7 @@ def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(requ
             "data": data,
         }
 
+    api_key, budget_provider = _require_openalex_credential(user)
     state = default_state()
     state["target_author_id"] = req.author_id
     state["target_author_ids"] = _requested_author_ids(req, cached)
@@ -688,7 +692,6 @@ def favorites(user: AuthUser = Depends(require_user)):
 @app.post("/api/favorites")
 @app.post("/api/tracking")
 def add_favorite(req: FavoriteRequest, user: AuthUser = Depends(require_user)):
-    _require_openalex_credential(user)
     try:
         return repository.add_favorite(user.id, req.author_id)
     except KeyError as exc:
@@ -764,7 +767,6 @@ async def profile_stream(
     user: AuthUser = Depends(require_user),
 ):
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
-    api_key, budget_provider = _require_openalex_credential(user)
     _consume_api_quota("profile", user, request)
     cached = await asyncio.to_thread(repository.get_profile, req.author_id)
     if cached:
@@ -800,6 +802,7 @@ async def profile_stream(
 
         return StreamingResponse(generate_cached(), media_type="application/x-ndjson")
 
+    api_key, budget_provider = _require_openalex_credential(user)
     state = default_state()
     state["target_author_id"] = req.author_id
     state["target_author_ids"] = _requested_author_ids(req, cached)
@@ -836,6 +839,7 @@ async def profile_stream(
             "type": "progress",
             "progress": progress,
             "message": PROGRESS_MESSAGES[current_node][0],
+            "message_code": current_node,
             "node": current_stage,
         }, ensure_ascii=False) + "\n"
 
@@ -869,6 +873,7 @@ async def profile_stream(
                     "type": "progress",
                     "progress": progress,
                     "message": messages[message_index % len(messages)],
+                    "message_code": current_node,
                     "node": current_stage,
                 }, ensure_ascii=False) + "\n"
                 continue
@@ -894,6 +899,7 @@ async def profile_stream(
                 "type": "progress",
                 "progress": progress,
                 "message": PROGRESS_MESSAGES.get(data, [STAGE_LABELS[current_stage]])[0],
+                "message_code": data,
                 "node": current_stage,
             }, ensure_ascii=False) + "\n"
             message_index = 0
@@ -938,6 +944,7 @@ async def profile_stream(
             "type": "progress",
             "progress": 100,
             "message": "已获取当前最新学者信息。",
+            "message_code": "complete",
         }, ensure_ascii=False) + "\n"
         yield json.dumps({
             "type": "result",

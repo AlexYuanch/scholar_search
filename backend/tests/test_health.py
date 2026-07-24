@@ -111,16 +111,83 @@ def test_openalex_settings_are_encrypted_and_isolated(
     assert repository.get_user_api_credential("test-user", "openalex") is None
 
 
-def test_search_requires_current_users_openalex_key(monkeypatch, authenticated_client):
+def test_search_uses_server_openalex_key_without_user_configuration(
+    monkeypatch,
+    authenticated_client,
+):
     import main
 
     repository = InMemoryRepository()
     monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
+    monkeypatch.setattr(
+        main,
+        "search_authors",
+        lambda _name, *, api_key, budget_provider: (
+            [{"id": "A1", "display_name": "Ada Lovelace"}]
+            if api_key == "server-openalex-key"
+            and budget_provider == "openalex:server"
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "enrich_authors_for_disambiguation",
+        lambda candidates, **_kwargs: candidates,
+    )
 
     response = authenticated_client.get("/api/search?name=Ada")
 
-    assert response.status_code == 428
-    assert response.json()["detail"] == "请先在 API 设置中添加你的 OpenAlex API key。"
+    assert response.status_code == 200
+    assert [candidate["name"] for candidate in response.json()["candidates"]] == [
+        "Ada Lovelace"
+    ]
+
+
+def test_search_reports_missing_platform_data_source_configuration(
+    monkeypatch,
+    authenticated_client,
+):
+    import main
+
+    monkeypatch.setattr(main, "repository", InMemoryRepository())
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+
+    response = authenticated_client.get("/api/search?name=Ada")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "学术数据源尚未配置，请联系管理员。"
+
+
+def test_server_openalex_key_takes_priority_over_saved_user_key(
+    monkeypatch,
+    authenticated_client,
+):
+    import main
+
+    repository = InMemoryRepository()
+    _configure_openalex(repository, api_key="user-openalex-key")
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
+    monkeypatch.setattr(
+        main,
+        "search_authors",
+        lambda _name, *, api_key, budget_provider: (
+            [{"id": "A1", "display_name": f"{api_key}:{budget_provider}"}]
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "enrich_authors_for_disambiguation",
+        lambda candidates, **_kwargs: candidates,
+    )
+
+    response = authenticated_client.get("/api/search?name=Ada")
+
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["name"] == (
+        "server-openalex-key:openalex:server"
+    )
 
 
 def test_production_rejects_api_key_over_public_http(
@@ -361,6 +428,24 @@ def test_profile_stream_returns_cached_profile_without_running_workflow(
     assert '"profile_version": 1' in body
     assert '"name": "Ada Lovelace"' in body
     assert repository.get_profile("A1")["profile_version"] == 1
+
+
+def test_profile_stream_returns_cached_profile_without_any_openalex_key(
+    monkeypatch,
+    authenticated_client,
+):
+    import main
+
+    repository = InMemoryRepository()
+    repository.publish_profile(_state(), query_name="Ada Lovelace")
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+
+    response = authenticated_client.post("/api/profile/stream", json={"author_id": "A1"})
+
+    assert response.status_code == 200
+    assert '"source": "cache"' in response.text
+    assert '"name": "Ada Lovelace"' in response.text
 
 
 def test_mark_favorite_seen_clears_tracking_updates(monkeypatch, authenticated_client):

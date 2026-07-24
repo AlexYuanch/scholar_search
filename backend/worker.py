@@ -104,6 +104,9 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
 
 
 def _job_openalex_credential(repository, job: dict) -> tuple[str, str]:
+    server_api_key = os.getenv("OPENALEX_API_KEY", "").strip()
+    if server_api_key:
+        return server_api_key, "openalex:server"
     user_id = str(job.get("requested_by_user_id") or "")
     if not user_id:
         raise MissingJobCredential("Refresh job has no requesting user")

@@ -44,12 +44,13 @@ def test_compose_auth_uses_secure_server_side_session_defaults():
     assert "AUTH_DEV_RETURN_MAGIC_LINK" not in compose
 
 
-def test_user_api_keys_use_shared_encryption_key_not_server_openalex_key():
+def test_compose_supplies_server_openalex_key_to_web_and_worker():
     compose = COMPOSE.read_text()
     deploy = DEPLOY.read_text()
 
-    assert "OPENALEX_API_KEY" not in compose
+    assert compose.count("OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}") == 2
     assert compose.count("CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-") == 2
+    assert "OPENALEX_API_KEY 不能为空" in deploy
     assert "CREDENTIAL_ENCRYPTION_KEY 必须是 44 字符的 Fernet key" in deploy
     assert "CREDENTIAL_ENCRYPTION_KEY 不能使用开发默认值" in deploy
 

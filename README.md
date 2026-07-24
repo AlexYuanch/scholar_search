@@ -12,12 +12,12 @@
 - 最终总结经过证据审查，论文依据必须能回溯到裁决后的统一论文集；不通过审查的新画像不会发布。
 - 已有画像立即从 PostgreSQL 返回；超过刷新阈值时只向 `refresh_jobs` 幂等排队，由 worker 异步获取 OpenAlex/Crossref 新数据，Web 请求不再同步重复运行完整工作流。
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保留一份最近成功画像用于质量对比和自动更新。
-- 学者搜索使用 PostgreSQL 持久缓存：相同规范化姓名共享结果，冷请求由 `openalex_search_jobs` 合并为一个上游任务，身份指纹单独缓存 30 天；当前用户的 OpenAlex 额度不足或上游限流时，可返回旧缓存或已发布真实学者的本地索引结果。
+- 学者搜索使用 PostgreSQL 持久缓存：相同规范化姓名共享结果，冷请求由 `openalex_search_jobs` 合并为一个上游任务，身份指纹单独缓存 30 天；平台 OpenAlex 免费额度不足或上游限流时，可返回旧缓存或已发布真实学者的本地索引结果。
 - 研究追踪学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
 - 研究追踪记录用户上次看过的论文数、引用数和画像版本；后台发现新增论文、引用或可检测的方向变化后提示，查看最新版后自动清除。
 - 追踪面板展示排队、更新中、成功和失败状态，支持立即检查、重试、查看画像和停止追踪；立即检查只排队，不在 Web 请求中同步运行工作流。
 - 用户自助注册本地账号并使用密码登录；HttpOnly Cookie 会话保护查询、私有历史和研究追踪。
-- 每位登录用户在可见的“API 设置”中绑定自己的 OpenAlex API key；保存前通过 OpenAlex `/rate-limit` 真正校验，数据库只保存 Fernet 密文与末四位提示。搜索、首次画像和后台追踪任务均使用任务所属用户的 key，不再读取服务器共享 OpenAlex key。
+- OpenAlex API key 由平台管理员写入服务器 `.env`，普通用户注册登录后即可查询，无需理解或配置数据源密钥。搜索、首次画像和后台追踪统一使用服务端 key；个人 key 接口仅作为未来 HTTPS 能力保留，当前界面不展示。
 - 搜索与画像生成按账号和来源 IP 限速，避免公开注册用户短时间重复触发外部数据抓取。
 - PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送版本变化，前端自动加载新版画像。
 - Compose 常驻备份服务每天生成 PostgreSQL 自定义格式备份，默认保留 7 天。
@@ -112,7 +112,8 @@ nano .env
 | `COOKIE_SECURE` | `true` | `false` |
 | `POSTGRES_OWNER_PASSWORD` | 新的强密码 | 新的强密码 |
 | `POSTGRES_APP_PASSWORD` | 与上面不同的强密码 | 与上面不同的强密码 |
-| `CREDENTIAL_ENCRYPTION_KEY` | 独立生成的 44 字符 Fernet key | 独立生成的 44 字符 Fernet key |
+| `OPENALEX_API_KEY` | OpenAlex 免费账号 key | OpenAlex 免费账号 key |
+| `CREDENTIAL_ENCRYPTION_KEY` | 启用个人 key 时填写 | 启用个人 key 时填写 |
 
 密码会被拼入数据库连接 URL，当前模板要求使用足够长的字母、数字、下划线和短横线组合。不要在密码中放 `@`、`:`、`/`、`#`、`%` 等未编码 URL 字符。
 
@@ -122,9 +123,9 @@ nano .env
 APP_ENV=production
 ```
 
-本地账号不依赖邮箱、短信或第三方平台。`CREDENTIAL_ENCRYPTION_KEY` 用于加密用户提交的 OpenAlex key，Web 与 worker 必须使用同一个值且生产环境不得更换；可用 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` 生成。`LLM_*` 可留空，系统会使用确定性规则分析。
+本地账号不依赖邮箱、短信或第三方平台。`OPENALEX_API_KEY` 仅保存在服务器 `.env`，Web 与 worker 共用且不得提交到 Git。`CREDENTIAL_ENCRYPTION_KEY` 只在后续通过 HTTPS 开放个人 key 设置时需要，可用 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` 生成。`LLM_*` 可留空，系统会使用确定性规则分析。
 
-公开部署不能把 OpenAlex 当作真正无限上游。默认策略是：每个用户自行在 [OpenAlex API 设置](https://openalex.org/settings/api) 注册并承担自己的额度；普通搜索结果缓存 24 小时、空结果缓存 15 分钟、身份指纹缓存 30 天；并发的同名冷请求只允许一个 Web/worker 实际访问上游，其余请求等待同一 PostgreSQL 任务。上游额度按 `openalex:user:{user_id}` 隔离写入 `upstream_rate_limits`，达到保留线后只阻止该用户的新冷请求。热门学者和已发布画像仍共享事实缓存，但所有查询用户都必须先配置自己的有效 key。
+公开部署不能把 OpenAlex 当作真正无限上游。平台管理员在 [OpenAlex API 设置](https://openalex.org/settings/api) 注册免费 key；普通搜索结果缓存 24 小时、空结果缓存 15 分钟、身份指纹缓存 30 天；并发的同名冷请求只允许一个 Web/worker 实际访问上游，其余请求等待同一 PostgreSQL 任务。额度状态按 `openalex:server` 写入 `upstream_rate_limits`，达到保护线后停止新的上游调用，优先返回旧缓存或已发布学者的本地结果；没有可用事实时提示稍后重试，不自动付费。
 
 ### 3. 启动并验收
 
@@ -204,6 +205,7 @@ npm run db:migrate
 ```bash
 export DATABASE_URL='postgresql://scholar_app:app-dev-only@127.0.0.1:55432/scholar_profile'
 export COOKIE_SECURE=false
+export OPENALEX_API_KEY='你的开发用 OpenAlex key'
 ```
 
 分别启动三个进程：
