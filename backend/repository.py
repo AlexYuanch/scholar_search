@@ -204,6 +204,7 @@ class InMemoryRepository:
         self.openalex_identity_cache: dict[str, dict] = {}
         self.openalex_search_jobs: dict[str, dict] = {}
         self.upstream_rate_limits: dict[str, dict] = {}
+        self.user_api_credentials: dict[tuple[str, str], dict] = {}
 
     def _scholar(self, author_id: str, name: str = "") -> dict:
         if author_id not in self.scholars:
@@ -362,6 +363,7 @@ class InMemoryRepository:
                         reverse=True,
                     )
                     if job["author_id"] == author_id
+                    and job.get("requested_by_user_id") == user_id
                 ),
                 {},
             )
@@ -400,7 +402,12 @@ class InMemoryRepository:
                 row["last_seen_total_citations"] = int(payload.get("totalCitations", 0))
             row["last_seen_at"] = _iso()
 
-    def enqueue_refresh(self, author_id: str, reason: str) -> str:
+    def enqueue_refresh(
+        self,
+        author_id: str,
+        reason: str,
+        requested_by_user_id: str | None = None,
+    ) -> str:
         with self._lock:
             scholar = self._scholar(author_id)
             for job in self.jobs.values():
@@ -418,6 +425,7 @@ class InMemoryRepository:
                 "scholar_id": scholar["id"],
                 "author_id": author_id,
                 "reason": reason,
+                "requested_by_user_id": requested_by_user_id,
                 "status": "pending",
                 "attempts": 0,
                 "scheduled_at": _iso(),
@@ -542,7 +550,12 @@ class InMemoryRepository:
                 "updated_at": _iso(),
             }
 
-    def enqueue_openalex_search(self, query_key: str, query_text: str) -> str:
+    def enqueue_openalex_search(
+        self,
+        query_key: str,
+        query_text: str,
+        requested_by_user_id: str | None = None,
+    ) -> str:
         with self._lock:
             for job in self.openalex_search_jobs.values():
                 if job["query_key"] == query_key and job["status"] in {"pending", "running"}:
@@ -552,6 +565,7 @@ class InMemoryRepository:
                 "id": job_id,
                 "query_key": query_key,
                 "query_text": query_text,
+                "requested_by_user_id": requested_by_user_id,
                 "status": "pending",
                 "attempts": 0,
                 "scheduled_at": _now(),
@@ -639,6 +653,51 @@ class InMemoryRepository:
             ):
                 return None
             return max(1, math.ceil((reset_at - _now()).total_seconds()))
+
+    def save_user_api_credential(
+        self,
+        user_id: str,
+        provider: str,
+        encrypted_secret: str,
+        key_hint: str,
+    ) -> dict:
+        with self._lock:
+            previous = self.user_api_credentials.get((user_id, provider)) or {}
+            row = {
+                "user_id": user_id,
+                "provider": provider,
+                "encrypted_secret": encrypted_secret,
+                "key_hint": key_hint,
+                "validated_at": _iso(),
+                "created_at": previous.get("created_at") or _iso(),
+                "updated_at": _iso(),
+            }
+            self.user_api_credentials[(user_id, provider)] = row
+            return deepcopy(row)
+
+    def get_user_api_credential(self, user_id: str, provider: str) -> dict | None:
+        row = self.user_api_credentials.get((user_id, provider))
+        return deepcopy(row) if row else None
+
+    def delete_user_api_credential(self, user_id: str, provider: str) -> bool:
+        with self._lock:
+            deleted = self.user_api_credentials.pop((user_id, provider), None) is not None
+            for job in [*self.jobs.values(), *self.openalex_search_jobs.values()]:
+                if (
+                    job.get("requested_by_user_id") == user_id
+                    and job.get("status") == "pending"
+                ):
+                    job.update(
+                        status="failed",
+                        last_error=f"{provider} credential removed by user",
+                        finished_at=_iso(),
+                        updated_at=_iso(),
+                    )
+                    author_id = job.get("author_id")
+                    if author_id in self.profiles:
+                        self.profiles[author_id]["refresh_status"] = "failed"
+                        self.profiles[author_id]["payload"]["refreshStatus"] = "failed"
+            return deleted
 
     def create_password_user(self, username: str, password_hash: str) -> dict:
         normalized_username = username.strip().casefold()
@@ -1229,7 +1288,7 @@ class PostgresRepository:
                 raise KeyError("scholar not found")
         cached = self.get_profile(author_id)
         if not cached or not self.is_fresh(cached, max_age_days=1):
-            self.enqueue_refresh(author_id, "favorite")
+            self.enqueue_refresh(author_id, "favorite", requested_by_user_id=user_id)
         return {"author_id": author_id, "scholar_id": str(row["scholar_id"]), "created_at": _iso(row["created_at"])}
 
     def is_tracking(self, user_id: str, author_id: str) -> bool:
@@ -1270,6 +1329,7 @@ class PostgresRepository:
                     select j.last_error
                     from public.refresh_jobs j
                     where j.scholar_id = s.id
+                      and j.requested_by_user_id = cast(:user_id as uuid)
                     order by j.updated_at desc
                     limit 1
                 ) latest_job on true
@@ -1337,7 +1397,12 @@ class PostgresRepository:
                 "profile_version": max(0, profile_version),
             })
 
-    def enqueue_refresh(self, author_id: str, reason: str) -> str:
+    def enqueue_refresh(
+        self,
+        author_id: str,
+        reason: str,
+        requested_by_user_id: str | None = None,
+    ) -> str:
         with self.engine.begin() as conn:
             scholar_id = conn.execute(text("""
                 select id from public.scholars where source = 'openalex' and source_author_id = :author_id
@@ -1345,11 +1410,19 @@ class PostgresRepository:
             if not scholar_id:
                 raise KeyError("scholar not found")
             job_id = conn.execute(text("""
-                insert into public.refresh_jobs (scholar_id, reason, status, scheduled_at)
-                values (:scholar_id, :reason, 'pending', now())
+                insert into public.refresh_jobs (
+                    scholar_id, reason, requested_by_user_id, status, scheduled_at
+                )
+                values (
+                    :scholar_id, :reason, cast(:requested_by_user_id as uuid), 'pending', now()
+                )
                 on conflict do nothing
                 returning id
-            """), {"scholar_id": scholar_id, "reason": reason}).scalar_one_or_none()
+            """), {
+                "scholar_id": scholar_id,
+                "reason": reason,
+                "requested_by_user_id": requested_by_user_id,
+            }).scalar_one_or_none()
             if not job_id:
                 job_id = conn.execute(text("""
                     select id from public.refresh_jobs
@@ -1384,7 +1457,7 @@ class PostgresRepository:
                 from candidate c, public.scholars s
                 where j.id = c.id and s.id = j.scholar_id
                 returning j.id, j.scholar_id, s.source_author_id as author_id,
-                          j.reason, j.attempts, j.status
+                          j.reason, j.attempts, j.status, j.requested_by_user_id
             """
             )).mappings().first()
             if row:
@@ -1568,15 +1641,27 @@ class PostgresRepository:
                 "ttl_seconds": max(1, ttl_seconds),
             })
 
-    def enqueue_openalex_search(self, query_key: str, query_text: str) -> str:
+    def enqueue_openalex_search(
+        self,
+        query_key: str,
+        query_text: str,
+        requested_by_user_id: str | None = None,
+    ) -> str:
         with self.engine.begin() as conn:
             job_id = conn.execute(text("""
                 insert into public.openalex_search_jobs (
-                    query_key, query_text, status, scheduled_at
-                ) values (:query_key, :query_text, 'pending', now())
+                    query_key, query_text, requested_by_user_id, status, scheduled_at
+                ) values (
+                    :query_key, :query_text, cast(:requested_by_user_id as uuid),
+                    'pending', now()
+                )
                 on conflict do nothing
                 returning id
-            """), {"query_key": query_key, "query_text": query_text}).scalar_one_or_none()
+            """), {
+                "query_key": query_key,
+                "query_text": query_text,
+                "requested_by_user_id": requested_by_user_id,
+            }).scalar_one_or_none()
             if not job_id:
                 job_id = conn.execute(text("""
                     select id from public.openalex_search_jobs
@@ -1609,7 +1694,8 @@ class PostgresRepository:
                     updated_at = now()
                 from candidate c
                 where j.id = c.id
-                returning j.id, j.query_key, j.query_text, j.attempts, j.status
+                returning j.id, j.query_key, j.query_text, j.attempts, j.status,
+                          j.requested_by_user_id
             """), {"query_key": query_key}).mappings().first()
         return dict(row) if row else None
 
@@ -1700,6 +1786,86 @@ class PostgresRepository:
                 "min_remaining_credits": max(0, min_remaining_credits),
             }).scalar_one_or_none()
         return int(seconds) if seconds is not None else None
+
+    def save_user_api_credential(
+        self,
+        user_id: str,
+        provider: str,
+        encrypted_secret: str,
+        key_hint: str,
+    ) -> dict:
+        with self.engine.begin() as conn:
+            row = conn.execute(text("""
+                insert into public.user_api_credentials (
+                    user_id, provider, encrypted_secret, key_hint, validated_at
+                ) values (
+                    cast(:user_id as uuid), :provider, :encrypted_secret, :key_hint, now()
+                )
+                on conflict (user_id, provider) do update set
+                    encrypted_secret = excluded.encrypted_secret,
+                    key_hint = excluded.key_hint,
+                    validated_at = now(),
+                    updated_at = now()
+                returning user_id, provider, encrypted_secret, key_hint,
+                          validated_at, created_at, updated_at
+            """), {
+                "user_id": user_id,
+                "provider": provider,
+                "encrypted_secret": encrypted_secret,
+                "key_hint": key_hint,
+            }).mappings().one()
+        return {**dict(row), "user_id": str(row["user_id"])}
+
+    def get_user_api_credential(self, user_id: str, provider: str) -> dict | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(text("""
+                select user_id, provider, encrypted_secret, key_hint,
+                       validated_at, created_at, updated_at
+                from public.user_api_credentials
+                where user_id = cast(:user_id as uuid) and provider = :provider
+            """), {"user_id": user_id, "provider": provider}).mappings().first()
+        return {**dict(row), "user_id": str(row["user_id"])} if row else None
+
+    def delete_user_api_credential(self, user_id: str, provider: str) -> bool:
+        with self.engine.begin() as conn:
+            deleted = conn.execute(text("""
+                delete from public.user_api_credentials
+                where user_id = cast(:user_id as uuid) and provider = :provider
+            """), {"user_id": user_id, "provider": provider}).rowcount > 0
+            error = f"{provider} credential removed by user"
+            conn.execute(text("""
+                update public.refresh_jobs
+                set status = 'failed', last_error = :error,
+                    finished_at = now(), updated_at = now()
+                where requested_by_user_id = cast(:user_id as uuid)
+                  and status = 'pending'
+            """), {"user_id": user_id, "error": error})
+            conn.execute(text("""
+                update public.profile_status ps
+                set status = 'failed', updated_at = now()
+                where exists (
+                    select 1
+                    from public.refresh_jobs j
+                    where j.scholar_id = ps.scholar_id
+                      and j.requested_by_user_id = cast(:user_id as uuid)
+                      and j.status = 'failed'
+                      and j.last_error = :error
+                )
+                  and not exists (
+                    select 1
+                    from public.refresh_jobs active
+                    where active.scholar_id = ps.scholar_id
+                      and active.status in ('pending', 'running')
+                )
+            """), {"user_id": user_id, "error": error})
+            conn.execute(text("""
+                update public.openalex_search_jobs
+                set status = 'failed', last_error = :error,
+                    finished_at = now(), updated_at = now()
+                where requested_by_user_id = cast(:user_id as uuid)
+                  and status = 'pending'
+            """), {"user_id": user_id, "error": error})
+        return deleted
 
     def create_password_user(self, username: str, password_hash: str) -> dict:
         normalized_username = username.strip().casefold()
@@ -1957,13 +2123,32 @@ class PostgresRepository:
             """))
 
             enqueued = conn.execute(text("""
-                insert into public.refresh_jobs (scholar_id, reason, status, scheduled_at)
+                insert into public.refresh_jobs (
+                    scholar_id, reason, requested_by_user_id, status, scheduled_at
+                )
                 select s.id,
                        case when exists (
                            select 1 from public.favorites f where f.scholar_id = s.id
                        ) then 'favorite' else 'recent_access' end,
-                       'pending', now()
+                       requester.user_id, 'pending', now()
                 from public.scholars s
+                cross join lateral (
+                    select candidate.user_id
+                    from (
+                        select f.user_id, 0 as priority, f.created_at as activity_at
+                        from public.favorites f
+                        where f.scholar_id = s.id
+                        union all
+                        select h.user_id, 1 as priority, h.last_viewed_at as activity_at
+                        from public.user_history h
+                        where h.scholar_id = s.id
+                    ) candidate
+                    join public.user_api_credentials credential
+                      on credential.user_id = candidate.user_id
+                     and credential.provider = 'openalex'
+                    order by candidate.priority, candidate.activity_at desc
+                    limit 1
+                ) requester
                 where s.last_synced_at is not null
                   and (
                     (exists (select 1 from public.favorites f where f.scholar_id = s.id)

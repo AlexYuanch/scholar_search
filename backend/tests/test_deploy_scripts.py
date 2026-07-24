@@ -30,6 +30,8 @@ def test_aliyun_bootstrap_does_not_commit_host_specific_or_untrusted_registry_va
     assert "docker.1ms.run" not in script
     assert "dockerproxy" not in script
     assert 'openssl rand -hex 24' in script
+    assert "set_env CREDENTIAL_ENCRYPTION_KEY" in script
+    assert "openssl rand -base64 32" in script
 
 
 def test_compose_auth_uses_secure_server_side_session_defaults():
@@ -42,12 +44,14 @@ def test_compose_auth_uses_secure_server_side_session_defaults():
     assert "AUTH_DEV_RETURN_MAGIC_LINK" not in compose
 
 
-def test_openalex_api_key_is_required_for_deploy_and_passed_to_runtime():
+def test_user_api_keys_use_shared_encryption_key_not_server_openalex_key():
     compose = COMPOSE.read_text()
     deploy = DEPLOY.read_text()
 
-    assert compose.count("OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}") == 2
-    assert "OPENALEX_API_KEY 不能为空" in deploy
+    assert "OPENALEX_API_KEY" not in compose
+    assert compose.count("CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-") == 2
+    assert "CREDENTIAL_ENCRYPTION_KEY 必须是 44 字符的 Fernet key" in deploy
+    assert "CREDENTIAL_ENCRYPTION_KEY 不能使用开发默认值" in deploy
 
 
 def test_production_deploy_rejects_loopback_public_url():

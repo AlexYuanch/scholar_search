@@ -13,6 +13,7 @@ from auth import (
     require_user,
     verify_password,
 )
+from credentials import encrypt_secret
 from main import app
 from repository import InMemoryRepository
 
@@ -237,10 +238,16 @@ def test_search_rate_limit_returns_friendly_error(monkeypatch):
         hash_token(raw_session),
         datetime.now(timezone.utc) + timedelta(days=1),
     )
+    repository.save_user_api_credential(
+        user["id"],
+        "openalex",
+        encrypt_secret("test-openalex-key"),
+        "••••-key",
+    )
     monkeypatch.setattr(main, "repository", repository)
     monkeypatch.setattr(app.state, "repository", repository)
     monkeypatch.setattr(main, "SEARCH_RATE_LIMIT_PER_USER", 1)
-    monkeypatch.setattr(main, "search_authors", lambda _name: [])
+    monkeypatch.setattr(main, "search_authors", lambda _name, **_kwargs: [])
 
     client = TestClient(app)
     client.cookies.set("scholar_session", raw_session)

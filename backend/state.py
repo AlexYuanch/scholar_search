@@ -46,6 +46,8 @@ class ScholarProfileState(TypedDict):
     web_payload: Dict[str, Any]
 
     # ── 运行信息 ──
+    openalex_api_key: str
+    openalex_budget_provider: str
     warnings: Annotated[List[str], operator.add]
     errors: List[str]
 
@@ -76,6 +78,8 @@ def default_state() -> Dict[str, Any]:
         "analysis_claims": [],
         "evidence_review": {},
         "web_payload": {},
+        "openalex_api_key": "",
+        "openalex_budget_provider": "",
         "warnings": [],
         "errors": [],
     }

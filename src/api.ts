@@ -9,6 +9,7 @@ export type ApiErrorKind =
   | 'timeout'
   | 'rate_limit'
   | 'auth'
+  | 'api_key'
   | 'not_found'
   | 'worker'
   | 'server'
@@ -29,6 +30,7 @@ export class ApiError extends Error {
 
 function responseKind(status: number): ApiErrorKind {
   if (status === 401) return 'auth'
+  if (status === 428) return 'api_key'
   if (status === 404) return 'not_found'
   if (status === 429) return 'rate_limit'
   return 'server'
@@ -85,6 +87,20 @@ export interface WorkPage {
   items: ScholarProfile['topCitedPapers']
   total: number
   next_cursor: string | null
+}
+
+export interface OpenAlexSettings {
+  configured: boolean
+  key_hint: string | null
+  validated_at: string | null
+  updated_at: string | null
+  usage?: {
+    daily_budget_usd?: number | null
+    daily_used_usd?: number | null
+    daily_remaining_usd?: number | null
+    prepaid_remaining_usd?: number | null
+    resets_at?: string | null
+  }
 }
 
 export async function searchAuthors(name: string, options: { signal?: AbortSignal } = {}): Promise<Candidate[]> {
@@ -250,6 +266,23 @@ async function authenticatedFetch(path: string, init: RequestInit = {}) {
     if (error instanceof TypeError) throw new ApiError(error.message || 'Network request failed', 'network')
     throw error
   }
+}
+
+export async function getOpenAlexSettings(): Promise<OpenAlexSettings> {
+  const response = await authenticatedFetch('/settings/openalex')
+  return response.json()
+}
+
+export async function saveOpenAlexSettings(apiKey: string): Promise<OpenAlexSettings> {
+  const response = await authenticatedFetch('/settings/openalex', {
+    method: 'PUT',
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+  return response.json()
+}
+
+export async function deleteOpenAlexSettings(): Promise<void> {
+  await authenticatedFetch('/settings/openalex', { method: 'DELETE' })
 }
 
 export async function getHistory(): Promise<ScholarListItem[]> {

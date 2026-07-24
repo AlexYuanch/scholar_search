@@ -42,7 +42,11 @@ def test_get_retries_retryable_status(monkeypatch):
     monkeypatch.setattr(openalex, "_SESSION", session)
     monkeypatch.setattr(openalex.time, "sleep", lambda _seconds: None)
 
-    data = openalex._get("/authors")
+    data = openalex._get(
+        "/authors",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
 
     assert data == {"results": [{"id": "A1"}]}
     assert session.calls == 2
@@ -58,7 +62,11 @@ def test_get_preserves_upstream_rate_limit_metadata(monkeypatch):
     monkeypatch.setattr(openalex.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(openalex.OpenAlexError) as captured:
-        openalex._get("/authors")
+        openalex._get(
+            "/authors",
+            api_key="test-key",
+            budget_provider="openalex:user:test",
+        )
 
     assert captured.value.status_code == 429
     assert captured.value.retry_after == "17"
@@ -70,10 +78,14 @@ def test_get_sends_configured_api_key_without_exposing_it(monkeypatch):
     session = FakeSession([requests.ConnectionError("must-not-leak")])
     monkeypatch.setattr(openalex, "_SESSION", session)
     monkeypatch.setattr(openalex, "MAX_RETRIES", 1)
-    monkeypatch.setattr(openalex, "OPENALEX_API_KEY", "test-secret-key")
 
     with pytest.raises(openalex.OpenAlexError) as captured:
-        openalex._get("/authors", per_page=1)
+        openalex._get(
+            "/authors",
+            api_key="test-secret-key",
+            budget_provider="openalex:user:test",
+            per_page=1,
+        )
 
     assert session.requests[0][1]["params"]["api_key"] == "test-secret-key"
     assert "test-secret-key" not in str(captured.value)
@@ -92,15 +104,23 @@ def test_get_reports_rate_limit_headers(monkeypatch):
     snapshots = []
     monkeypatch.setattr(openalex, "_SESSION", FakeSession([response]))
     monkeypatch.setattr(openalex, "_BUDGET_GUARD", None)
-    monkeypatch.setattr(openalex, "_BUDGET_REPORTER", snapshots.append)
+    monkeypatch.setattr(
+        openalex,
+        "_BUDGET_REPORTER",
+        lambda provider, snapshot: snapshots.append((provider, snapshot)),
+    )
 
-    openalex._get("/authors")
+    openalex._get(
+        "/authors",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
 
-    assert snapshots == [{
+    assert snapshots == [("openalex:user:test", {
         "limit_credits": 100000,
         "remaining_credits": 99990,
         "reset_after_seconds": 3600,
-    }]
+    })]
 
 
 def test_get_honors_shared_budget_guard_without_network_request(monkeypatch):
@@ -108,10 +128,14 @@ def test_get_honors_shared_budget_guard_without_network_request(monkeypatch):
 
     session = FakeSession([FakeResponse(200, {"results": []})])
     monkeypatch.setattr(openalex, "_SESSION", session)
-    monkeypatch.setattr(openalex, "_BUDGET_GUARD", lambda: 120)
+    monkeypatch.setattr(openalex, "_BUDGET_GUARD", lambda _provider: 120)
 
     with pytest.raises(openalex.OpenAlexError) as captured:
-        openalex._get("/authors")
+        openalex._get(
+            "/authors",
+            api_key="test-key",
+            budget_provider="openalex:user:test",
+        )
 
     assert captured.value.status_code == 429
     assert captured.value.retry_after == "120"
@@ -129,7 +153,11 @@ def test_get_does_not_reuse_stale_status_after_network_failure(monkeypatch):
     monkeypatch.setattr(openalex.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(openalex.OpenAlexError) as captured:
-        openalex._get("/authors")
+        openalex._get(
+            "/authors",
+            api_key="test-key",
+            budget_provider="openalex:user:test",
+        )
 
     assert captured.value.status_code is None
     assert captured.value.retry_after is None
@@ -150,7 +178,11 @@ def test_get_works_returns_partial_results_with_warning(monkeypatch):
     monkeypatch.setattr(openalex, "_SESSION", session)
     monkeypatch.setattr(openalex.time, "sleep", lambda _seconds: None)
 
-    works, warnings = openalex.get_works("A1")
+    works, warnings = openalex.get_works(
+        "A1",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
 
     assert works == [{"id": "W1", "title": "First"}]
     assert warnings
@@ -198,7 +230,11 @@ def test_search_authors_combines_variants_and_deduplicates_by_id(monkeypatch):
 
     monkeypatch.setattr(openalex, "_get", fake_get)
 
-    authors = openalex.search_authors("陈丽娜")
+    authors = openalex.search_authors(
+        "陈丽娜",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
 
     assert [author["id"] for author in authors] == ["A3", "A1", "A2"]
 
@@ -228,7 +264,11 @@ def test_author_identity_fingerprint_uses_works_coauthors_and_topics(monkeypatch
         ]
     })
 
-    fingerprint = openalex.get_author_identity_fingerprint("A1")
+    fingerprint = openalex.get_author_identity_fingerprint(
+        "A1",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
 
     assert fingerprint["work_ids"] == ["W2", "https://doi.org/10.1000/one"]
     assert fingerprint["coauthor_ids"] == ["C1", "C2"]

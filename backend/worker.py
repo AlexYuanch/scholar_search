@@ -5,6 +5,11 @@ import logging
 import os
 import time
 
+from credentials import (
+    CredentialConfigurationError,
+    CredentialDecryptionError,
+    decrypt_secret,
+)
 from openalex import configure_budget_control
 from quality import assess_profile_quality
 from repository import create_repository
@@ -20,13 +25,29 @@ from workflow import graph
 logger = logging.getLogger(__name__)
 
 
+class MissingJobCredential(RuntimeError):
+    pass
+
+
 def process_one_search_job(
     repository,
-    builder=build_live_candidate_payload,
+    builder=None,
 ) -> bool:
     job = repository.claim_openalex_search_job()
     if not job:
         return False
+    if builder is None:
+        try:
+            api_key, budget_provider = _job_openalex_credential(repository, job)
+        except MissingJobCredential as exc:
+            repository.fail_openalex_search_job(str(job["id"]), str(exc), retry=False)
+            return False
+        builder = lambda repo, query: build_live_candidate_payload(
+            repo,
+            query,
+            api_key=api_key,
+            budget_provider=budget_provider,
+        )
     try:
         run_claimed_search_job(repository, job, builder)
         return True
@@ -43,8 +64,16 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
     author_id = job["author_id"]
     cached = repository.get_profile(author_id)
     try:
+        if job.get("requested_by_user_id"):
+            api_key, budget_provider = _job_openalex_credential(repository, job)
+        elif workflow_graph is graph:
+            raise MissingJobCredential("Refresh job has no requesting user")
+        else:
+            api_key, budget_provider = "", ""
         state = default_state()
         state["target_author_id"] = author_id
+        state["openalex_api_key"] = api_key
+        state["openalex_budget_provider"] = budget_provider
         state["target_author_ids"] = list(dict.fromkeys([
             author_id,
             *(
@@ -65,20 +94,42 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
         )
         repository.complete_refresh_job(job_id)
         return True
+    except MissingJobCredential as exc:
+        repository.fail_refresh_job(job_id, str(exc), retry=False)
+        return False
     except Exception as exc:
         retry = int(job.get("attempts", 1)) < 3
         repository.fail_refresh_job(job_id, str(exc), retry=retry)
         return False
 
 
+def _job_openalex_credential(repository, job: dict) -> tuple[str, str]:
+    user_id = str(job.get("requested_by_user_id") or "")
+    if not user_id:
+        raise MissingJobCredential("Refresh job has no requesting user")
+    stored = repository.get_user_api_credential(user_id, "openalex")
+    if not stored:
+        raise MissingJobCredential("Requesting user has no OpenAlex credential")
+    try:
+        api_key = decrypt_secret(stored["encrypted_secret"])
+    except (CredentialConfigurationError, CredentialDecryptionError) as exc:
+        raise MissingJobCredential(
+            "Requesting user's OpenAlex credential cannot be decrypted"
+        ) from exc
+    return api_key, f"openalex:user:{user_id}"
+
+
 def run_forever() -> None:
     repository = create_repository()
     configure_budget_control(
-        lambda: repository.get_upstream_retry_after(
-            "openalex",
+        lambda provider: repository.get_upstream_retry_after(
+            provider,
             OPENALEX_MIN_REMAINING_CREDITS,
         ),
-        lambda snapshot: repository.record_upstream_rate_limit("openalex", **snapshot),
+        lambda provider, snapshot: repository.record_upstream_rate_limit(
+            provider,
+            **snapshot,
+        ),
     )
     poll_seconds = float(os.getenv("WORKER_POLL_SECONDS", "3"))
     maintenance_seconds = float(os.getenv("WORKER_MAINTENANCE_SECONDS", "3600"))

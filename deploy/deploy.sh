@@ -29,7 +29,7 @@ CORS_ALLOWED_ORIGINS=$(env_value CORS_ALLOWED_ORIGINS)
 COOKIE_SECURE=$(env_value COOKIE_SECURE)
 OWNER_PASSWORD=$(env_value POSTGRES_OWNER_PASSWORD)
 APP_PASSWORD=$(env_value POSTGRES_APP_PASSWORD)
-OPENALEX_API_KEY=$(env_value OPENALEX_API_KEY)
+CREDENTIAL_ENCRYPTION_KEY=$(env_value CREDENTIAL_ENCRYPTION_KEY)
 
 if [ -z "$PUBLIC_HOST" ] || [ -z "$PUBLIC_APP_URL" ]; then
     echo "PUBLIC_HOST 和 PUBLIC_APP_URL 不能为空。" >&2
@@ -64,8 +64,13 @@ if [ "$OWNER_PASSWORD" = "$APP_PASSWORD" ]; then
     exit 1
 fi
 
-if [ -z "$OPENALEX_API_KEY" ]; then
-    echo "OPENALEX_API_KEY 不能为空；请从 openalex.org/settings/api 获取免费 key。" >&2
+if [ -z "$CREDENTIAL_ENCRYPTION_KEY" ] || [ "${#CREDENTIAL_ENCRYPTION_KEY}" -ne 44 ]; then
+    echo "CREDENTIAL_ENCRYPTION_KEY 必须是 44 字符的 Fernet key。" >&2
+    exit 1
+fi
+
+if [ "$CREDENTIAL_ENCRYPTION_KEY" = "KpR3gIpJbT8J76mKjJf0k0ZnmuwFh89fV4E7LMA5GVQ=" ]; then
+    echo "CREDENTIAL_ENCRYPTION_KEY 不能使用开发默认值。" >&2
     exit 1
 fi
 

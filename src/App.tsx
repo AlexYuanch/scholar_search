@@ -2,7 +2,7 @@ import { Suspense, lazy, useState, useEffect, useCallback, useRef, type Componen
 import {
   Search, BookOpen, Quote, BarChart3, Users,
   ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe, ExternalLink,
-  Heart, History, LogIn, LogOut, ArrowLeftRight, RefreshCw,
+  Heart, History, LogIn, LogOut, ArrowLeftRight, RefreshCw, KeyRound,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,6 +15,7 @@ import {
   ApiError,
   addTracking,
   getProfile,
+  getOpenAlexSettings,
   getTracking,
   markTrackingSeen,
   profileEventsUrl,
@@ -22,6 +23,7 @@ import {
   searchAuthors,
   streamProfile,
   type ApiErrorKind,
+  type OpenAlexSettings,
 } from "./api"
 import { useAuth } from "./auth"
 import SidePanel from "@/components/SidePanel"
@@ -31,6 +33,7 @@ import ScholarComparison from "@/components/ScholarComparison"
 import ResearchChanges from "@/components/ResearchChanges"
 import DataVerification from "@/components/DataVerification"
 import ResearchTimeline, { type TimelinePaperFilter } from "@/components/ResearchTimeline"
+import OpenAlexSettingsDialog from "@/components/OpenAlexSettingsDialog"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
@@ -394,6 +397,8 @@ export default function App() {
   const [noResults, setNoResults] = useState(false)
   const [searched, setSearched] = useState(false)
   const [authDialogOpen, setAuthDialogOpen] = useState(false)
+  const [apiSettingsOpen, setApiSettingsOpen] = useState(false)
+  const [openAlexSettings, setOpenAlexSettings] = useState<OpenAlexSettings | null>(null)
   const [accountMode, setAccountMode] = useState<"history" | "favorites" | null>(null)
   const [favorite, setFavorite] = useState(false)
   const [liveUpdateMessage, setLiveUpdateMessage] = useState("")
@@ -412,7 +417,25 @@ export default function App() {
     setError(message)
     setErrorKind(kind)
     if (kind === "auth") void refreshUser()
+    if (kind === "api_key") setApiSettingsOpen(true)
   }, [refreshUser])
+
+  useEffect(() => {
+    if (!user) return
+    let active = true
+    void getOpenAlexSettings()
+      .then((settings) => {
+        if (!active) return
+        setOpenAlexSettings(settings)
+        if (!settings.configured) setApiSettingsOpen(true)
+      })
+      .catch((reason: unknown) => {
+        if (active && reason instanceof ApiError && reason.kind === "auth") {
+          void refreshUser()
+        }
+      })
+    return () => { active = false }
+  }, [refreshUser, user])
 
   // 主题状态
   const [dark, setDark] = useState(() => localStorage.getItem("dark") === "true")
@@ -573,6 +596,10 @@ export default function App() {
       setAuthDialogOpen(true)
       return
     }
+    if (!openAlexSettings?.configured) {
+      setApiSettingsOpen(true)
+      return
+    }
     try {
       if (favorite) await removeTracking(profile.authorId)
       else await addTracking(profile.authorId)
@@ -584,12 +611,16 @@ export default function App() {
         reason instanceof ApiError ? reason.kind : "server",
       )
     }
-  }, [favorite, profile, reportError, t, user])
+  }, [favorite, openAlexSettings?.configured, profile, reportError, t, user])
 
   // 搜索
   const handleSearch = useCallback(async () => {
     if (!user) {
       setAuthDialogOpen(true)
+      return
+    }
+    if (!openAlexSettings?.configured) {
+      setApiSettingsOpen(true)
       return
     }
     const q = query.trim()
@@ -628,7 +659,7 @@ export default function App() {
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [query, reportError, t, user])
+  }, [openAlexSettings?.configured, query, reportError, t, user])
 
   // 图谱交互
   const handleEdgeClick = useCallback((data: {
@@ -754,6 +785,23 @@ export default function App() {
                   variant="ghost"
                   size="sm"
                   className="h-8 gap-1 px-2 text-xs"
+                  title={t("api_key.nav")}
+                  aria-label={t("api_key.nav")}
+                  onClick={() => setApiSettingsOpen(true)}
+                >
+                  <KeyRound className="h-4 w-4" />
+                  <span>{t("api_key.nav")}</span>
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      openAlexSettings?.configured ? "bg-emerald-500" : "bg-amber-500"
+                    }`}
+                    aria-hidden="true"
+                  />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1 px-2 text-xs"
                   title={t("account.history")}
                   aria-label={t("account.history")}
                   onClick={() => openAccountPanel("history")}
@@ -774,6 +822,8 @@ export default function App() {
                 </Button>
                 <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => {
                   setFavorite(false)
+                  setOpenAlexSettings(null)
+                  setApiSettingsOpen(false)
                   void signOut()
                 }}>
                   <LogOut className="h-3.5 w-3.5" /><span className="hidden md:inline">{t("auth.sign_out")}</span>
@@ -828,6 +878,16 @@ export default function App() {
               {loading ? t("search.loading") : t("search.button")}
             </Button>
           </div>
+          {user && openAlexSettings && !openAlexSettings.configured && (
+            <button
+              type="button"
+              onClick={() => setApiSettingsOpen(true)}
+              className="mx-auto mt-4 flex max-w-xl items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-left text-sm text-amber-800 hover:bg-amber-500/15 dark:text-amber-200"
+            >
+              <KeyRound className="h-4 w-4 shrink-0" />
+              <span><strong>{t("api_key.required_title")}</strong> {t("api_key.required_desc")}</span>
+            </button>
+          )}
         </div>
       </section>
 
@@ -843,9 +903,11 @@ export default function App() {
               </div>
               <Button variant="outline" size="sm" className="ml-auto" onClick={() => {
                 if (errorKind === "auth") setAuthDialogOpen(true)
+                else if (errorKind === "api_key") setApiSettingsOpen(true)
                 else void handleSearch()
               }}>
-                <RefreshCw className="h-3.5 w-3.5" />{t(errorKind === "auth" ? "auth.sign_in" : "error.retry")}
+                {errorKind === "api_key" ? <KeyRound className="h-3.5 w-3.5" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                {t(errorKind === "auth" ? "auth.sign_in" : errorKind === "api_key" ? "api_key.open_settings" : "error.retry")}
               </Button>
             </CardContent>
           </Card>
@@ -988,6 +1050,18 @@ export default function App() {
         open={authDialogOpen || (!authLoading && !user)}
         required={!user}
         onClose={() => setAuthDialogOpen(false)}
+        t={t}
+      />
+      <OpenAlexSettingsDialog
+        open={apiSettingsOpen && Boolean(user)}
+        onClose={() => setApiSettingsOpen(false)}
+        onChange={(settings) => {
+          setOpenAlexSettings(settings)
+          if (settings.configured) {
+            setError((current) => errorKind === "api_key" ? null : current)
+            setErrorKind((current) => current === "api_key" ? null : current)
+          }
+        }}
         t={t}
       />
     </div>

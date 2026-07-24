@@ -5,8 +5,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from auth import AuthUser, require_user
+from credentials import encrypt_secret
 from main import app
 from repository import InMemoryRepository
+
+
+def _configure_openalex(repository, user_id="test-user", api_key="test-openalex-key"):
+    repository.save_user_api_credential(
+        user_id,
+        "openalex",
+        encrypt_secret(api_key),
+        f"••••{api_key[-4:]}",
+    )
 
 
 def _state(author_id="A1", name="Ada Lovelace"):
@@ -44,10 +54,101 @@ def test_health_returns_ok():
     assert response.json() == {"status": "ok"}
 
 
+def test_openalex_settings_require_authentication():
+    assert TestClient(app).get("/api/settings/openalex").status_code == 401
+    assert TestClient(app).put(
+        "/api/settings/openalex",
+        json={"api_key": "test-openalex-key"},
+    ).status_code == 401
+
+
+def test_openalex_settings_are_encrypted_and_isolated(
+    monkeypatch,
+    authenticated_client,
+):
+    import main
+    from credentials import decrypt_secret
+
+    repository = InMemoryRepository()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(
+        main,
+        "validate_openalex_api_key",
+        lambda key, budget_provider: {
+            "daily_remaining_usd": 0.75,
+            "validated_for": budget_provider,
+            "key_length": len(key),
+        },
+    )
+    api_key = "user-owned-openalex-secret"
+
+    saved = authenticated_client.put(
+        "/api/settings/openalex",
+        json={"api_key": api_key},
+    )
+    stored = repository.get_user_api_credential("test-user", "openalex")
+
+    assert saved.status_code == 200
+    assert api_key not in saved.text
+    assert stored["encrypted_secret"] != api_key
+    assert api_key not in stored["encrypted_secret"]
+    assert decrypt_secret(stored["encrypted_secret"]) == api_key
+    assert saved.json()["key_hint"] == "••••cret"
+
+    app.dependency_overrides[require_user] = lambda: AuthUser(
+        id="other-user",
+        username="other",
+    )
+    assert authenticated_client.get("/api/settings/openalex").json()["configured"] is False
+    assert authenticated_client.delete("/api/settings/openalex").status_code == 200
+    assert repository.get_user_api_credential("test-user", "openalex") is not None
+
+    app.dependency_overrides[require_user] = lambda: AuthUser(
+        id="test-user",
+        username="tester",
+    )
+    assert authenticated_client.delete("/api/settings/openalex").status_code == 200
+    assert repository.get_user_api_credential("test-user", "openalex") is None
+
+
+def test_search_requires_current_users_openalex_key(monkeypatch, authenticated_client):
+    import main
+
+    repository = InMemoryRepository()
+    monkeypatch.setattr(main, "repository", repository)
+
+    response = authenticated_client.get("/api/search?name=Ada")
+
+    assert response.status_code == 428
+    assert response.json()["detail"] == "请先在 API 设置中添加你的 OpenAlex API key。"
+
+
+def test_production_rejects_api_key_over_public_http(
+    monkeypatch,
+    authenticated_client,
+):
+    import main
+
+    repository = InMemoryRepository()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setenv("APP_ENV", "production")
+
+    response = authenticated_client.put(
+        "/api/settings/openalex",
+        json={"api_key": "test-openalex-key"},
+        headers={"host": "203.0.113.10"},
+    )
+
+    assert response.status_code == 426
+    assert repository.get_user_api_credential("test-user", "openalex") is None
+
+
 def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticated_client):
     import main
 
-    monkeypatch.setattr(main, "repository", InMemoryRepository())
+    repository = InMemoryRepository()
+    _configure_openalex(repository)
+    monkeypatch.setattr(main, "repository", repository)
     author = {
         "id": "A1",
         "display_name": "Ada Lovelace",
@@ -66,8 +167,12 @@ def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticate
             "topic_ids": ["T1"],
         },
     }
-    monkeypatch.setattr(main, "search_authors", lambda _name: [author])
-    monkeypatch.setattr(main, "enrich_authors_for_disambiguation", lambda candidates: candidates)
+    monkeypatch.setattr(main, "search_authors", lambda _name, **_kwargs: [author])
+    monkeypatch.setattr(
+        main,
+        "enrich_authors_for_disambiguation",
+        lambda candidates, **_kwargs: candidates,
+    )
 
     response = authenticated_client.get("/api/search?name=Ada")
     candidate = response.json()["candidates"][0]
@@ -93,9 +198,11 @@ def test_search_maps_openalex_rate_limit_to_retryable_response(monkeypatch, auth
     import main
     from openalex import OpenAlexError
 
-    monkeypatch.setattr(main, "repository", InMemoryRepository())
+    repository = InMemoryRepository()
+    _configure_openalex(repository)
+    monkeypatch.setattr(main, "repository", repository)
 
-    def rate_limited(_name):
+    def rate_limited(_name, **_kwargs):
         raise OpenAlexError("upstream rejected request", status_code=429, retry_after="17")
 
     monkeypatch.setattr(main, "search_authors", rate_limited)
@@ -113,9 +220,11 @@ def test_search_maps_other_openalex_failures_without_leaking_details(
     import main
     from openalex import OpenAlexError
 
-    monkeypatch.setattr(main, "repository", InMemoryRepository())
+    repository = InMemoryRepository()
+    _configure_openalex(repository)
+    monkeypatch.setattr(main, "repository", repository)
 
-    def unavailable(_name):
+    def unavailable(_name, **_kwargs):
         raise OpenAlexError("secret upstream URL", status_code=503)
 
     monkeypatch.setattr(main, "search_authors", unavailable)
@@ -131,6 +240,7 @@ def test_profile_returns_latest_payload_without_running_graph(monkeypatch, authe
     import main
 
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     repository.publish_profile(_state(), query_name="Ada Lovelace")
 
     def fail_invoke(_state):
@@ -151,6 +261,7 @@ def test_author_works_filters_timeline_topic_and_year(monkeypatch, authenticated
     import main
 
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     state = _state()
     state["deduped_works"] = [
         {
@@ -196,6 +307,7 @@ def test_stale_profile_is_returned_and_queued_instead_of_blocking(monkeypatch, a
     import main
 
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     repository.publish_profile(_state(), query_name="Ada Lovelace")
     repository.profiles["A1"]["updated_at"] = (
         datetime.now(timezone.utc) - timedelta(days=8)
@@ -213,6 +325,7 @@ def test_cold_profile_publishes_valid_workflow_result(monkeypatch, authenticated
     import main
 
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     monkeypatch.setattr(main, "repository", repository)
     monkeypatch.setattr(main.graph, "invoke", lambda _input: _state())
 
@@ -229,6 +342,7 @@ def test_profile_stream_returns_cached_profile_without_running_workflow(
     import main
 
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     repository.publish_profile(_state(), query_name="Ada Lovelace")
     monkeypatch.setattr(main, "repository", repository)
 
@@ -253,6 +367,7 @@ def test_mark_favorite_seen_clears_tracking_updates(monkeypatch, authenticated_c
     import main
 
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     repository.publish_profile(_state(), query_name="Ada Lovelace")
     repository.add_favorite("test-user", "A1")
     updated = _state()
@@ -274,6 +389,7 @@ def test_tracking_routes_add_list_and_remove_for_current_user(monkeypatch, authe
     import main
 
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     repository.publish_profile(_state(), query_name="Ada Lovelace")
     monkeypatch.setattr(main, "repository", repository)
 
@@ -314,6 +430,7 @@ def test_tracking_refresh_deduplicates_active_jobs(monkeypatch, authenticated_cl
 
     author_id = "https://openalex.org/A1"
     repository = InMemoryRepository()
+    _configure_openalex(repository)
     repository.publish_profile(_state(author_id=author_id), query_name="Ada Lovelace")
     repository.add_favorite("test-user", author_id)
     monkeypatch.setattr(main, "repository", repository)
@@ -336,7 +453,9 @@ def test_profile_stream_reports_workflow_error(monkeypatch, authenticated_client
         def stream(self, _state, stream_mode="values"):
             raise RuntimeError("workflow exploded")
 
-    monkeypatch.setattr(main, "repository", InMemoryRepository())
+    repository = InMemoryRepository()
+    _configure_openalex(repository)
+    monkeypatch.setattr(main, "repository", repository)
     monkeypatch.setattr(main, "graph", BrokenGraph())
 
     response = authenticated_client.post("/api/profile/stream", json={"author_id": "A1"})

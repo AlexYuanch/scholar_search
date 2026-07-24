@@ -221,11 +221,26 @@ def fetch_author_profile(state: ScholarProfileState) -> dict:
     from openalex import enrich_authors_for_disambiguation, get_author
 
     primary_id = state["target_author_id"]
+    api_key = state["openalex_api_key"]
+    budget_provider = state["openalex_budget_provider"]
     requested_ids = list(dict.fromkeys([primary_id, *(state.get("target_author_ids") or [])]))[:8]
-    profiles = [get_author(author_id) for author_id in requested_ids]
+    profiles = [
+        get_author(
+            author_id,
+            api_key=api_key,
+            budget_provider=budget_provider,
+        )
+        for author_id in requested_ids
+    ]
     valid_ids = [primary_id]
     if len(profiles) > 1:
-        groups = dedup_authors(enrich_authors_for_disambiguation(profiles))
+        groups = dedup_authors(
+            enrich_authors_for_disambiguation(
+                profiles,
+                api_key=api_key,
+                budget_provider=budget_provider,
+            )
+        )
         selected = next(
             (group for group in groups if primary_id in (group.get("merged_ids") or [])),
             None,
@@ -369,10 +384,20 @@ def collect_works(state: ScholarProfileState) -> dict:
     warnings = []
     works_complete = True
     primary_id = state["target_author_id"]
+    api_key = state["openalex_api_key"]
+    budget_provider = state["openalex_budget_provider"]
     author_ids = state.get("target_author_ids") or [primary_id]
     works = []
     with ThreadPoolExecutor(max_workers=min(6, len(author_ids))) as executor:
-        futures = {executor.submit(get_works, author_id): author_id for author_id in author_ids}
+        futures = {
+            executor.submit(
+                get_works,
+                author_id,
+                api_key=api_key,
+                budget_provider=budget_provider,
+            ): author_id
+            for author_id in author_ids
+        }
         for future in as_completed(futures):
             author_id = futures[future]
             try:

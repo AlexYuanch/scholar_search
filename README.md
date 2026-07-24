@@ -12,11 +12,12 @@
 - 最终总结经过证据审查，论文依据必须能回溯到裁决后的统一论文集；不通过审查的新画像不会发布。
 - 已有画像立即从 PostgreSQL 返回；超过刷新阈值时只向 `refresh_jobs` 幂等排队，由 worker 异步获取 OpenAlex/Crossref 新数据，Web 请求不再同步重复运行完整工作流。
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保留一份最近成功画像用于质量对比和自动更新。
-- 学者搜索使用 PostgreSQL 持久缓存：相同规范化姓名共享结果，冷请求由 `openalex_search_jobs` 合并为一个上游任务，身份指纹单独缓存 30 天；OpenAlex 限流或共享额度不足时可返回旧缓存或已发布真实学者的本地索引结果。
+- 学者搜索使用 PostgreSQL 持久缓存：相同规范化姓名共享结果，冷请求由 `openalex_search_jobs` 合并为一个上游任务，身份指纹单独缓存 30 天；当前用户的 OpenAlex 额度不足或上游限流时，可返回旧缓存或已发布真实学者的本地索引结果。
 - 研究追踪学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
 - 研究追踪记录用户上次看过的论文数、引用数和画像版本；后台发现新增论文、引用或可检测的方向变化后提示，查看最新版后自动清除。
 - 追踪面板展示排队、更新中、成功和失败状态，支持立即检查、重试、查看画像和停止追踪；立即检查只排队，不在 Web 请求中同步运行工作流。
 - 用户自助注册本地账号并使用密码登录；HttpOnly Cookie 会话保护查询、私有历史和研究追踪。
+- 每位登录用户在可见的“API 设置”中绑定自己的 OpenAlex API key；保存前通过 OpenAlex `/rate-limit` 真正校验，数据库只保存 Fernet 密文与末四位提示。搜索、首次画像和后台追踪任务均使用任务所属用户的 key，不再读取服务器共享 OpenAlex key。
 - 搜索与画像生成按账号和来源 IP 限速，避免公开注册用户短时间重复触发外部数据抓取。
 - PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送版本变化，前端自动加载新版画像。
 - Compose 常驻备份服务每天生成 PostgreSQL 自定义格式备份，默认保留 7 天。
@@ -67,7 +68,7 @@ DOCKER_REGISTRY_MIRROR='https://你的专属地址.mirror.aliyuncs.com' \
 - 从阿里云 Docker CE 软件源安装 Docker Engine、Buildx 和 Compose plugin。
 - 在系统没有 Swap 时创建 2 GiB `/swapfile`，降低 1.6 GiB 内存首次构建 OOM 风险。
 - 合并写入 Docker `registry-mirrors`，顺序预拉取所有基础镜像；任一镜像不可用时在数据库创建前停止。
-- 自动生成两个随机 PostgreSQL 密码，配置公网 IP + HTTP、生产安全开关和较小连接池。
+- 自动生成两个随机 PostgreSQL 密码和独立 Fernet 凭据加密 key，配置公网 IP + HTTP、生产安全开关和较小连接池。
 - 把备份放在项目同级的 `/opt/scholar-profile-backups`，由 Compose 常驻服务按日备份。
 - 构建、迁移、启动全部服务并验证本机健康接口。
 
@@ -109,7 +110,7 @@ nano .env
 | `COOKIE_SECURE` | `true` | `false` |
 | `POSTGRES_OWNER_PASSWORD` | 新的强密码 | 新的强密码 |
 | `POSTGRES_APP_PASSWORD` | 与上面不同的强密码 | 与上面不同的强密码 |
-| `OPENALEX_API_KEY` | OpenAlex 免费 API key | OpenAlex 免费 API key |
+| `CREDENTIAL_ENCRYPTION_KEY` | 独立生成的 44 字符 Fernet key | 独立生成的 44 字符 Fernet key |
 
 密码会被拼入数据库连接 URL，当前模板要求使用足够长的字母、数字、下划线和短横线组合。不要在密码中放 `@`、`:`、`/`、`#`、`%` 等未编码 URL 字符。
 
@@ -119,9 +120,9 @@ nano .env
 APP_ENV=production
 ```
 
-本地账号不依赖邮箱、短信或第三方平台。`OPENALEX_API_KEY` 用于 OpenAlex 的正常每日额度，可从 `openalex.org/settings/api` 免费获取；未配置时只能使用极小的匿名额度。`LLM_*` 可留空，系统会使用确定性规则分析。
+本地账号不依赖邮箱、短信或第三方平台。`CREDENTIAL_ENCRYPTION_KEY` 用于加密用户提交的 OpenAlex key，Web 与 worker 必须使用同一个值且生产环境不得更换；可用 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` 生成。`LLM_*` 可留空，系统会使用确定性规则分析。
 
-公开部署不能把 OpenAlex 当作无限上游。默认策略是：普通搜索结果缓存 24 小时、空结果缓存 15 分钟、身份指纹缓存 30 天；并发的同名冷请求只允许一个 Web/worker 实际访问上游，其余请求等待同一 PostgreSQL 任务；上游响应中的共享剩余额度和恢复时间写入 `upstream_rate_limits`，达到 `OPENALEX_MIN_REMAINING_CREDITS` 保留线后停止新的冷搜索。热门学者和已发布画像不消耗新的搜索额度，未见过的新学者仍受 OpenAlex 每日额度限制。各 TTL、等待时间和额度保留线都可通过 `.env.example` 中的 `OPENALEX_*` 项调整。
+公开部署不能把 OpenAlex 当作真正无限上游。默认策略是：每个用户自行在 [OpenAlex API 设置](https://openalex.org/settings/api) 注册并承担自己的额度；普通搜索结果缓存 24 小时、空结果缓存 15 分钟、身份指纹缓存 30 天；并发的同名冷请求只允许一个 Web/worker 实际访问上游，其余请求等待同一 PostgreSQL 任务。上游额度按 `openalex:user:{user_id}` 隔离写入 `upstream_rate_limits`，达到保留线后只阻止该用户的新冷请求。热门学者和已发布画像仍共享事实缓存，但所有查询用户都必须先配置自己的有效 key。
 
 ### 3. 启动并验收
 
@@ -140,7 +141,9 @@ docker compose ps
 docker compose logs --tail=200 web worker gateway
 ```
 
-部署完成后，用户可直接在登录弹窗切换到“注册账号”。用户名为 3–64 位，只允许字母、数字、点、下划线和短横线；密码至少 12 位。注册按来源 IP 限制为每小时最多 10 次，并在成功后自动登录。
+部署完成后，用户可直接在登录弹窗切换到“注册账号”。用户名为 3–64 位，只允许字母、数字、点、下划线和短横线；密码至少 12 位。注册按来源 IP 限制为每小时最多 10 次，并在成功后自动登录。首次登录会打开“API 设置”；用户从 OpenAlex 注册页复制自己的 key，系统验证成功后才允许搜索、生成画像和创建刷新任务。完整 key 不写入浏览器存储，也不会由任何读取接口返回。
+
+生产环境的 key 提交接口强制 HTTPS；公网 IP + HTTP 模式只能用于不填写真实 key 的界面/部署验收。要正式开放 ScholarSearch，必须先绑定域名、启用 Caddy HTTPS 并设置 `COOKIE_SECURE=true`。
 
 服务器管理员仍可使用以下运维命令创建账号、查看账号或重置密码：
 
@@ -226,7 +229,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 - 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`authorships`
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
 - 上游搜索缓存与保护：`openalex_search_cache`、`openalex_identity_cache`、`openalex_search_jobs`、`upstream_rate_limits`
-- 用户与会话：`app_users`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`
+- 用户与会话：`app_users`、`user_api_credentials`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`
 
 数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
 
@@ -243,6 +246,9 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
 | `GET /api/auth/me` | 可匿名 | 查询当前会话 |
 | `POST /api/auth/logout` | 可匿名 | 注销当前会话 |
+| `GET /api/settings/openalex` | 必须登录 | 返回当前用户是否已配置、末四位提示和验证时间；不返回 key |
+| `PUT /api/settings/openalex` | 必须登录 | 通过 OpenAlex `/rate-limit` 验证后加密保存当前用户 key |
+| `DELETE /api/settings/openalex` | 必须登录 | 删除当前用户 key，并终止由其拥有的待处理任务 |
 | `GET /api/history` | 必须登录 | 当前用户历史 |
 | `GET/POST/DELETE /api/tracking...` | 必须登录 | 当前用户研究追踪、查看基线与停止追踪 |
 | `POST /api/tracking/seen` | 必须登录 | 标记当前画像版本已查看 |
@@ -260,7 +266,7 @@ npm run build
 npm run test:db
 ```
 
-`npm test` 使用受控工作流与 in-memory Repository 做快速回归。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、分页、会话、跨用户追踪隔离、搜索缓存持久性与任务去重、重建 Repository 后的数据持久性，以及真实 Worker 入口对数据库搜索/画像任务的领取、发布和完成状态。外部 OpenAlex/Crossref 全链路另以手动真实数据验收，数据库测试中的受控工作流输出不冒充外部数据验证。
+`npm test` 使用受控工作流与 in-memory Repository 做快速回归，并覆盖 key 加密、缺 key 错误、接口越权和 worker 解密。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、分页、会话、跨用户追踪与凭据隔离、搜索缓存持久性与任务去重、重建 Repository 后的数据持久性，以及真实 Worker 入口对数据库搜索/画像任务的领取、发布和完成状态。外部 OpenAlex/Crossref 全链路另以手动真实数据验收，数据库测试中的受控工作流输出不冒充外部数据验证。
 
 ## 备份
 
@@ -276,7 +282,7 @@ docker compose exec backup backup-postgres
 
 ## 单机容量增长后的拆分
 
-当前版本针对单台 ECS 直接启动优化。多个 Web 与 worker 实例可共享 PostgreSQL 缓存、额度状态和 `FOR UPDATE SKIP LOCKED` 队列，不需要 Redis。数据量或并发增长后，可把 PostgreSQL 迁到同 VPC 的 RDS PostgreSQL，把数据库 URL 改为 RDS 私网地址，并水平扩展 Web/worker；迁移账号只在发布阶段使用。若要覆盖近乎无限的不同姓名冷查询，仍需要购买足够的 OpenAlex 额度或部署其公开数据快照，本实现不把第三方 API 包装成无限资源。
+当前版本针对单台 ECS 直接启动优化。多个 Web 与 worker 实例可共享 PostgreSQL 缓存、按用户隔离的额度状态和 `FOR UPDATE SKIP LOCKED` 队列，不需要 Redis。数据量或并发增长后，可把 PostgreSQL 迁到同 VPC 的 RDS PostgreSQL，把数据库 URL 改为 RDS 私网地址，并水平扩展 Web/worker；迁移账号只在发布阶段使用。BYOK 把冷查询成本分配给发起用户，但仍不等于无限：单个用户超过 OpenAlex 免费/付费额度会收到 429；若要覆盖近乎无限的不同姓名冷查询，仍需用户购买额度或另行部署 OpenAlex 数据快照。
 
 ## 目录结构
 

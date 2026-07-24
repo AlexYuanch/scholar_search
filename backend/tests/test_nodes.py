@@ -257,7 +257,11 @@ def test_collect_works_marks_complete_fetch_for_quality_gate(monkeypatch):
     state = default_state()
     state["target_author_id"] = "A0"
     state["target_author_profile"] = {"works_count": 1}
-    monkeypatch.setattr(openalex, "get_works", lambda _author_id: ([{"id": "W1"}], []))
+    monkeypatch.setattr(
+        openalex,
+        "get_works",
+        lambda _author_id, **_kwargs: ([{"id": "W1"}], []),
+    )
 
     result = collect_works(state)
 
@@ -275,7 +279,7 @@ def test_collect_works_marks_partial_fetch_for_quality_gate(monkeypatch):
     monkeypatch.setattr(
         openalex,
         "get_works",
-        lambda _author_id: ([{"id": "W1"}], ["OpenAlex partial fetch"]),
+        lambda _author_id, **_kwargs: ([{"id": "W1"}], ["OpenAlex partial fetch"]),
     )
 
     result = collect_works(state)
@@ -311,8 +315,8 @@ def test_fetch_profile_and_collect_works_join_merged_author_ids(monkeypatch):
         "A1": ([{"id": "W1", "authorships": [{"author": {"id": "A1", "display_name": "Haofen Wang"}}]}], []),
         "A2": ([{"id": "W2", "authorships": [{"author": {"id": "A2", "display_name": "HaoFen Wang"}}]}], []),
     }
-    monkeypatch.setattr(openalex, "get_author", lambda author_id: profiles[author_id])
-    monkeypatch.setattr(openalex, "get_works", lambda author_id: works[author_id])
+    monkeypatch.setattr(openalex, "get_author", lambda author_id, **_kwargs: profiles[author_id])
+    monkeypatch.setattr(openalex, "get_works", lambda author_id, **_kwargs: works[author_id])
 
     state = default_state()
     state["target_author_id"] = "A1"
@@ -350,7 +354,7 @@ def test_fetch_profile_rejects_client_supplied_namesake_without_identity_evidenc
             "identity_fingerprint": _identity_fingerprint(coauthors=("C2",), topics=("T2",)),
         },
     }
-    monkeypatch.setattr(openalex, "get_author", lambda author_id: profiles[author_id])
+    monkeypatch.setattr(openalex, "get_author", lambda author_id, **_kwargs: profiles[author_id])
 
     state = default_state()
     state["target_author_id"] = "A1"
@@ -625,13 +629,13 @@ def test_workflow_parallel_analysis_branches_join_before_report(monkeypatch):
     import openalex
     from workflow import graph
 
-    monkeypatch.setattr(openalex, "get_author", lambda _author_id: {
+    monkeypatch.setattr(openalex, "get_author", lambda _author_id, **_kwargs: {
         "id": "A0",
         "display_name": "Empty Scholar",
         "works_count": 0,
         "last_known_institutions": [],
     })
-    monkeypatch.setattr(openalex, "get_works", lambda _author_id: ([], []))
+    monkeypatch.setattr(openalex, "get_works", lambda _author_id, **_kwargs: ([], []))
     monkeypatch.setattr(crossref, "verify_dois", lambda _dois: ({}, {
         "requested": 0,
         "verified": 0,

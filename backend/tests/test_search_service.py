@@ -134,12 +134,16 @@ def test_identity_fingerprints_are_reused_across_different_queries():
     search_service.build_live_candidate_payload(
         repository,
         "Ada",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
         search_fn=lambda _query: authors,
         enrich_fn=enrich,
     )
     search_service.build_live_candidate_payload(
         repository,
         "Ada L.",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
         search_fn=lambda _query: authors,
         enrich_fn=lambda _candidates: pytest.fail("both fingerprints should be cached"),
     )

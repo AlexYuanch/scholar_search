@@ -32,12 +32,21 @@ from auth import (
     require_user,
     verify_password,
 )
+from credentials import (
+    CredentialConfigurationError,
+    CredentialDecryptionError,
+    decrypt_secret,
+    encrypt_secret,
+    secret_hint,
+    validate_credential_configuration,
+)
 from events import ProfileEventBroker
 from openalex import (
     OpenAlexError,
     configure_budget_control,
     enrich_authors_for_disambiguation,
     search_authors,
+    validate_openalex_api_key,
 )
 from quality import assess_profile_quality
 from repository import (
@@ -154,15 +163,15 @@ PROFILE_RATE_LIMIT_PER_USER = int(os.getenv("PROFILE_RATE_LIMIT_PER_USER", "12")
 PROFILE_RATE_LIMIT_PER_IP = int(os.getenv("PROFILE_RATE_LIMIT_PER_IP", "60"))
 
 
-def _openalex_budget_guard() -> int | None:
+def _openalex_budget_guard(provider: str) -> int | None:
     return repository.get_upstream_retry_after(
-        "openalex",
+        provider,
         OPENALEX_MIN_REMAINING_CREDITS,
     )
 
 
-def _openalex_budget_reporter(snapshot: dict) -> None:
-    repository.record_upstream_rate_limit("openalex", **snapshot)
+def _openalex_budget_reporter(provider: str, snapshot: dict) -> None:
+    repository.record_upstream_rate_limit(provider, **snapshot)
 
 
 configure_budget_control(_openalex_budget_guard, _openalex_budget_reporter)
@@ -170,6 +179,12 @@ configure_budget_control(_openalex_budget_guard, _openalex_budget_reporter)
 
 def _cache_is_fresh(cached: dict | None) -> bool:
     return bool(cached and repository.is_fresh(cached, CACHE_MAX_AGE_DAYS))
+
+
+def _iso_datetime(value) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
 def _payload_with_defaults(author_id: str, payload: dict, cached: dict | None = None) -> dict:
@@ -184,13 +199,49 @@ def _payload_with_defaults(author_id: str, payload: dict, cached: dict | None = 
     return data
 
 
-def _build_live_search(repository_instance, query_text: str) -> tuple[list[dict], bool]:
+def _build_live_search(
+    repository_instance,
+    query_text: str,
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> tuple[list[dict], bool]:
     return build_live_candidate_payload(
         repository_instance,
         query_text,
-        search_fn=search_authors,
-        enrich_fn=enrich_authors_for_disambiguation,
+        api_key=api_key,
+        budget_provider=budget_provider,
+        search_fn=lambda name: search_authors(
+            name,
+            api_key=api_key,
+            budget_provider=budget_provider,
+        ),
+        enrich_fn=lambda candidates: enrich_authors_for_disambiguation(
+            candidates,
+            api_key=api_key,
+            budget_provider=budget_provider,
+        ),
     )
+
+
+def _openalex_provider(user_id: str) -> str:
+    return f"openalex:user:{user_id}"
+
+
+def _require_openalex_credential(user: AuthUser) -> tuple[str, str]:
+    stored = repository.get_user_api_credential(user.id, "openalex")
+    if not stored:
+        raise HTTPException(
+            status_code=428,
+            detail="请先在 API 设置中添加你的 OpenAlex API key。",
+        )
+    try:
+        return decrypt_secret(stored["encrypted_secret"]), _openalex_provider(user.id)
+    except (CredentialConfigurationError, CredentialDecryptionError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="服务器无法读取已保存的 OpenAlex API key，请联系管理员。",
+        ) from exc
 
 
 def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> None:
@@ -233,10 +284,14 @@ def _openalex_rate_limit_detail(retry_after: str | None) -> str:
     return f"OpenAlex 额度已用完，{wait}后恢复。"
 
 
-def _queue_stale_profile(author_id: str, cached: dict) -> str:
+def _queue_stale_profile(author_id: str, cached: dict, user_id: str) -> str:
     if _cache_is_fresh(cached):
         return cached.get("refresh_status", "ready")
-    repository.enqueue_refresh(author_id, reason="stale_access")
+    repository.enqueue_refresh(
+        author_id,
+        reason="stale_access",
+        requested_by_user_id=user_id,
+    )
     return "queued"
 
 
@@ -274,6 +329,7 @@ def _run_graph_stream(state, ev_q, result):
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    validate_credential_configuration()
     event_broker.start()
     yield
     event_broker.stop()
@@ -332,6 +388,10 @@ class PasswordLoginRequest(BaseModel):
     password: str = Field(min_length=12, max_length=256)
 
 
+class OpenAlexCredentialRequest(BaseModel):
+    api_key: str = Field(min_length=8, max_length=512)
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -348,6 +408,20 @@ def _client_ip(request: Request) -> str | None:
             except ValueError:
                 pass
     return request.client.host if request.client else None
+
+
+def _credential_transport_secure(request: Request) -> bool:
+    if os.getenv("APP_ENV", "development").strip().casefold() != "production":
+        return True
+    hostname = (request.url.hostname or "").casefold()
+    if hostname in {"localhost", "127.0.0.1", "::1", "testserver"}:
+        return True
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().casefold()
+        if _env_bool("TRUST_PROXY_HEADERS")
+        else ""
+    )
+    return (forwarded_proto or request.url.scheme).casefold() == "https"
 
 
 def _authenticated_response(user: dict, request: Request, status_code: int = 200) -> JSONResponse:
@@ -437,6 +511,69 @@ def auth_logout(request: Request):
     return response
 
 
+@app.get("/api/settings/openalex")
+def openalex_settings(user: AuthUser = Depends(require_user)):
+    stored = repository.get_user_api_credential(user.id, "openalex")
+    return {
+        "configured": stored is not None,
+        "key_hint": stored.get("key_hint") if stored else None,
+        "validated_at": _iso_datetime(stored.get("validated_at")) if stored else None,
+        "updated_at": _iso_datetime(stored.get("updated_at")) if stored else None,
+    }
+
+
+@app.put("/api/settings/openalex")
+def save_openalex_settings(
+    req: OpenAlexCredentialRequest,
+    request: Request,
+    user: AuthUser = Depends(require_user),
+):
+    if not _credential_transport_secure(request):
+        raise HTTPException(
+            status_code=426,
+            detail="生产环境必须使用 HTTPS 才能提交 OpenAlex API key。",
+        )
+    api_key = req.api_key.strip()
+    provider = _openalex_provider(user.id)
+    try:
+        usage = validate_openalex_api_key(api_key, budget_provider=provider)
+        stored = repository.save_user_api_credential(
+            user.id,
+            "openalex",
+            encrypt_secret(api_key),
+            secret_hint(api_key),
+        )
+    except OpenAlexError as exc:
+        if exc.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="OpenAlex 暂时限流，尚未保存，请稍后重试。",
+                headers={"Retry-After": exc.retry_after or "60"},
+            ) from exc
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAlex API key 无效或当前无法验证，尚未保存。",
+        ) from exc
+    except CredentialConfigurationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="服务器尚未配置凭据加密，无法保存 API key。",
+        ) from exc
+    return {
+        "configured": True,
+        "key_hint": stored["key_hint"],
+        "validated_at": _iso_datetime(stored["validated_at"]),
+        "updated_at": _iso_datetime(stored["updated_at"]),
+        "usage": usage,
+    }
+
+
+@app.delete("/api/settings/openalex")
+def delete_openalex_settings(user: AuthUser = Depends(require_user)):
+    repository.delete_user_api_credential(user.id, "openalex")
+    return {"status": "success", "configured": False}
+
+
 @app.get("/api/search")
 def search(
     request: Request,
@@ -444,9 +581,21 @@ def search(
     user: AuthUser = Depends(require_user),
 ):
     """搜索学者姓名，返回去重后的候选人列表。"""
+    api_key, budget_provider = _require_openalex_credential(user)
     _consume_api_quota("search", user, request)
     try:
-        return search_with_cache(repository, name, builder=_build_live_search)
+        return search_with_cache(
+            repository,
+            name,
+            builder=lambda repo, query: _build_live_search(
+                repo,
+                query,
+                api_key=api_key,
+                budget_provider=budget_provider,
+            ),
+            budget_provider=budget_provider,
+            requested_by_user_id=user.id,
+        )
     except OpenAlexError as exc:
         if exc.status_code == 429:
             raise HTTPException(
@@ -471,9 +620,10 @@ def search(
 @app.post("/api/profile")
 def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(require_user)):
     """返回最新画像；过期画像立即返回并在后台排队更新。"""
+    api_key, budget_provider = _require_openalex_credential(user)
     cached = repository.get_profile(req.author_id)
     if cached:
-        refresh_status = _queue_stale_profile(req.author_id, cached)
+        refresh_status = _queue_stale_profile(req.author_id, cached, user.id)
         _record_access(req.author_id, req.query_name or cached.get("query_name", ""), user)
         data = _payload_with_defaults(req.author_id, cached["payload"], cached)
         data["refreshStatus"] = refresh_status
@@ -492,6 +642,8 @@ def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(requ
     state = default_state()
     state["target_author_id"] = req.author_id
     state["target_author_ids"] = _requested_author_ids(req, cached)
+    state["openalex_api_key"] = api_key
+    state["openalex_budget_provider"] = budget_provider
     _consume_api_quota("profile", user, request)
 
     result = graph.invoke(state)
@@ -536,6 +688,7 @@ def favorites(user: AuthUser = Depends(require_user)):
 @app.post("/api/favorites")
 @app.post("/api/tracking")
 def add_favorite(req: FavoriteRequest, user: AuthUser = Depends(require_user)):
+    _require_openalex_credential(user)
     try:
         return repository.add_favorite(user.id, req.author_id)
     except KeyError as exc:
@@ -561,8 +714,13 @@ def refresh_tracking(author_id: str, user: AuthUser = Depends(require_user)):
     """Queue a tracked scholar refresh without running the workflow in the Web process."""
     if not repository.is_tracking(user.id, author_id):
         raise HTTPException(status_code=404, detail="Research tracking not found")
+    _require_openalex_credential(user)
     try:
-        job_id = repository.enqueue_refresh(author_id, reason="manual_tracking")
+        job_id = repository.enqueue_refresh(
+            author_id,
+            reason="manual_tracking",
+            requested_by_user_id=user.id,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Scholar profile not found") from exc
     cached = repository.get_profile(author_id) or {}
@@ -606,6 +764,7 @@ async def profile_stream(
     user: AuthUser = Depends(require_user),
 ):
     """NDJSON 流式接口：逐步推送工作流进度，最后返回画像数据。"""
+    api_key, budget_provider = _require_openalex_credential(user)
     _consume_api_quota("profile", user, request)
     cached = await asyncio.to_thread(repository.get_profile, req.author_id)
     if cached:
@@ -613,6 +772,7 @@ async def profile_stream(
             _queue_stale_profile,
             req.author_id,
             cached,
+            user.id,
         )
         await asyncio.to_thread(
             _record_access,
@@ -643,6 +803,8 @@ async def profile_stream(
     state = default_state()
     state["target_author_id"] = req.author_id
     state["target_author_ids"] = _requested_author_ids(req, cached)
+    state["openalex_api_key"] = api_key
+    state["openalex_budget_provider"] = budget_provider
 
     ev_q: "queue.Queue" = queue.Queue()
     result_holder: list = []

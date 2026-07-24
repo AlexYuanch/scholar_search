@@ -31,6 +31,7 @@ EXPECTED_TABLES = {
     "user_history",
     "user_sessions",
     "upstream_rate_limits",
+    "user_api_credentials",
     "works",
 }
 
@@ -88,6 +89,41 @@ def test_favorite_tracking_columns_are_present():
     assert columns["last_seen_total_papers"] == "NO"
     assert columns["last_seen_total_citations"] == "NO"
     assert columns["last_seen_at"] == "YES"
+
+
+def test_user_api_credentials_and_queue_ownership_are_present():
+    with psycopg.connect(DATABASE_URL) as connection:
+        credential_columns = {
+            row[0]
+            for row in connection.execute("""
+                select column_name
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'user_api_credentials'
+            """)
+        }
+        queue_columns = {
+            (row[0], row[1])
+            for row in connection.execute("""
+                select table_name, column_name
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name in ('refresh_jobs', 'openalex_search_jobs')
+                  and column_name = 'requested_by_user_id'
+            """)
+        }
+
+    assert {
+        "user_id",
+        "provider",
+        "encrypted_secret",
+        "key_hint",
+        "validated_at",
+    } <= credential_columns
+    assert queue_columns == {
+        ("refresh_jobs", "requested_by_user_id"),
+        ("openalex_search_jobs", "requested_by_user_id"),
+    }
 
 
 def test_profile_status_emits_postgres_notification():

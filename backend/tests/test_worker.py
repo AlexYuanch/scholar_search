@@ -1,5 +1,6 @@
 from repository import InMemoryRepository
 from worker import process_one_job, process_one_search_job
+from credentials import encrypt_secret
 
 
 class FakeGraph:
@@ -74,3 +75,69 @@ def test_worker_refreshes_stale_search_cache_and_completes_job():
         "id": "A1",
         "name": "Ada",
     }]
+
+
+def test_worker_uses_requesting_users_encrypted_key_for_search(monkeypatch):
+    import worker
+
+    repository = InMemoryRepository()
+    repository.save_user_api_credential(
+        "user-a",
+        "openalex",
+        encrypt_secret("owned-openalex-key"),
+        "••••-key",
+    )
+    job_id = repository.enqueue_openalex_search(
+        "ada",
+        "Ada",
+        requested_by_user_id="user-a",
+    )
+
+    def build(_repository, query_text, *, api_key, budget_provider):
+        assert query_text == "Ada"
+        assert api_key == "owned-openalex-key"
+        assert budget_provider == "openalex:user:user-a"
+        return [{"id": "A1", "name": "Ada"}], True
+
+    monkeypatch.setattr(worker, "build_live_candidate_payload", build)
+
+    assert process_one_search_job(repository) is True
+    assert repository.openalex_search_jobs[job_id]["status"] == "succeeded"
+
+
+def test_worker_fails_job_when_requesting_user_removed_key():
+    repository = InMemoryRepository()
+    job_id = repository.enqueue_openalex_search(
+        "ada",
+        "Ada",
+        requested_by_user_id="user-a",
+    )
+
+    assert process_one_search_job(repository) is False
+    assert repository.openalex_search_jobs[job_id]["status"] == "failed"
+    assert "no OpenAlex credential" in repository.openalex_search_jobs[job_id]["last_error"]
+
+
+def test_profile_worker_decrypts_key_from_persisted_job_owner():
+    repository = InMemoryRepository()
+    _seed(repository)
+    repository.save_user_api_credential(
+        "user-a",
+        "openalex",
+        encrypt_secret("owned-openalex-key"),
+        "••••-key",
+    )
+    job_id = repository.enqueue_refresh(
+        "A1",
+        "manual_tracking",
+        requested_by_user_id="user-a",
+    )
+
+    class CredentialCheckingGraph(FakeGraph):
+        def invoke(self, state):
+            assert state["openalex_api_key"] == "owned-openalex-key"
+            assert state["openalex_budget_provider"] == "openalex:user:user-a"
+            return super().invoke(state)
+
+    assert process_one_job(repository, CredentialCheckingGraph()) is True
+    assert repository.jobs[job_id]["status"] == "succeeded"

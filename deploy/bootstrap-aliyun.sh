@@ -258,11 +258,15 @@ fi
 
 owner_password="$(env_value POSTGRES_OWNER_PASSWORD)"
 app_password="$(env_value POSTGRES_APP_PASSWORD)"
+credential_key="$(env_value CREDENTIAL_ENCRYPTION_KEY)"
 if [[ -z "$owner_password" || "$owner_password" == REPLACE_WITH_* || "$owner_password" == "owner-dev-only" ]]; then
     set_env POSTGRES_OWNER_PASSWORD "$(openssl rand -hex 24)"
 fi
 if [[ -z "$app_password" || "$app_password" == REPLACE_WITH_* || "$app_password" == "app-dev-only" ]]; then
     set_env POSTGRES_APP_PASSWORD "$(openssl rand -hex 24)"
+fi
+if [[ -z "$credential_key" || "$credential_key" == REPLACE_WITH_* || "$credential_key" == "KpR3gIpJbT8J76mKjJf0k0ZnmuwFh89fV4E7LMA5GVQ=" ]]; then
+    set_env CREDENTIAL_ENCRYPTION_KEY "$(openssl rand -base64 32 | tr '+/' '-_')"
 fi
 
 set_env APP_ENV "production"

@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import text
 
 from auth import hash_password, verify_password
+from credentials import decrypt_secret, encrypt_secret
 from repository import APIQuotaExceeded, PostgresRepository
 from worker import process_one_job, process_one_search_job
 
@@ -143,6 +144,62 @@ def test_password_user_session_is_revocable():
             conn.execute(text(
                 "delete from public.app_users where normalized_username = :username"
             ), {"username": username})
+
+
+def test_user_openalex_credential_is_persistent_private_and_owns_jobs():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    username = f"credential-{unique}"
+    other_username = f"credential-other-{unique}"
+    query_key = f"credential scholar {unique}"
+    try:
+        user = repository.create_password_user(
+            username,
+            hash_password("credential password"),
+        )
+        other_user = repository.create_password_user(
+            other_username,
+            hash_password("credential password"),
+        )
+        encrypted = encrypt_secret("owned-openalex-key")
+        repository.save_user_api_credential(
+            user["id"],
+            "openalex",
+            encrypted,
+            "••••-key",
+        )
+        job_id = repository.enqueue_openalex_search(
+            query_key,
+            f"Credential Scholar {unique}",
+            requested_by_user_id=user["id"],
+        )
+
+        reloaded = PostgresRepository(DATABASE_URL)
+        stored = reloaded.get_user_api_credential(user["id"], "openalex")
+        claimed = reloaded.claim_openalex_search_job(query_key)
+
+        assert stored["encrypted_secret"] == encrypted
+        assert decrypt_secret(stored["encrypted_secret"]) == "owned-openalex-key"
+        assert reloaded.get_user_api_credential(other_user["id"], "openalex") is None
+        assert str(claimed["requested_by_user_id"]) == user["id"]
+
+        reloaded.complete_openalex_search_job(job_id)
+        assert reloaded.delete_user_api_credential(other_user["id"], "openalex") is False
+        assert reloaded.get_user_api_credential(user["id"], "openalex") is not None
+        assert reloaded.delete_user_api_credential(user["id"], "openalex") is True
+        assert reloaded.get_user_api_credential(user["id"], "openalex") is None
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text(
+                "delete from public.openalex_search_jobs where query_key = :query_key"
+            ), {"query_key": query_key})
+            conn.execute(text("""
+                delete from public.app_users
+                where normalized_username in (:username, :other_username)
+            """), {
+                "username": username,
+                "other_username": other_username,
+            })
 
 
 def test_favorite_tracking_reports_and_clears_profile_deltas():

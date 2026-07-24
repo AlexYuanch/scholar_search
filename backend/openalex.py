@@ -17,7 +17,6 @@ PINYIN_AVAILABLE = lazy_pinyin is not None and Style is not None
 
 BASE = "https://api.openalex.org"
 HEADERS = {"User-Agent": "ScholarSearch/1.0"}
-OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "").strip()
 MAX_RETRIES = 3
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 DEFAULT_MAX_PAGES = int(os.getenv("OPENALEX_MAX_WORK_PAGES", "200"))
@@ -25,8 +24,8 @@ IDENTITY_FINGERPRINT_WORKS = int(os.getenv("OPENALEX_IDENTITY_FINGERPRINT_WORKS"
 IDENTITY_MAX_WORKERS = int(os.getenv("OPENALEX_IDENTITY_MAX_WORKERS", "8"))
 _SESSION = requests.Session()
 _CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
-_BUDGET_GUARD: Callable[[], int | None] | None = None
-_BUDGET_REPORTER: Callable[[dict], None] | None = None
+_BUDGET_GUARD: Callable[[str], int | None] | None = None
+_BUDGET_REPORTER: Callable[[str, dict], None] | None = None
 
 
 class OpenAlexError(RuntimeError):
@@ -45,10 +44,10 @@ class OpenAlexError(RuntimeError):
 
 
 def configure_budget_control(
-    guard: Callable[[], int | None] | None,
-    reporter: Callable[[dict], None] | None,
+    guard: Callable[[str], int | None] | None,
+    reporter: Callable[[str, dict], None] | None,
 ) -> None:
-    """Configure shared budget protection without coupling the client to storage."""
+    """Configure per-provider budget protection without coupling the client to storage."""
     global _BUDGET_GUARD, _BUDGET_REPORTER
     _BUDGET_GUARD = guard
     _BUDGET_REPORTER = reporter
@@ -61,7 +60,7 @@ def _integer_header(response, name: str) -> int | None:
         return None
 
 
-def _report_budget(response) -> None:
+def _report_budget(response, budget_provider: str) -> None:
     if _BUDGET_REPORTER is None:
         return
     snapshot = {
@@ -72,21 +71,30 @@ def _report_budget(response) -> None:
     if all(value is None for value in snapshot.values()):
         return
     try:
-        _BUDGET_REPORTER(snapshot)
+        _BUDGET_REPORTER(budget_provider, snapshot)
     except Exception:
         return
 
 
-def _get(endpoint: str, **params) -> dict:
+def _get(
+    endpoint: str,
+    *,
+    api_key: str,
+    budget_provider: str,
+    apply_budget_guard: bool = True,
+    **params,
+) -> dict:
     """GET JSON from OpenAlex with retry for transient failures."""
-    if _BUDGET_GUARD is not None:
+    if not api_key.strip():
+        raise OpenAlexError("OpenAlex API key is required", status_code=428)
+    if apply_budget_guard and _BUDGET_GUARD is not None:
         try:
-            budget_retry_after = _BUDGET_GUARD()
+            budget_retry_after = _BUDGET_GUARD(budget_provider)
         except Exception:
             budget_retry_after = None
         if budget_retry_after is not None:
             raise OpenAlexError(
-                "OpenAlex shared budget reserve reached",
+                "OpenAlex user budget reserve reached",
                 status_code=429,
                 retry_after=str(max(1, budget_retry_after)),
             )
@@ -95,8 +103,7 @@ def _get(endpoint: str, **params) -> dict:
     last_retry_after: str | None = None
     url = f"{BASE}{endpoint}"
     request_params = dict(params)
-    if OPENALEX_API_KEY:
-        request_params.setdefault("api_key", OPENALEX_API_KEY)
+    request_params["api_key"] = api_key.strip()
     for attempt in range(1, MAX_RETRIES + 1):
         last_status = None
         last_retry_after = None
@@ -104,7 +111,7 @@ def _get(endpoint: str, **params) -> dict:
             response = _SESSION.get(url, params=request_params, headers=HEADERS, timeout=30)
             last_status = response.status_code
             last_retry_after = response.headers.get("Retry-After")
-            _report_budget(response)
+            _report_budget(response, budget_provider)
             if response.status_code in RETRY_STATUSES and attempt < MAX_RETRIES:
                 time.sleep(min(2 ** (attempt - 1), 8))
                 continue
@@ -129,6 +136,27 @@ def _get(endpoint: str, **params) -> dict:
         status_code=last_status,
         retry_after=last_retry_after,
     ) from None
+
+
+def validate_openalex_api_key(
+    api_key: str,
+    budget_provider: str = "openalex:validation",
+) -> dict:
+    """Validate a user-owned key against OpenAlex without exposing it."""
+    data = _get(
+        "/rate-limit",
+        api_key=api_key,
+        budget_provider=budget_provider,
+        apply_budget_guard=False,
+    )
+    rate_limit = data.get("rate_limit") or {}
+    return {
+        "daily_budget_usd": rate_limit.get("daily_budget_usd"),
+        "daily_used_usd": rate_limit.get("daily_used_usd"),
+        "daily_remaining_usd": rate_limit.get("daily_remaining_usd"),
+        "prepaid_remaining_usd": rate_limit.get("prepaid_remaining_usd"),
+        "resets_at": rate_limit.get("resets_at"),
+    }
 
 
 def _name_query_variants(name: str) -> list[str]:
@@ -160,12 +188,20 @@ def _author_search_rank(author: dict) -> tuple[int, int, int]:
     )
 
 
-def search_authors(name: str, per_page: int = 50) -> List[dict]:
+def search_authors(
+    name: str,
+    per_page: int = 50,
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> List[dict]:
     """按姓名搜索作者；中文姓名会同时搜索常见的两种拼音顺序。"""
     authors_by_id = {}
     for variant in _name_query_variants(name):
         data = _get(
             "/authors",
+            api_key=api_key,
+            budget_provider=budget_provider,
             filter=f"display_name.search:{variant}",
             per_page=per_page,
             sort="cited_by_count:desc",
@@ -182,15 +218,27 @@ def search_authors(name: str, per_page: int = 50) -> List[dict]:
     return sorted(authors_by_id.values(), key=_author_search_rank, reverse=True)[:100]
 
 
-def get_author(author_id: str) -> dict:
+def get_author(author_id: str, *, api_key: str, budget_provider: str) -> dict:
     """获取单个作者的详细信息。"""
-    return _get(f"/authors/{author_id}")
+    return _get(
+        f"/authors/{author_id}",
+        api_key=api_key,
+        budget_provider=budget_provider,
+    )
 
 
-def get_author_identity_fingerprint(author_id: str, per_page: int = IDENTITY_FINGERPRINT_WORKS) -> dict:
+def get_author_identity_fingerprint(
+    author_id: str,
+    per_page: int = IDENTITY_FINGERPRINT_WORKS,
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> dict:
     """获取用于身份消歧的轻量论文、合作者和主题指纹。"""
     data = _get(
         "/works",
+        api_key=api_key,
+        budget_provider=budget_provider,
         filter=f"authorships.author.id:{author_id}",
         per_page=min(max(per_page, 1), 200),
         sort="cited_by_count:desc",
@@ -225,7 +273,12 @@ def get_author_identity_fingerprint(author_id: str, per_page: int = IDENTITY_FIN
     }
 
 
-def enrich_authors_for_disambiguation(candidates: List[dict]) -> List[dict]:
+def enrich_authors_for_disambiguation(
+    candidates: List[dict],
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> List[dict]:
     """并发补充身份指纹；单个请求失败时保留候选但不自动合并。"""
     enriched = [dict(candidate) for candidate in candidates]
     pending = {
@@ -238,7 +291,12 @@ def enrich_authors_for_disambiguation(candidates: List[dict]) -> List[dict]:
     workers = min(max(1, IDENTITY_MAX_WORKERS), len(pending))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(get_author_identity_fingerprint, candidate["id"]): index
+            executor.submit(
+                get_author_identity_fingerprint,
+                candidate["id"],
+                api_key=api_key,
+                budget_provider=budget_provider,
+            ): index
             for index, candidate in pending.items()
         }
         for future in as_completed(futures):
@@ -251,7 +309,13 @@ def enrich_authors_for_disambiguation(candidates: List[dict]) -> List[dict]:
     return enriched
 
 
-def get_works(author_id: str, max_pages: int = DEFAULT_MAX_PAGES) -> tuple[List[dict], list[str]]:
+def get_works(
+    author_id: str,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> tuple[List[dict], list[str]]:
     """获取作者的全部论文（游标分页），失败时尽量返回已取得的部分结果。"""
     works = []
     warnings = []
@@ -261,6 +325,8 @@ def get_works(author_id: str, max_pages: int = DEFAULT_MAX_PAGES) -> tuple[List[
         page += 1
         try:
             data = _get("/works",
+                        api_key=api_key,
+                        budget_provider=budget_provider,
                         filter=f"authorships.author.id:{author_id}",
                         per_page=200,
                         cursor=cursor,

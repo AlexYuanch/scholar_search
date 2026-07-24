@@ -8,7 +8,7 @@ flowchart LR
   CADDY --> NGINX["React static + Nginx"]
   NGINX -->|"/api 同源代理"| API["FastAPI Web"]
   API -->|"SQLAlchemy + psycopg"| PG["PostgreSQL 17"]
-  API -->|"首次画像"| WF["LangGraph"]
+  API -->|"用户 OpenAlex key + 首次画像"| WF["LangGraph"]
   API -->|"搜索缓存/合并任务"| SEARCH["openalex_search_cache / jobs"]
   SEARCH --> PG
   WF --> OA["OpenAlex"]
@@ -27,7 +27,7 @@ flowchart LR
 | 前端 | Vite + React + TypeScript | 身份确认、线性画像、证据化对比、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
 | API | FastAPI | 密码登录、Cookie 会话、受保护查询、NDJSON 与 SSE |
 | 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、并行分析、证据审查和载荷格式化 |
-| Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、用户、持久搜索缓存、上游额度状态和队列 |
+| Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、加密用户凭据、持久搜索缓存、按用户额度状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
 | 公网入口 | Caddy + Nginx | 自动 HTTPS、静态资源、同源 API 代理和日志 |
@@ -44,7 +44,7 @@ flowchart LR
 
 候选搜索先为同名 OpenAlex 作者抽取最多 100 篇高被引论文的轻量身份指纹。身份裁决采用保守规则：ORCID 相同直接归并；不同 ORCID 默认隔离，不能再由共同机构或主题数量覆盖；缺少 ORCID 时仍需共同论文，或机构、合作者、主题的比例型组合证据。机构履历异常扩散的档案不参与上下文自动归并，避免污染档案在常见姓名中形成连锁误合并。聚类以高引用档案作为主 ID，不通过阈值的同名者保持独立。前端只提交聚类得到的 ID 集合，工作流会再次计算指纹并拒绝不属于主身份组的 ID，避免客户端强制合并任意学者。
 
-搜索先规范化 Unicode、空白和大小写得到共享 `query_key`。新鲜 `openalex_search_cache` 直接返回；过期结果先返回旧值并幂等插入后台刷新，冷请求以 `openalex_search_jobs` 的活跃任务唯一索引合并，多 Web 实例只有一个请求或 worker 访问上游。等待期间完成的请求读取同一缓存。OpenAlex 不可用、限流或共享剩余额度到达保留线时，Repository 可按学者名/别名从已发布的真实 PostgreSQL 学者数据构造保守候选；没有本地事实时才返回明确上游错误。`openalex_identity_cache` 让不同姓名查询复用昂贵的论文/合作者/主题指纹，但不改变既有归并阈值。
+搜索先规范化 Unicode、空白和大小写得到共享 `query_key`。每位登录用户必须先配置自己的 OpenAlex key；Web 解密后只在当前调用内传给客户端函数，不写入缓存或工作流结果。新鲜 `openalex_search_cache` 直接返回；过期结果先返回旧值并把 `requested_by_user_id` 写入后台刷新，冷请求以 `openalex_search_jobs` 的活跃任务唯一索引合并，多 Web 实例只有一个请求或 worker 访问上游。OpenAlex 不可用、限流或该用户剩余额度到达保留线时，Repository 可按学者名/别名从已发布的真实 PostgreSQL 学者数据构造保守候选；没有本地事实时才返回明确上游错误。`openalex_identity_cache` 让不同姓名查询复用昂贵的论文/合作者/主题指纹，但不改变既有归并阈值。
 
 多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责作者、论文、引用、topics、keywords 和署名发现，Crossref 只对 OpenAlex 论文中的 DOI 进行出版元数据核验。被验证为同一身份的多个作者档案并发取数，中心 authorship 统一为主 ID。随后建立机构、合作者和主题频率核心，只排除同时具有明确冲突机构、且与核心合作者/主题均断开的微小论文连通簇；无机构论文和较大冲突簇不会自动删除。过滤结果、排除 Work ID 和风险数量写入 `identityAudit`，再按 DOI/OpenAlex Work ID 去重。`adjudicate_sources` 以规范化 DOI 合并记录，Crossref 优先提供标题、年份和期刊，OpenAlex 继续提供引用、主题和 authorships；所有字段来源、原始记录、核验状态和冲突写入论文 `raw_json`。
 
@@ -62,12 +62,13 @@ flowchart LR
 | `authorships` | 论文—作者事实、顺序和原始署名 |
 | `scholar_profiles` | 每位学者一份最新成功 JSONB、warnings、工作流版本和数据指纹 |
 | `profile_status` | 轻量状态、版本和更新时间 |
-| `refresh_jobs` | 任务状态、次数、退避、原因和错误 |
+| `refresh_jobs` | 任务状态、次数、退避、原因、错误和请求用户 |
 | `openalex_search_cache` | 规范化姓名的候选 JSONB、抓取时间和过期时间 |
 | `openalex_identity_cache` | OpenAlex 作者身份指纹，按作者 ID 去重并独立设置 TTL |
-| `openalex_search_jobs` | 冷搜索/过期搜索刷新队列；同一 `query_key` 只允许一个活跃任务 |
-| `upstream_rate_limits` | OpenAlex 共享额度、恢复时间和最近响应状态 |
+| `openalex_search_jobs` | 冷搜索/过期搜索刷新队列；保存请求用户，同一 `query_key` 只允许一个活跃任务 |
+| `upstream_rate_limits` | 按 `openalex:user:{user_id}` 隔离的额度、恢复时间和最近响应状态 |
 | `app_users` | 应用用户；规范化用户名唯一、scrypt 密码摘要和启停状态 |
+| `user_api_credentials` | 用户上游凭据；Fernet 密文、末四位提示和验证时间，复合主键隔离用户/provider |
 | `auth_login_attempts` | 登录结果、用户名、IP 和时间，用于短时限速与审计 |
 | `auth_registration_attempts` | 注册结果、IP 和时间，用于公开注册防滥用 |
 | `api_rate_limit_events` | 搜索与画像生成的账号、IP、动作和时间窗口计数 |
@@ -95,15 +96,15 @@ flowchart LR
 - PostgreSQL 只保留每位学者最近一次通过质量检查的画像，供质量对比、论文分页和自动换版使用。
 - `POST /api/profile` 读取最近成功画像；前端候选确认统一使用 `/api/profile/stream`，已有画像走缓存结果、首次画像走工作流。
 - 研究追踪学者使用 24 小时阈值；最近 30 天访问者使用 7 天阈值。
-- 后台维护和用户打开过期画像都按阈值原子去重插入 `refresh_jobs`；用户立即看到最近成功画像，不在 Web 请求内等待更新。
+- 后台维护和用户打开过期画像都按阈值原子去重插入 `refresh_jobs`，同时保存具有有效 key 的请求用户；用户立即看到最近成功画像，不在 Web 请求内等待更新。
 - 只有完整抓取成功才允许删除已消失的中心作者 authorship。
 - 追踪列表把最新画像中的论文数、引用数与当前用户的 `favorites` 基线比较，并从当前画像的两个三年窗口确定性识别方向变化提示。用户加载到相应画像版本后调用 `/api/tracking/seen`，事务内更新自己的基线，不影响其他用户。
-- `POST /api/tracking/{author_id}/refresh` 先通过会话确定用户，再验证该用户确实存在对应 `favorites` 记录；随后调用现有 `enqueue_refresh`。数据库活跃任务唯一索引与 Repository 的 `on conflict do nothing` 共同防止重复排队，返回已有或新任务 ID。Web 请求不调用 LangGraph，worker 继续通过 `FOR UPDATE SKIP LOCKED` 领取任务。
+- `POST /api/tracking/{author_id}/refresh` 先通过会话确定用户，再验证该用户确实存在对应 `favorites` 记录和 OpenAlex key；随后调用现有 `enqueue_refresh` 并写入 `requested_by_user_id`。数据库活跃任务唯一索引与 Repository 的 `on conflict do nothing` 共同防止重复排队，返回已有或新任务 ID。Web 请求不调用 LangGraph，worker 继续通过 `FOR UPDATE SKIP LOCKED` 领取任务。
 - 新前端统一使用 `/api/tracking...`；旧 `/api/favorites...` 仅作为兼容别名保留，数据库表名和历史 migration 不改写。主画像和追踪侧栏在写操作成功后递增本地修订号并重新读取追踪 API，避免同一页面的两个入口显示相互矛盾的状态。
 
 ### Worker
 
-Worker 先使用 `FOR UPDATE SKIP LOCKED` 领取 `openalex_search_jobs`，再领取 `refresh_jobs`，支持多实例并发。搜索成功发布共享缓存，失败按上游 `Retry-After` 或指数退避重排；画像失败最多重试 3 次，未通过质量门槛不会进入发布事务。每小时维护使用 PostgreSQL advisory lock，避免多 worker 重复调度，并清理过期登录尝试、session、缓存和任务日志。维护任务还会回收锁定超过 30 分钟的失联 worker 任务：未满次数则重新排队，否则标记失败，同时同步画像状态。
+Worker 先使用 `FOR UPDATE SKIP LOCKED` 领取 `openalex_search_jobs`，再领取 `refresh_jobs`，按 `requested_by_user_id` 读取并解密该用户的 key；不存在、已删除或不可解密时任务失败，绝不回退到共享 key。搜索成功发布共享缓存，失败按上游 `Retry-After` 或指数退避重排；画像失败最多重试 3 次，未通过质量门槛不会进入发布事务。每小时维护只为具有有效 OpenAlex key 的追踪/近期访问用户排队，并使用 PostgreSQL advisory lock 避免多 worker 重复调度。
 
 ## 身份认证
 
@@ -115,13 +116,14 @@ Worker 先使用 `FOR UPDATE SKIP LOCKED` 领取 `openalex_search_jobs`，再领
 6. 历史和研究追踪 Repository 查询同时限制 `user_id`，确保多用户数据隔离。
 7. 退出时服务端撤销会话并清除 Cookie；管理员重置密码时撤销该用户已有会话。
 8. 搜索和画像生成在 PostgreSQL 事务内按用户与 IP 消费额度，多 Web 实例共享同一限制。
+9. `GET/PUT/DELETE /api/settings/openalex` 只操作当前会话用户；PUT 先调用 OpenAlex `/rate-limit` 校验，再用服务器 `CREDENTIAL_ENCRYPTION_KEY` 加密。GET 只返回配置状态、末四位和时间。
 
 系统提供公开本地账号注册，但不依赖外部身份提供商。建议前后端同域部署，以简化 Cookie 和 CSRF 边界；生产环境必须启用 HTTPS 与 Secure Cookie。
 
 ## 进度与错误边界
 
 - NDJSON 仍由既有 LangGraph 节点驱动，但 API 只向前端暴露四个稳定阶段：`verify_identity`、`aggregate_outputs`、`analyze_trajectory`、`verify_evidence`。
-- 搜索使用 30 秒总超时；同一冷查询最多等待共享任务 25 秒，超时返回可重试 503。画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、工作流/worker 失败分别映射为独立前端状态。OpenAlex 客户端通过服务端 `OPENALEX_API_KEY` 使用正常每日额度，在重试耗尽后保留上游状态码和 `Retry-After`，但不会把 key 写入异常；每次上游响应把共享额度写入 PostgreSQL，达到保留线后阻止新的冷请求。搜索入口优先返回新鲜/旧缓存或本地真实结果；确实没有可用数据时，429 映射为带预计恢复时间的可重试 429，其他不可用错误映射为不泄漏内部请求信息的 502。
+- 搜索使用 30 秒总超时；同一冷查询最多等待共享任务 25 秒，超时返回可重试 503。画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、428（缺少用户 key）和工作流/worker 失败分别映射为独立前端状态。OpenAlex 客户端显式接收当前用户 key，在重试耗尽后保留上游状态码和 `Retry-After`，但不会把 key 写入异常；每次上游响应把该用户额度写入 PostgreSQL，达到保留线后阻止该用户的新冷请求。
 - 外部数据错误仍通过流式 `error` 事件结束；搜索与流式画像共享当前请求序号，全部论文分页及 SSE 触发的最新版读取也使用 `AbortController`，前端不会把中断或旧请求结果覆盖到新选择的学者。
 - 追踪/历史和全部论文面板分别提供 loading、empty、error 与 retry 状态；错误态不会同时渲染为空态。
 
@@ -137,9 +139,11 @@ SSE 连接断开不会影响画像生成，浏览器重连后会先读取当前 
 - 迁移撤销 `PUBLIC` 对 schema、表和 sequence 的默认权限。
 - `scholar_app` 只用于 Web/worker，不能建表；迁移账号不提供给运行时。
 - 密码与会话 token 均不明文入库；注册按 IP 限速，登录按用户名和 IP 限速，会话具有过期和撤销状态。
+- OpenAlex key 使用 Fernet 对称加密；生产部署强制提供独立的 44 字符 `CREDENTIAL_ENCRYPTION_KEY`，Web/worker 共用且不可随意轮换。完整用户 key 不进入前端持久存储、API 读取响应、日志或异常。
+- 生产环境的凭据写接口拒绝公网 HTTP 并返回 426；仅开发环境和回环主机允许 HTTP 测试。正式用户提交 key 前必须启用 HTTPS。
 - 搜索与画像生成设置独立账号/IP 限额，事件由 worker 定期清理。
 - CORS 仅允许配置的前端域名，Cookie 请求启用 credentials。
-- 数据库和 LLM 密钥全部为服务端配置，不进入 Vite bundle。
+- 数据库、凭据加密 key 和 LLM 密钥全部为服务端配置，不进入 Vite bundle；OpenAlex key 由各用户提交并按账号加密隔离。
 
 ## 部署模型
 

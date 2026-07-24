@@ -108,10 +108,26 @@ def build_live_candidate_payload(
     repository,
     query_text: str,
     *,
-    search_fn: Callable[[str], list[dict]] = search_authors,
-    enrich_fn: Callable[[list[dict]], list[dict]] = enrich_authors_for_disambiguation,
+    api_key: str,
+    budget_provider: str,
+    search_fn: Callable[[str], list[dict]] | None = None,
+    enrich_fn: Callable[[list[dict]], list[dict]] | None = None,
 ) -> tuple[list[dict], bool]:
     """Fetch candidates while reusing persistent identity fingerprints."""
+    search_fn = search_fn or (
+        lambda name: search_authors(
+            name,
+            api_key=api_key,
+            budget_provider=budget_provider,
+        )
+    )
+    enrich_fn = enrich_fn or (
+        lambda candidates: enrich_authors_for_disambiguation(
+            candidates,
+            api_key=api_key,
+            budget_provider=budget_provider,
+        )
+    )
     candidates = [dict(candidate) for candidate in search_fn(query_text)]
     author_ids = [str(candidate.get("id")) for candidate in candidates if candidate.get("id")]
     cached_by_id = repository.get_openalex_identity_caches(author_ids)
@@ -270,6 +286,9 @@ def search_with_cache(
     repository,
     name: str,
     builder: Callable[[Any, str], tuple[list[dict], bool]] = build_live_candidate_payload,
+    *,
+    budget_provider: str = "openalex",
+    requested_by_user_id: str | None = None,
 ) -> dict:
     query_key, query_text = normalize_search_query(name)
     if not query_key:
@@ -280,24 +299,32 @@ def search_with_cache(
         return _cached_response(cached, "cache")
 
     budget_retry_after = repository.get_upstream_retry_after(
-        "openalex",
+        budget_provider,
         OPENALEX_MIN_REMAINING_CREDITS,
     )
     if cached:
         if budget_retry_after is None:
-            repository.enqueue_openalex_search(query_key, query_text)
+            repository.enqueue_openalex_search(
+                query_key,
+                query_text,
+                requested_by_user_id=requested_by_user_id,
+            )
         return _cached_response(cached, "stale")
     if budget_retry_after is not None:
         local = _local_fallback(repository, query_key, query_text)
         if local:
             return local
         raise OpenAlexError(
-            "OpenAlex shared budget reserve reached",
+            "OpenAlex user budget reserve reached",
             status_code=429,
             retry_after=str(budget_retry_after),
         )
 
-    repository.enqueue_openalex_search(query_key, query_text)
+    repository.enqueue_openalex_search(
+        query_key,
+        query_text,
+        requested_by_user_id=requested_by_user_id,
+    )
     job = repository.claim_openalex_search_job(query_key)
     if job:
         try:
@@ -319,7 +346,7 @@ def search_with_cache(
         if cached:
             return _cached_response(cached, "coalesced")
         budget_retry_after = repository.get_upstream_retry_after(
-            "openalex",
+            budget_provider,
             OPENALEX_MIN_REMAINING_CREDITS,
         )
         if budget_retry_after is not None:
@@ -327,7 +354,7 @@ def search_with_cache(
             if local:
                 return local
             raise OpenAlexError(
-                "OpenAlex shared budget reserve reached",
+                "OpenAlex user budget reserve reached",
                 status_code=429,
                 retry_after=str(budget_retry_after),
             )
