@@ -699,7 +699,7 @@ export default function App() {
 
           <div className="flex items-center gap-1">
             {/* 强调色切换 */}
-            <div className="mr-1 hidden items-center gap-0.5 rounded-md border p-0.5 lg:flex">
+            <div className="mr-1 hidden items-center gap-0.5 rounded-md border p-0.5 xl:flex">
               {accents.map(a => (
                 <button
                   key={a.key}
@@ -713,12 +713,12 @@ export default function App() {
             </div>
 
             {/* 暗色模式 */}
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDark(!dark)}>
+            <Button variant="ghost" size="icon" className="hidden h-8 w-8 sm:inline-flex" onClick={() => setDark(!dark)}>
               {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
 
             {/* 语言切换 */}
-            <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs"
+            <Button variant="ghost" size="sm" className="hidden h-8 gap-1 text-xs sm:inline-flex"
               onClick={() => setLang(lang === "zh" ? "en" : "zh")}
             >
               <Globe className="h-3.5 w-3.5" />
@@ -727,12 +727,33 @@ export default function App() {
 
             {user ? (
               <>
-                <span className="hidden text-xs text-muted-foreground xl:inline">{user.username}</span>
-                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.history")} onClick={() => openAccountPanel("history")}>
+                <span
+                  className="hidden max-w-24 truncate rounded-md bg-muted px-2 py-1 text-xs font-medium text-foreground sm:inline"
+                  title={user.username}
+                >
+                  {user.username}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1 px-2 text-xs"
+                  title={t("account.history")}
+                  aria-label={t("account.history")}
+                  onClick={() => openAccountPanel("history")}
+                >
                   <History className="h-4 w-4" />
+                  <span>{t("account.history")}</span>
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8" title={t("account.favorites")} onClick={() => openAccountPanel("favorites")}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1 px-2 text-xs"
+                  title={t("account.favorites")}
+                  aria-label={t("account.favorites")}
+                  onClick={() => openAccountPanel("favorites")}
+                >
                   <Heart className="h-4 w-4" />
+                  <span>{t("account.favorites")}</span>
                 </Button>
                 <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => {
                   setFavorite(false)
