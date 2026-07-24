@@ -21,9 +21,11 @@ class FakeSession:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
         self.calls = 0
+        self.requests = []
 
     def get(self, *args, **kwargs):
         self.calls += 1
+        self.requests.append((args, kwargs))
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -60,6 +62,22 @@ def test_get_preserves_upstream_rate_limit_metadata(monkeypatch):
 
     assert captured.value.status_code == 429
     assert captured.value.retry_after == "17"
+
+
+def test_get_sends_configured_api_key_without_exposing_it(monkeypatch):
+    import openalex
+
+    session = FakeSession([requests.ConnectionError("must-not-leak")])
+    monkeypatch.setattr(openalex, "_SESSION", session)
+    monkeypatch.setattr(openalex, "MAX_RETRIES", 1)
+    monkeypatch.setattr(openalex, "OPENALEX_API_KEY", "test-secret-key")
+
+    with pytest.raises(openalex.OpenAlexError) as captured:
+        openalex._get("/authors", per_page=1)
+
+    assert session.requests[0][1]["params"]["api_key"] == "test-secret-key"
+    assert "test-secret-key" not in str(captured.value)
+    assert "must-not-leak" not in str(captured.value)
 
 
 def test_get_does_not_reuse_stale_status_after_network_failure(monkeypatch):

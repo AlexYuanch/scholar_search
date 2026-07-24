@@ -16,7 +16,8 @@ except ImportError:  # 允许未同步依赖的开发环境先正常启动
 PINYIN_AVAILABLE = lazy_pinyin is not None and Style is not None
 
 BASE = "https://api.openalex.org"
-HEADERS = {"User-Agent": "mailto:demo@example.com"}
+HEADERS = {"User-Agent": "ScholarSearch/1.0"}
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "").strip()
 MAX_RETRIES = 3
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 DEFAULT_MAX_PAGES = int(os.getenv("OPENALEX_MAX_WORK_PAGES", "200"))
@@ -47,11 +48,14 @@ def _get(endpoint: str, **params) -> dict:
     last_status: int | None = None
     last_retry_after: str | None = None
     url = f"{BASE}{endpoint}"
+    request_params = dict(params)
+    if OPENALEX_API_KEY:
+        request_params.setdefault("api_key", OPENALEX_API_KEY)
     for attempt in range(1, MAX_RETRIES + 1):
         last_status = None
         last_retry_after = None
         try:
-            response = _SESSION.get(url, params=params, headers=HEADERS, timeout=30)
+            response = _SESSION.get(url, params=request_params, headers=HEADERS, timeout=30)
             last_status = response.status_code
             last_retry_after = response.headers.get("Retry-After")
             if response.status_code in RETRY_STATUSES and attempt < MAX_RETRIES:
@@ -72,11 +76,12 @@ def _get(endpoint: str, **params) -> dict:
         except requests.RequestException as exc:
             last_error = exc
             break
+    error_type = type(last_error).__name__ if last_error else "UnknownError"
     raise OpenAlexError(
-        f"OpenAlex 请求失败: {endpoint}; {last_error}",
+        f"OpenAlex 请求失败: {endpoint}; {error_type}",
         status_code=last_status,
         retry_after=last_retry_after,
-    ) from last_error
+    ) from None
 
 
 def _name_query_variants(name: str) -> list[str]:

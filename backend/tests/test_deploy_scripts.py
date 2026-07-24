@@ -42,6 +42,14 @@ def test_compose_auth_uses_secure_server_side_session_defaults():
     assert "AUTH_DEV_RETURN_MAGIC_LINK" not in compose
 
 
+def test_openalex_api_key_is_required_for_deploy_and_passed_to_runtime():
+    compose = COMPOSE.read_text()
+    deploy = DEPLOY.read_text()
+
+    assert compose.count("OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}") == 2
+    assert "OPENALEX_API_KEY 不能为空" in deploy
+
+
 def test_production_deploy_rejects_loopback_public_url():
     script = DEPLOY.read_text()
 

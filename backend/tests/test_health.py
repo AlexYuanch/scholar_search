@@ -99,7 +99,7 @@ def test_search_maps_openalex_rate_limit_to_retryable_response(monkeypatch, auth
 
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "17"
-    assert response.json()["detail"] == "OpenAlex 当前请求达到限额，请稍后重试。"
+    assert response.json()["detail"] == "OpenAlex 额度已用完，17 秒后恢复。"
 
 
 def test_search_maps_other_openalex_failures_without_leaking_details(

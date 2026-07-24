@@ -9,6 +9,7 @@ import asyncio
 import base64
 import ipaddress
 import json
+import math
 import os
 import queue
 import threading
@@ -209,6 +210,20 @@ def _consume_api_quota(action: str, user: AuthUser, request: Request) -> None:
             detail="操作过于频繁，请稍后再试。",
             headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
         ) from exc
+
+
+def _openalex_rate_limit_detail(retry_after: str | None) -> str:
+    try:
+        seconds = max(1, int(retry_after or ""))
+    except ValueError:
+        return "OpenAlex 额度已用完，请在额度重置后重试。"
+    if seconds >= 3600:
+        wait = f"约 {math.ceil(seconds / 3600)} 小时"
+    elif seconds >= 60:
+        wait = f"约 {math.ceil(seconds / 60)} 分钟"
+    else:
+        wait = f"{seconds} 秒"
+    return f"OpenAlex 额度已用完，{wait}后恢复。"
 
 
 def _queue_stale_profile(author_id: str, cached: dict) -> str:
@@ -429,7 +444,7 @@ def search(
         if exc.status_code == 429:
             raise HTTPException(
                 status_code=429,
-                detail="OpenAlex 当前请求达到限额，请稍后重试。",
+                detail=_openalex_rate_limit_detail(exc.retry_after),
                 headers={"Retry-After": exc.retry_after or "60"},
             ) from exc
         raise HTTPException(

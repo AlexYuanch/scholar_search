@@ -108,6 +108,7 @@ nano .env
 | `COOKIE_SECURE` | `true` | `false` |
 | `POSTGRES_OWNER_PASSWORD` | 新的强密码 | 新的强密码 |
 | `POSTGRES_APP_PASSWORD` | 与上面不同的强密码 | 与上面不同的强密码 |
+| `OPENALEX_API_KEY` | OpenAlex 免费 API key | OpenAlex 免费 API key |
 
 密码会被拼入数据库连接 URL，当前模板要求使用足够长的字母、数字、下划线和短横线组合。不要在密码中放 `@`、`:`、`/`、`#`、`%` 等未编码 URL 字符。
 
@@ -117,7 +118,7 @@ nano .env
 APP_ENV=production
 ```
 
-本地账号不依赖邮箱、短信或第三方平台。`LLM_*` 可留空，系统会使用确定性规则分析。
+本地账号不依赖邮箱、短信或第三方平台。`OPENALEX_API_KEY` 用于 OpenAlex 的正常每日额度，可从 `openalex.org/settings/api` 免费获取；未配置时只能使用极小的匿名额度。`LLM_*` 可留空，系统会使用确定性规则分析。
 
 ### 3. 启动并验收
 
