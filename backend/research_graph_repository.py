@@ -124,7 +124,7 @@ def enqueue_research_graph_refresh(
             "scheduled_at": _iso(),
         }
         state = store["sync"].setdefault(author_id, {"version": 0})
-        state.update(status="queued", updated_at=_iso())
+        state.update(status="queued", last_error=None, updated_at=_iso())
         return job_id
 
     with repository.engine.begin() as conn:
@@ -174,6 +174,7 @@ def enqueue_research_graph_refresh(
                 status = case
                     when research_graph_sync_state.status = 'updating'
                     then 'updating' else 'queued' end,
+                last_error = null,
                 updated_at = now()
         """), {"scholar_id": scholar_id})
     return str(job_id)
@@ -1441,14 +1442,17 @@ def _memory_graph(repository, author_id: str) -> dict:
     for (citing_work_id, cited_source_id), relation in store["citations"].items():
         if citing_work_id not in paper_ids:
             continue
-        cited_work = store["works"].get(relation.get("cited_work_id"), {})
+        cited_work_id = relation.get("cited_work_id")
+        if not cited_work_id or cited_work_id not in paper_ids:
+            continue
+        cited_work = store["works"].get(cited_work_id, {})
         citations.append({
             "citing": {
                 "id": citing_work_id,
                 "title": store["works"][citing_work_id]["title"],
             },
             "cited": {
-                "id": relation.get("cited_work_id"),
+                "id": cited_work_id,
                 "source_id": cited_source_id,
                 "title": cited_work.get("title") or cited_source_id,
             },
@@ -1629,6 +1633,19 @@ def _postgres_graph(repository, author_id: str) -> dict:
             })
             return empty
         scholar_id = str(author["id"])
+        if author["last_success_at"] is None:
+            return _assemble_graph_payload(
+                author_id=author_id,
+                author_uuid=scholar_id,
+                author_name=author["display_name"],
+                state=dict(author),
+                timeline=[],
+                topics=[],
+                collaborations=[],
+                affiliations=[],
+                papers=[],
+                citations=[],
+            )
         work_rows = conn.execute(text("""
             select distinct w.id, w.source_work_id, w.title,
                    w.publication_year, w.publication_date, w.cited_by_count,
@@ -1640,10 +1657,10 @@ def _postgres_graph(repository, author_id: str) -> dict:
                    pi.source as insight_source, pi.confidence as insight_confidence
             from public.works w
             join public.authorships a on a.work_id = w.id
-            left join public.paper_insights pi on pi.work_id = w.id
+            join public.paper_insights pi on pi.work_id = w.id
             where a.scholar_id = cast(:scholar_id as uuid)
             order by w.cited_by_count desc, w.publication_year desc nulls last, w.id
-            limit 100
+            limit 1000
         """), {"scholar_id": scholar_id}).mappings().all()
         work_ids = [str(row["id"]) for row in work_rows]
         topic_rows = []
@@ -1841,9 +1858,11 @@ def _postgres_graph(repository, author_id: str) -> dict:
                 join public.works citing on citing.id = c.citing_work_id
                 left join public.works cited on cited.id = c.cited_work_id
                 where c.citing_work_id = any(cast(:work_ids as uuid[]))
+                  and c.cited_work_id = any(cast(:work_ids as uuid[]))
                 order by citing.publication_year desc nulls last,
+                         cited.publication_year desc nulls last,
                          citing.cited_by_count desc
-                limit 200
+                limit 100
             """), {"work_ids": work_ids}).mappings().all()
         citations = [{
             "citing": {
@@ -1933,15 +1952,32 @@ def maintain_research_graph_jobs(repository) -> dict:
         return {"enqueued": 0, "deleted": 0}
     with repository.engine.begin() as conn:
         conn.execute(text("""
-            update public.research_graph_refresh_jobs
-            set status = case when attempts < 3 then 'pending' else 'failed' end,
-                scheduled_at = case when attempts < 3 then now() else scheduled_at end,
-                finished_at = case when attempts < 3 then null else now() end,
-                locked_at = null,
-                last_error = 'worker lease expired',
+            with expired as (
+                update public.research_graph_refresh_jobs
+                set status = case
+                        when attempts < 3 then 'pending' else 'failed'
+                    end,
+                    scheduled_at = case
+                        when attempts < 3 then now() else scheduled_at
+                    end,
+                    finished_at = case
+                        when attempts < 3 then null else now()
+                    end,
+                    locked_at = null,
+                    last_error = 'worker lease expired',
+                    updated_at = now()
+                where status = 'running'
+                  and locked_at < now() - interval '30 minutes'
+                returning scholar_id, status, last_error
+            )
+            update public.research_graph_sync_state gs
+            set status = case
+                    when expired.status = 'pending' then 'queued' else 'failed'
+                end,
+                last_error = expired.last_error,
                 updated_at = now()
-            where status = 'running'
-              and locked_at < now() - interval '30 minutes'
+            from expired
+            where gs.scholar_id = expired.scholar_id
         """))
         enqueued = conn.execute(text("""
             insert into public.research_graph_refresh_jobs (
@@ -1964,8 +2000,11 @@ def maintain_research_graph_jobs(repository) -> dict:
                 limit 1
             ) requester
             left join public.research_graph_sync_state gs on gs.scholar_id = s.id
-            where gs.last_success_at is null
-               or gs.last_success_at < now() - interval '7 days'
+            where (gs.status is null or gs.status <> 'failed')
+              and (
+                  gs.last_success_at is null
+                  or gs.last_success_at < now() - interval '7 days'
+              )
             on conflict do nothing
         """)).rowcount
         conn.execute(text("""

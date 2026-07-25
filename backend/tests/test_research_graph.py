@@ -5,6 +5,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 from auth import generate_token, hash_password, hash_token
+from credentials import encrypt_secret
 from main import app
 from repository import InMemoryRepository
 from research_graph import (
@@ -261,6 +262,11 @@ def test_incremental_graph_upsert_keeps_relationships_unique_and_sorted():
         citation["cited"]["title"] == "Research graph paper 2022"
         for citation in graph["citations"]
     )
+    assert all(citation["cited"]["id"] for citation in graph["citations"])
+    assert not any(
+        citation["cited"]["source_id"] == "https://openalex.org/W-EXTERNAL"
+        for citation in graph["citations"]
+    )
     timeline_years = [
         item["event_year"]
         for item in graph["timeline"]
@@ -345,6 +351,42 @@ def test_failed_background_batch_preserves_last_successful_graph(monkeypatch):
     assert after["timeline"] == before["timeline"]
     assert repository._research_graph_store["jobs"][job_id]["status"] == "pending"
     assert after["status"]["last_success_at"] == before["status"]["last_success_at"]
+    assert "upstream unavailable" not in after["status"]["last_error"]
+    assert "已有成功数据" in after["status"]["last_error"]
+
+
+def test_graph_job_deduplicates_force_escalation_and_stops_after_three_attempts(
+    monkeypatch,
+):
+    repository = InMemoryRepository()
+    first_id = enqueue_research_graph_refresh(
+        repository,
+        AUTHOR_ID,
+        requested_by_user_id="user-a",
+        reason="incremental",
+        force_rebuild=False,
+    )
+    second_id = enqueue_research_graph_refresh(
+        repository,
+        AUTHOR_ID,
+        requested_by_user_id="user-a",
+        reason="rebuild",
+        force_rebuild=True,
+    )
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-test-key")
+
+    def fail_sync(*_args, **_kwargs):
+        raise RuntimeError("private upstream detail")
+
+    assert first_id == second_id
+    assert repository._research_graph_store["jobs"][first_id]["force_rebuild"]
+    for attempt in range(1, 4):
+        assert process_one_graph_job(repository, fail_sync) is False
+        job = repository._research_graph_store["jobs"][first_id]
+        assert job["attempts"] == attempt
+        assert job["status"] == ("pending" if attempt < 3 else "failed")
+    assert "private upstream detail" not in job["last_error"]
+    assert process_one_graph_job(repository, fail_sync) is False
 
 
 def test_crossref_failure_does_not_replace_previous_verified_publication_fields():
@@ -452,3 +494,67 @@ def test_authenticated_graph_api_reads_queues_and_returns_object_details(monkeyp
     assert refresh_response.json()["force_rebuild"] is True
     assert detail_response.status_code == 200
     assert detail_response.json()["data"]["title"] == "Research graph paper 2024"
+
+
+def test_graph_refresh_cannot_borrow_another_users_private_credential(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    repository.publish_profile({
+        "target_author_id": AUTHOR_ID,
+        "target_author_profile": _author(),
+        "deduped_works": [],
+        "works_complete": True,
+        "web_payload": {"name": "Dynamic Scholar", "totalPapers": 0},
+        "warnings": [],
+        "errors": [],
+    })
+    owner = repository.create_password_user(
+        "graph-owner",
+        hash_password("correct horse battery staple"),
+    )
+    other = repository.create_password_user(
+        "graph-other",
+        hash_password("correct horse battery staple"),
+    )
+    repository.save_user_api_credential(
+        owner["id"],
+        "openalex",
+        encrypt_secret("owner-only-key"),
+        "••••-key",
+    )
+    owner_session = generate_token()
+    other_session = generate_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(days=1)
+    repository.create_user_session(
+        owner["id"],
+        hash_token(owner_session),
+        expires_at,
+    )
+    repository.create_user_session(
+        other["id"],
+        hash_token(other_session),
+        expires_at,
+    )
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+    encoded_author_id = quote(AUTHOR_ID, safe="")
+
+    with TestClient(app) as client:
+        client.cookies.set("scholar_session", other_session)
+        denied = client.post(
+            f"/api/authors/{encoded_author_id}/research-graph/refresh",
+            json={"force_rebuild": False},
+        )
+        client.cookies.set("scholar_session", owner_session)
+        allowed = client.post(
+            f"/api/authors/{encoded_author_id}/research-graph/refresh",
+            json={"force_rebuild": False},
+        )
+
+    assert denied.status_code == 503
+    assert allowed.status_code == 200
+    jobs = repository._research_graph_store["jobs"]
+    assert len(jobs) == 1
+    assert next(iter(jobs.values()))["requested_by_user_id"] == owner["id"]

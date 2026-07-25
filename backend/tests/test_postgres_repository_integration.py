@@ -10,7 +10,9 @@ from repository import APIQuotaExceeded, PostgresRepository
 from research_graph import build_research_graph_batch
 from research_graph_repository import (
     apply_research_graph_batch,
+    enqueue_research_graph_refresh,
     get_research_graph,
+    maintain_research_graph_jobs,
 )
 from worker import process_one_job, process_one_search_job
 
@@ -625,6 +627,19 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             "warnings": [],
             "errors": [],
         })
+        enqueue_research_graph_refresh(
+            repository,
+            author_id,
+            requested_by_user_id=None,
+            reason="initial_graph",
+        )
+        before_first_success = get_research_graph(repository, author_id)
+        assert before_first_success["status"]["status"] == "queued"
+        assert before_first_success["papers"] == []
+        assert before_first_success["affiliations"] == []
+        assert before_first_success["local_network"]["nodes"]
+        assert before_first_success["local_network"]["edges"] == []
+
         first_batch = build_research_graph_batch(author, [first_work])
         apply_research_graph_batch(
             repository,
@@ -641,7 +656,10 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
         second_work = work(
             2,
             2024,
-            referenced=[f"{work_prefix}-1"],
+            referenced=[
+                f"{work_prefix}-1",
+                f"https://openalex.org/W-EXTERNAL-{unique}",
+            ],
             abstract=False,
         )
         second_batch = build_research_graph_batch(
@@ -667,12 +685,25 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             citation["cited"]["title"] == "Graph paper 1"
             for citation in graph["citations"]
         )
+        assert all(citation["cited"]["id"] for citation in graph["citations"])
+        assert not any(
+            citation["cited"]["source_id"]
+            == f"https://openalex.org/W-EXTERNAL-{unique}"
+            for citation in graph["citations"]
+        )
         years = [
             event["event_year"]
             for event in graph["timeline"]
             if event["event_year"]
         ]
         assert years == sorted(years, reverse=True)
+
+        reloaded_graph = get_research_graph(
+            PostgresRepository(DATABASE_URL),
+            author_id,
+        )
+        assert reloaded_graph["papers"] == graph["papers"]
+        assert reloaded_graph["timeline"] == graph["timeline"]
 
         with repository.engine.connect() as conn:
             counts = {
@@ -721,3 +752,75 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
                 delete from public.research_topics
                 where source_topic_id = :topic_id
             """), {"topic_id": topic_id})
+
+
+def test_graph_maintenance_fails_expired_third_attempt_and_sync_state():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    author_id = f"https://openalex.org/A-GRAPH-TIMEOUT-{unique}"
+    try:
+        repository.publish_profile({
+            "target_author_id": author_id,
+            "target_author_profile": {
+                "id": author_id,
+                "display_name": f"Timeout Scholar {unique}",
+            },
+            "deduped_works": [],
+            "works_complete": True,
+            "web_payload": {
+                "name": f"Timeout Scholar {unique}",
+                "totalPapers": 0,
+                "totalCitations": 0,
+            },
+            "warnings": [],
+            "errors": [],
+        })
+        job_id = enqueue_research_graph_refresh(
+            repository,
+            author_id,
+            requested_by_user_id=None,
+            reason="timeout_test",
+        )
+        with repository.engine.begin() as conn:
+            conn.execute(text("""
+                update public.research_graph_refresh_jobs
+                set status = 'running', attempts = 3,
+                    locked_at = now() - interval '31 minutes',
+                    started_at = now() - interval '31 minutes'
+                where id = cast(:job_id as uuid)
+            """), {"job_id": job_id})
+            conn.execute(text("""
+                update public.research_graph_sync_state
+                set status = 'updating'
+                where scholar_id = (
+                    select id from public.scholars
+                    where source_author_id = :author_id
+                )
+            """), {"author_id": author_id})
+
+        maintain_research_graph_jobs(repository)
+
+        with repository.engine.connect() as conn:
+            job = conn.execute(text("""
+                select status, attempts, last_error
+                from public.research_graph_refresh_jobs
+                where id = cast(:job_id as uuid)
+            """), {"job_id": job_id}).mappings().one()
+            state = conn.execute(text("""
+                select gs.status, gs.last_error
+                from public.research_graph_sync_state gs
+                join public.scholars s on s.id = gs.scholar_id
+                where s.source_author_id = :author_id
+            """), {"author_id": author_id}).mappings().one()
+
+        assert job["status"] == "failed"
+        assert job["attempts"] == 3
+        assert job["last_error"] == "worker lease expired"
+        assert state["status"] == "failed"
+        assert state["last_error"] == "worker lease expired"
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text("""
+                delete from public.scholars
+                where source_author_id = :author_id
+            """), {"author_id": author_id})

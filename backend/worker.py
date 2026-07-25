@@ -12,7 +12,7 @@ from credentials import (
 )
 from openalex import configure_budget_control
 from quality import assess_profile_quality
-from research_graph import sync_scholar_research_graph
+from research_graph import IncompleteGraphSync, sync_scholar_research_graph
 from research_graph_repository import (
     claim_research_graph_refresh,
     complete_research_graph_refresh,
@@ -136,10 +136,21 @@ def process_one_graph_job(repository, sync_fn=sync_scholar_research_graph) -> bo
         )
         return False
     except Exception as exc:
+        logger.warning(
+            "Research graph job %s failed with %s",
+            job_id,
+            type(exc).__name__,
+        )
+        public_error = (
+            "OpenAlex 暂时无法完成研究图谱更新；本次未写入，"
+            "已有成功数据（如有）保持不变。"
+            if isinstance(exc, IncompleteGraphSync)
+            else "研究图谱后台更新失败；本次未写入，已有成功数据保持不变。"
+        )
         fail_research_graph_refresh(
             repository,
             job_id,
-            str(exc),
+            public_error,
             retry=int(job.get("attempts", 1)) < 3,
         )
         return False

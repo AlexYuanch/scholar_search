@@ -14,7 +14,7 @@ from openalex import get_author, get_graph_works
 
 
 GRAPH_ANALYZER_VERSION = "abstract-extractive-v1"
-GRAPH_INCREMENTAL_OVERLAP_DAYS = 2
+GRAPH_INCREMENTAL_OVERLAP_DAYS = 30
 
 
 class IncompleteGraphSync(RuntimeError):
@@ -591,7 +591,10 @@ def sync_scholar_research_graph(
     )
 
     state = get_research_graph_sync_state(repository, author_id) or {}
-    updated_since = _incremental_since(state.get("last_success_at"), force_rebuild)
+    published_since = _incremental_since(
+        state.get("last_success_at"),
+        force_rebuild,
+    )
     cached_profile = repository.get_profile(author_id) or {}
     merged_author_ids = (
         (((cached_profile.get("payload") or {}).get("identityAudit") or {}).get(
@@ -609,7 +612,7 @@ def sync_scholar_research_graph(
     for source_author_id in target_author_ids:
         author_works, author_warnings, complete = get_graph_works(
             source_author_id,
-            updated_since=updated_since,
+            published_since=published_since,
             api_key=api_key,
             budget_provider=budget_provider,
         )
@@ -643,7 +646,7 @@ def sync_scholar_research_graph(
     )
     return {
         **result,
-        "mode": "full" if updated_since is None else "incremental",
+        "mode": "full" if published_since is None else "incremental",
         "fetched_works": len(works),
         "warnings": warnings,
     }

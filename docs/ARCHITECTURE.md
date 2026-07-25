@@ -122,11 +122,13 @@ flowchart LR
 ### 动态研究图谱
 
 1. 画像访问发现图谱缺失或超过 7 天时，幂等插入 `research_graph_refresh_jobs`；人工接口可请求普通增量或 `force_rebuild` 单学者全量读取。
-2. worker 读取最近成功时间，普通更新使用向前重叠 2 天的 `from_updated_date`；首次和重建不带水位，但都只处理当前学者。
+2. worker 读取最近成功时间，普通更新使用向前重叠 30 天的 `from_publication_date`；该筛选和 `sort=publication_date` 可在 OpenAlex 免费计划运行，避免误用返回 `Plan upgrade required` 的 `from_updated_date`/`sort=updated_date`。首次和显式重建不带水位，但都只处理当前学者。
 3. OpenAlex 作者与论文分页必须完整结束。任何页失败时不进入图谱内容事务；Crossref 失败只产生 warning，已经成功保存的 Crossref 标题、年份、期刊和类型不被 OpenAlex 回退值覆盖。
 4. DOI 和 OpenAlex ID 先通过 `work_external_ids` 定位规范论文，再原子 upsert 署名、机构、主题、合作、引用、摘要理解和时间线。所有关系使用主键/唯一键去重。
 5. 摘要理解只抽取 OpenAlex 摘要原句；摘要缺失时 `based_on_abstract=false`，四个理解字段与证据数组为空。
-6. 读取接口在数据库内按单学者聚合，并限制局部网络为 30 个节点、60 条边。对象详情 API 只接受作者、论文、机构和主题 UUID，全部经过登录依赖。
+6. 读取接口只有在 `last_success_at` 存在时才投影内容，论文查询必须连接 `paper_insights` 图谱标记，避免把普通画像论文冒充为首次失败图谱；后续失败仍返回最近成功内容。
+7. 前端按图谱批次中最多 1000 篇论文—主题关系计算最多五个研究阶段、相邻阶段方向迁移信号和主题强度矩阵；问题—方法—贡献只读取 `based_on_abstract=true` 的证据。阶段不再渲染论文清单，引用区只保留该学者本人论文之间的内部引用边，机构名称与新增合作对象数量压缩为阶段环境注释，不再生成与合作网络重复的大图或合作者列表。
+8. 对象详情 API 只接受作者、论文、机构和主题 UUID，读取、刷新和对象详情全部经过登录依赖；刷新任务只使用服务器 key 或任务请求用户自己的加密凭据。
 
 ### Worker
 
