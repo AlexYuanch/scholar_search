@@ -24,7 +24,7 @@ flowchart LR
 
 | 层 | 技术 | 责任 |
 |----|------|------|
-| 前端 | Vite + React + TypeScript | 身份确认、线性画像、证据化对比、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
+| 前端 | Vite + React + TypeScript | 身份确认、三栏画像、证据化对比、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
 | API | FastAPI | 密码登录、Cookie 会话、受保护查询、NDJSON 与 SSE |
 | 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、并行分析、证据审查和载荷格式化 |
 | Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、加密用户凭据、持久搜索缓存、按用户额度状态和队列 |
@@ -34,11 +34,11 @@ flowchart LR
 
 前端将文章详情、查询历史和研究追踪作为同一类响应式侧栏：`lg` 及以上进入页面网格的独立列，主内容同步收缩；较窄视口改为带遮罩的抽屉，手机宽度占满屏幕。面板使用动态视口高度和内部滚动，长标题、机构名和论文信息允许换行，避免水平溢出。
 
-画像主内容不再按标签页割裂，严格按产品顺序线性渲染：学者简介、当前主要研究方向、研究方向时间线、近期变化、核心指标、代表论文、全部论文、合作网络、数据核验与局限。切换学者时，前端通过 `AbortController` 和请求序号共同取消并忽略旧搜索/画像结果。
+画像主内容按“概览 / 论文 / 合作网络”三栏组织。概览包含学者简介、当前主要研究方向、研究方向时间线、近期变化、核心指标和数据核验；论文栏包含代表论文与全部论文；合作网络栏包含核心合作者和关系图。时间线方向点击会切换到论文栏并应用对应筛选。切换学者时，前端通过 `AbortController` 和请求序号共同取消并忽略旧搜索/画像结果。
 
 `affiliation_evidence.py` 把 OpenAlex 作者 `affiliations` 和目标 author ID 的论文 `raw_affiliation_strings` 保留为独立的“论文关联证据”。`select_primary_affiliation` 依次按最近六年覆盖年份数、最近关联年份、全职业覆盖年份数排序：一篇最新论文不能替换持续多年的主要机构，旧的长期单位也不会永久压过稳定的近期单位；搜索候选和画像复用同一纯函数。该模块不解析或生成任职机构、院系、实验室、职称、学位或培养阶段，并在结构中将 `verifiedEmployment` 保持为空，直到接入独立任职来源。前端只用中性的“主要/其他关联机构、OpenAlex 机构记录、论文署名原文”展示已有数据；没有独立证据的身份字段直接不渲染，不向用户展示内部推断规则。`ScholarIntroduction` 按当前语言从结构化指标、方向、代表作和合作者重建简介与依据，因此旧缓存中的中文总结不会污染英文界面。PostgreSQL 读取旧画像时主动移除错误的 `professionalIdentity` 字段，并升级缺少 `primaryAffiliation` 的旧画像；旧版候选缓存缺少机构选择版本号时按过期数据处理并重新计算，避免给旧值换上新标签，无需修改历史 migration。
 
-合作摘要保留 coauthor OpenAlex ID；网络上方姓名按钮和图节点直接调用既有画像加载函数，主学者姓名打开 OpenAlex，合作边仍打开共同论文侧栏。画像主体已从 `App.tsx` 拆为 `ProfileSection` 和 `ScholarIntroduction`，语言组装、身份事实与页面编排分离。
+合作摘要保留 coauthor OpenAlex ID；网络上方姓名按钮和图节点只打开合作者详情侧栏，侧栏中的“查询画像”按钮才调用画像加载函数，避免浏览图谱时意外切换当前学者。主学者姓名打开 OpenAlex，合作边打开共同论文侧栏。画像主体由 `ProfileSection` 和 `ScholarIntroduction` 负责，语言组装、身份事实与页面编排分离。
 
 时间线方向标签把 `{year, topic}` 传给全部论文组件并滚动到论文区；`GET /api/authors/{author_id}/works` 使用可选 `year`、`topic` 参数在 PostgreSQL 中筛选。新发布画像将工作流 `topic_clusters.paper_indices` 写入每篇论文 `raw_json.analysis_topics`，确保方向与论文精确关联；旧画像兼容使用 OpenAlex topic、keyword、concept 和标题短语匹配。筛选仍使用原有游标分页、登录校验、错误重试和请求取消机制。
 

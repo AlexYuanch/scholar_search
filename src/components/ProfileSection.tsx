@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { Lang } from "@/i18n"
 import type { EdgePaper, ScholarProfile } from "@/types"
 
@@ -36,11 +37,19 @@ interface Props {
     papers: EdgePaper[]
     weight: number
   }) => void
-  onViewProfile: (authorId: string, scholarName: string) => void
+  onNodeClick?: (data: {
+    id: string
+    name: string
+    type: string
+    papers: EdgePaper[]
+    weight: number
+  }) => void
   onFullscreenChange?: (fullscreen: boolean) => void
   t: Translate
   lang: Lang
 }
+
+type ProfileTab = "overview" | "papers" | "network"
 
 function MetricCard({
   icon: Icon,
@@ -86,17 +95,21 @@ export default function ProfileSection({
   onToggleFavorite,
   onCompare,
   onEdgeClick,
-  onViewProfile,
+  onNodeClick,
   onFullscreenChange,
   t,
   lang,
 }: Props) {
+  const [activeTab, setActiveTab] = useState<ProfileTab>("overview")
   const [paperFilter, setPaperFilter] = useState<TimelinePaperFilter | null>(null)
   const papersSectionRef = useRef<HTMLDivElement>(null)
 
   const handleTimelineTopicClick = (filter: TimelinePaperFilter) => {
     setPaperFilter(filter)
-    papersSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    setActiveTab("papers")
+    requestAnimationFrame(() => {
+      papersSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    })
   }
 
   const collaboratorId = (name: string, institution?: string, id?: string) => {
@@ -106,6 +119,17 @@ export default function ProfileSection({
       && node.name === name
       && (!institution || !node.institution || node.institution === institution)
     )?.id
+  }
+
+  const showCollaboratorDetails = (authorId: string, scholarName: string, fallbackWeight: number) => {
+    const edge = profile.graphEdges.find((item) => item.target === authorId)
+    onNodeClick?.({
+      id: authorId,
+      name: scholarName,
+      type: "coauthor",
+      papers: edge?.papers ?? [],
+      weight: edge?.weight ?? fallbackWeight,
+    })
   }
 
   return (
@@ -157,144 +181,155 @@ export default function ProfileSection({
 
       <Separator className="my-6" />
 
-      <div className="space-y-6">
-        <ScholarIntroduction profile={profile} lang={lang} t={t} />
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as ProfileTab)}
+      >
+        <TabsList className="grid w-full grid-cols-3 sm:inline-flex sm:w-auto">
+          <TabsTrigger value="overview">{t("tab.overview")}</TabsTrigger>
+          <TabsTrigger value="papers">{t("tab.papers")}</TabsTrigger>
+          <TabsTrigger value="network">{t("tab.network")}</TabsTrigger>
+        </TabsList>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.research_directions")}</CardTitle>
-            <CardDescription>{t("section.research_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent className="p-3 sm:p-6">
-            <TopicsSection topics={profile.topics} />
-          </CardContent>
-        </Card>
+        <TabsContent value="overview" className="space-y-6">
+          <ScholarIntroduction profile={profile} lang={lang} t={t} />
 
-        <ResearchTimeline profile={profile} onTopicClick={handleTimelineTopicClick} t={t} />
-        <ResearchChanges profile={profile} t={t} />
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <MetricCard icon={BookOpen} label={t("metric.total_papers")} value={profile.totalPapers} />
-          <MetricCard
-            icon={Quote}
-            label={t("metric.total_citations")}
-            value={profile.totalCitations.toLocaleString()}
-          />
-          <MetricCard icon={BarChart3} label={t("metric.h_index")} value={profile.hIndex} />
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.repr_papers")}</CardTitle>
-            <CardDescription>{t("section.repr_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {(profile.representativePapers.length
-              ? profile.representativePapers
-              : profile.topCitedPapers.slice(0, 5)
-            ).map((paper) => (
-              <div key={paper.id || `${paper.title}-${paper.year}`} className="rounded-lg border p-4">
-                {paper.id ? (
-                  <a
-                    href={paper.id}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-start gap-1 break-words text-sm font-medium text-primary hover:underline"
-                  >
-                    {paper.title}
-                    <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  </a>
-                ) : (
-                  <p className="break-words text-sm font-medium">{paper.title}</p>
-                )}
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {paper.year || "—"} · {paper.journal || "—"} ·{" "}
-                  {paper.citations.toLocaleString()} {t("candidate.citations")}
-                </p>
-              </div>
-            ))}
-            {!profile.representativePapers.length && !profile.topCitedPapers.length && (
-              <p className="text-sm text-muted-foreground">{t("compare.no_papers")}</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <div ref={papersSectionRef} className="scroll-mt-20">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
-              <CardDescription>{t("papers.pagination_desc")}</CardDescription>
+              <CardTitle className="text-base">{t("section.research_directions")}</CardTitle>
+              <CardDescription>{t("section.research_desc")}</CardDescription>
             </CardHeader>
-            <CardContent>
-              <AllPapers
-                profile={profile}
-                filter={paperFilter}
-                onClearFilter={() => setPaperFilter(null)}
-                t={t}
-              />
+            <CardContent className="p-3 sm:p-6">
+              <TopicsSection topics={profile.topics} />
             </CardContent>
           </Card>
-        </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("section.collab_network")}</CardTitle>
-            <CardDescription>{t("section.collab_desc")}</CardDescription>
-          </CardHeader>
-          <CardContent className="p-3 sm:p-6">
-            <div className="mb-5 flex flex-wrap gap-2">
-              {profile.coauthors.slice(0, 8).map((coauthor) => {
-                const authorId = collaboratorId(coauthor.name, coauthor.institution, coauthor.id)
-                if (!authorId) {
+          <ResearchTimeline profile={profile} onTopicClick={handleTimelineTopicClick} t={t} />
+          <ResearchChanges profile={profile} t={t} />
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <MetricCard icon={BookOpen} label={t("metric.total_papers")} value={profile.totalPapers} />
+            <MetricCard
+              icon={Quote}
+              label={t("metric.total_citations")}
+              value={profile.totalCitations.toLocaleString()}
+            />
+            <MetricCard icon={BarChart3} label={t("metric.h_index")} value={profile.hIndex} />
+          </div>
+
+          <DataVerification profile={profile} t={t} lang={lang} />
+        </TabsContent>
+
+        <TabsContent value="papers" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">{t("section.repr_papers")}</CardTitle>
+              <CardDescription>{t("section.repr_desc")}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {(profile.representativePapers.length
+                ? profile.representativePapers
+                : profile.topCitedPapers.slice(0, 5)
+              ).map((paper) => (
+                <div key={paper.id || `${paper.title}-${paper.year}`} className="rounded-lg border p-4">
+                  {paper.id ? (
+                    <a
+                      href={paper.id}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-start gap-1 break-words text-sm font-medium text-primary hover:underline"
+                    >
+                      {paper.title}
+                      <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    </a>
+                  ) : (
+                    <p className="break-words text-sm font-medium">{paper.title}</p>
+                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {paper.year || "—"} · {paper.journal || "—"} ·{" "}
+                    {paper.citations.toLocaleString()} {t("candidate.citations")}
+                  </p>
+                </div>
+              ))}
+              {!profile.representativePapers.length && !profile.topCitedPapers.length && (
+                <p className="text-sm text-muted-foreground">{t("compare.no_papers")}</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <div ref={papersSectionRef} className="scroll-mt-20">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">{t("section.all_papers")}</CardTitle>
+                <CardDescription>{t("papers.pagination_desc")}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <AllPapers
+                  profile={profile}
+                  filter={paperFilter}
+                  onClearFilter={() => setPaperFilter(null)}
+                  t={t}
+                />
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="network" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">{t("section.collab_network")}</CardTitle>
+              <CardDescription>{t("section.collab_desc")}</CardDescription>
+            </CardHeader>
+            <CardContent className="p-3 sm:p-6">
+              <div className="mb-5 flex flex-wrap gap-2">
+                {profile.coauthors.slice(0, 8).map((coauthor) => {
+                  const authorId = collaboratorId(coauthor.name, coauthor.institution, coauthor.id)
+                  if (!authorId) {
+                    return (
+                      <Badge
+                        key={`${coauthor.name}-${coauthor.institution || ""}`}
+                        variant="secondary"
+                        className="whitespace-normal"
+                      >
+                        {coauthor.name} · {coauthor.papers}
+                      </Badge>
+                    )
+                  }
                   return (
-                    <Badge
-                      key={`${coauthor.name}-${coauthor.institution || ""}`}
-                      variant="secondary"
-                      className="whitespace-normal"
+                    <button
+                      key={`${authorId}-${coauthor.name}`}
+                      type="button"
+                      className="inline-flex items-center rounded-md bg-secondary px-2.5 py-0.5 text-xs font-semibold text-secondary-foreground transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      title={`${t("graph.click_node")}: ${coauthor.name}`}
+                      onClick={() => showCollaboratorDetails(authorId, coauthor.name, coauthor.papers)}
                     >
                       {coauthor.name} · {coauthor.papers}
-                    </Badge>
+                    </button>
                   )
-                }
-                return (
-                  <button
-                    key={`${authorId}-${coauthor.name}`}
-                    type="button"
-                    className="inline-flex items-center rounded-md bg-secondary px-2.5 py-0.5 text-xs font-semibold text-secondary-foreground transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    title={`${t("graph.view_profile")}: ${coauthor.name}`}
-                    onClick={() => onViewProfile(authorId, coauthor.name)}
-                  >
-                    {coauthor.name} · {coauthor.papers}
-                  </button>
-                )
-              })}
-            </div>
-            <Suspense
-              fallback={(
-                <div className="flex h-[520px] items-center justify-center text-muted-foreground">
-                  <Loader2 className="h-6 w-6 animate-spin" />
-                </div>
-              )}
-            >
-              <CollaborationGraph
-                name={profile.name}
-                graphNodes={profile.graphNodes}
-                graphEdges={profile.graphEdges}
-                onEdgeClick={onEdgeClick}
-                onNodeClick={(data) => {
-                  if (data.type === "coauthor" && data.id) {
-                    onViewProfile(data.id, data.name)
-                  }
-                }}
-                onFullscreenChange={onFullscreenChange}
-                t={t}
-              />
-            </Suspense>
-          </CardContent>
-        </Card>
-
-        <DataVerification profile={profile} t={t} lang={lang} />
-      </div>
+                })}
+              </div>
+              <Suspense
+                fallback={(
+                  <div className="flex h-[520px] items-center justify-center text-muted-foreground">
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  </div>
+                )}
+              >
+                <CollaborationGraph
+                  name={profile.name}
+                  graphNodes={profile.graphNodes}
+                  graphEdges={profile.graphEdges}
+                  onEdgeClick={onEdgeClick}
+                  onNodeClick={onNodeClick}
+                  onFullscreenChange={onFullscreenChange}
+                  t={t}
+                />
+              </Suspense>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </section>
   )
 }

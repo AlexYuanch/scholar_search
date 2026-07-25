@@ -400,6 +400,19 @@ export default function App() {
     setPanel({ ...data, type: "edge" })
   }, [])
 
+  const handleNodeClick = useCallback((data: {
+    id: string; name: string; type: string; papers: PanelPaper[]; weight: number
+  }) => {
+    setAccountMode(null)
+    setPanel({
+      type: data.type === "center" ? "center" : "coauthor",
+      targetName: data.name,
+      papers: data.papers,
+      weight: data.weight,
+      targetId: data.id,
+    })
+  }, [])
+
   const handleCandidateSelect = useCallback((candidate: Candidate) => {
     setQuery(candidate.name)
     void loadProfile(candidate.id, candidate.merged_ids)
@@ -694,7 +707,7 @@ export default function App() {
           onToggleFavorite={() => void handleToggleFavorite()}
           onCompare={() => setComparisonOpen(true)}
           onEdgeClick={handleEdgeClick}
-          onViewProfile={(authorId, scholarName) => void handleViewProfile(authorId, scholarName)}
+          onNodeClick={handleNodeClick}
           onFullscreenChange={setGraphFullscreen}
           t={t}
           lang={lang}

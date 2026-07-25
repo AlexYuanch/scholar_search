@@ -247,11 +247,11 @@ const en: Record<string, string> = {
   "graph.size_hint": "Node size ∝ collaboration count",
   "graph.width_hint": "Edge width ∝ collaboration count",
   "graph.edge_label": "papers",
-  "graph.operate_hint": "Drag to reposition · Scroll to zoom · Click a co-author to open their profile · Click an edge for papers",
+  "graph.operate_hint": "Drag to reposition · Scroll to zoom · Click a co-author for details · Click an edge for papers",
   "graph.coauthor_papers": "Co-authored Papers",
   "graph.click_edge": "Click an edge to view co-authored papers",
   "graph.click_node": "Click a node for details",
-  "graph.view_profile": "View Profile",
+  "graph.view_profile": "Query Profile",
   "graph.open_alex": "Open OpenAlex Page",
   "graph.all": "All",
 

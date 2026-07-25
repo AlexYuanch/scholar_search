@@ -247,11 +247,11 @@ const zh: Record<string, string> = {
   "graph.size_hint": "节点大小 ∝ 合作频次",
   "graph.width_hint": "连线粗细 ∝ 合作频次",
   "graph.edge_label": "篇合作",
-  "graph.operate_hint": "拖拽重排 · 滚轮缩放 · 点击合作者跳转画像 · 点击连线查看合作论文",
+  "graph.operate_hint": "拖拽重排 · 滚轮缩放 · 点击合作者查看详情 · 点击连线查看合作论文",
   "graph.coauthor_papers": "合作论文",
   "graph.click_edge": "点击连线查看合作论文列表",
   "graph.click_node": "点击节点查看详情",
-  "graph.view_profile": "查看画像",
+  "graph.view_profile": "查询画像",
   "graph.open_alex": "打开 OpenAlex 主页",
   "graph.all": "全部",
 
