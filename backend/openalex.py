@@ -28,6 +28,11 @@ _BUDGET_GUARD: Callable[[str], int | None] | None = None
 _BUDGET_REPORTER: Callable[[str, dict], None] | None = None
 
 
+def _entity_id(value: str) -> str:
+    """Return the stable OpenAlex entity id accepted by paths and filters."""
+    return str(value or "").strip().rstrip("/").rsplit("/", 1)[-1]
+
+
 class OpenAlexError(RuntimeError):
     """Raised when OpenAlex cannot satisfy a request."""
 
@@ -221,7 +226,7 @@ def search_authors(
 def get_author(author_id: str, *, api_key: str, budget_provider: str) -> dict:
     """获取单个作者的详细信息。"""
     return _get(
-        f"/authors/{author_id}",
+        f"/authors/{_entity_id(author_id)}",
         api_key=api_key,
         budget_provider=budget_provider,
     )
@@ -235,11 +240,12 @@ def get_author_identity_fingerprint(
     budget_provider: str,
 ) -> dict:
     """获取用于身份消歧的轻量论文、合作者和主题指纹。"""
+    normalized_author_id = _entity_id(author_id)
     data = _get(
         "/works",
         api_key=api_key,
         budget_provider=budget_provider,
-        filter=f"authorships.author.id:{author_id}",
+        filter=f"authorships.author.id:{normalized_author_id}",
         per_page=min(max(per_page, 1), 200),
         sort="cited_by_count:desc",
         select="id,doi,publication_year,authorships,primary_topic,topics",
@@ -256,7 +262,7 @@ def get_author_identity_fingerprint(
             publication_years.append(int(work["publication_year"]))
         for authorship in work.get("authorships") or []:
             coauthor_id = (authorship.get("author") or {}).get("id")
-            if coauthor_id and coauthor_id != author_id:
+            if coauthor_id and _entity_id(coauthor_id) != normalized_author_id:
                 coauthor_ids.add(str(coauthor_id))
         primary_topic = work.get("primary_topic") or {}
         if primary_topic.get("id"):
@@ -327,7 +333,7 @@ def get_works(
             data = _get("/works",
                         api_key=api_key,
                         budget_provider=budget_provider,
-                        filter=f"authorships.author.id:{author_id}",
+                        filter=f"authorships.author.id:{_entity_id(author_id)}",
                         per_page=200,
                         cursor=cursor,
                         sort="cited_by_count:desc",
@@ -345,3 +351,59 @@ def get_works(
     if cursor:
         warnings.append(f"OpenAlex 论文分页达到上限 {max_pages} 页，结果可能不完整")
     return works, warnings
+
+
+def get_graph_works(
+    author_id: str,
+    *,
+    published_since: str | None,
+    api_key: str,
+    budget_provider: str,
+    max_pages: int = DEFAULT_MAX_PAGES,
+) -> tuple[List[dict], list[str], bool]:
+    """Fetch graph fields, optionally only recently published works.
+
+    Unlike the profile collector, this function never presents a partial page
+    sequence as successful because graph persistence is an atomic batch.
+    Publication-date filtering is used because OpenAlex free plans reject
+    ``from_updated_date`` and ``sort=updated_date`` as paid capabilities.
+    """
+    works: List[dict] = []
+    warnings: list[str] = []
+    cursor = "*"
+    page = 0
+    filters = [f"authorships.author.id:{_entity_id(author_id)}"]
+    if published_since:
+        filters.append(f"from_publication_date:{published_since}")
+
+    while cursor and page < max_pages:
+        page += 1
+        try:
+            data = _get(
+                "/works",
+                api_key=api_key,
+                budget_provider=budget_provider,
+                filter=",".join(filters),
+                per_page=200,
+                cursor=cursor,
+                sort="publication_date:desc",
+                select=(
+                    "id,doi,title,publication_year,publication_date,cited_by_count,"
+                    "authorships,abstract_inverted_index,referenced_works,primary_topic,"
+                    "topics,keywords,primary_location,type,language,updated_date"
+                ),
+            )
+        except OpenAlexError as exc:
+            warnings.append(
+                f"OpenAlex 图谱批次在第 {page} 页失败；本批次未写入: {exc}"
+            )
+            return works, warnings, False
+        works.extend(data.get("results", []))
+        cursor = data.get("meta", {}).get("next_cursor")
+
+    if cursor:
+        warnings.append(
+            f"OpenAlex 图谱分页达到上限 {max_pages} 页；本批次未写入"
+        )
+        return works, warnings, False
+    return works, warnings, True

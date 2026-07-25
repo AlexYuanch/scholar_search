@@ -189,6 +189,49 @@ def test_get_works_returns_partial_results_with_warning(monkeypatch):
     assert "部分论文" in warnings[0]
 
 
+def test_openalex_entity_urls_are_normalized_for_author_paths(monkeypatch):
+    import openalex
+
+    session = FakeSession([FakeResponse(200, {"id": "https://openalex.org/A1"})])
+    monkeypatch.setattr(openalex, "_SESSION", session)
+
+    openalex.get_author(
+        "https://openalex.org/A1",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
+
+    assert session.requests[0][0][0].endswith("/authors/A1")
+
+
+def test_graph_works_uses_free_plan_publication_incremental_filter(monkeypatch):
+    import openalex
+
+    session = FakeSession([FakeResponse(200, {
+        "results": [{"id": "https://openalex.org/W1"}],
+        "meta": {"next_cursor": None},
+    })])
+    monkeypatch.setattr(openalex, "_SESSION", session)
+
+    works, warnings, complete = openalex.get_graph_works(
+        "https://openalex.org/A1",
+        published_since="2026-06-01",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
+
+    params = session.requests[0][1]["params"]
+    assert works == [{"id": "https://openalex.org/W1"}]
+    assert warnings == []
+    assert complete is True
+    assert params["filter"] == (
+        "authorships.author.id:A1,from_publication_date:2026-06-01"
+    )
+    assert params["sort"] == "publication_date:desc"
+    assert "from_updated_date" not in params["filter"]
+    assert params["sort"] != "updated_date:asc"
+
+
 def test_chinese_name_query_adds_both_pinyin_orders():
     import openalex
 

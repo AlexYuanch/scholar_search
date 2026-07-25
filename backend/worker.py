@@ -12,6 +12,13 @@ from credentials import (
 )
 from openalex import configure_budget_control
 from quality import assess_profile_quality
+from research_graph import IncompleteGraphSync, sync_scholar_research_graph
+from research_graph_repository import (
+    claim_research_graph_refresh,
+    complete_research_graph_refresh,
+    fail_research_graph_refresh,
+    maintain_research_graph_jobs,
+)
 from repository import create_repository
 from search_service import (
     OPENALEX_MIN_REMAINING_CREDITS,
@@ -103,6 +110,52 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
         return False
 
 
+def process_one_graph_job(repository, sync_fn=sync_scholar_research_graph) -> bool:
+    """Process one scholar-scoped graph batch without touching prior graph content on failure."""
+    job = claim_research_graph_refresh(repository)
+    if not job:
+        return False
+    job_id = str(job["id"])
+    try:
+        api_key, budget_provider = _job_openalex_credential(repository, job)
+        sync_fn(
+            repository,
+            job["author_id"],
+            api_key=api_key,
+            budget_provider=budget_provider,
+            force_rebuild=bool(job.get("force_rebuild")),
+        )
+        complete_research_graph_refresh(repository, job_id)
+        return True
+    except MissingJobCredential as exc:
+        fail_research_graph_refresh(
+            repository,
+            job_id,
+            str(exc),
+            retry=False,
+        )
+        return False
+    except Exception as exc:
+        logger.warning(
+            "Research graph job %s failed with %s",
+            job_id,
+            type(exc).__name__,
+        )
+        public_error = (
+            "OpenAlex 暂时无法完成研究图谱更新；本次未写入，"
+            "已有成功数据（如有）保持不变。"
+            if isinstance(exc, IncompleteGraphSync)
+            else "研究图谱后台更新失败；本次未写入，已有成功数据保持不变。"
+        )
+        fail_research_graph_refresh(
+            repository,
+            job_id,
+            public_error,
+            retry=int(job.get("attempts", 1)) < 3,
+        )
+        return False
+
+
 def _job_openalex_credential(repository, job: dict) -> tuple[str, str]:
     server_api_key = os.getenv("OPENALEX_API_KEY", "").strip()
     if server_api_key:
@@ -144,14 +197,17 @@ def run_forever() -> None:
             try:
                 result = repository.run_maintenance()
                 logger.info("Worker maintenance completed: %s", result)
+                graph_result = maintain_research_graph_jobs(repository)
+                logger.info("Research graph maintenance completed: %s", graph_result)
             except Exception:
                 logger.exception("Worker maintenance failed")
             next_maintenance = now + maintenance_seconds
 
         try:
             search_processed = process_one_search_job(repository)
+            graph_processed = process_one_graph_job(repository)
             profile_processed = process_one_job(repository)
-            processed = search_processed or profile_processed
+            processed = search_processed or graph_processed or profile_processed
         except Exception:
             logger.exception("Worker queue poll failed")
             processed = False

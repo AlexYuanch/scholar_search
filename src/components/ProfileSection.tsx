@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import AllPapers from "@/components/AllPapers"
 import DataVerification from "@/components/DataVerification"
+import DynamicResearchGraph from "@/components/DynamicResearchGraph"
 import ResearchChanges from "@/components/ResearchChanges"
 import ResearchTimeline, { type TimelinePaperFilter } from "@/components/ResearchTimeline"
 import ScholarIntroduction from "@/components/ScholarIntroduction"
@@ -49,7 +50,7 @@ interface Props {
   lang: Lang
 }
 
-type ProfileTab = "overview" | "papers" | "network"
+type ProfileTab = "overview" | "papers" | "network" | "research-graph"
 
 function MetricCard({
   icon: Icon,
@@ -185,10 +186,11 @@ export default function ProfileSection({
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as ProfileTab)}
       >
-        <TabsList className="grid w-full grid-cols-3 sm:inline-flex sm:w-auto">
+        <TabsList className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto">
           <TabsTrigger value="overview">{t("tab.overview")}</TabsTrigger>
           <TabsTrigger value="papers">{t("tab.papers")}</TabsTrigger>
           <TabsTrigger value="network">{t("tab.network")}</TabsTrigger>
+          <TabsTrigger value="research-graph">{t("tab.research_graph")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
@@ -328,6 +330,10 @@ export default function ProfileSection({
               </Suspense>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="research-graph" className="space-y-4">
+          <DynamicResearchGraph profile={profile} t={t} />
         </TabsContent>
       </Tabs>
     </section>
