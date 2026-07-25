@@ -205,7 +205,7 @@ export default function ProfileSection({
           </Card>
 
           <ResearchTimeline profile={profile} onTopicClick={handleTimelineTopicClick} t={t} />
-          <ResearchChanges profile={profile} t={t} />
+          <ResearchChanges profile={profile} t={t} lang={lang} />
 
           <div className="grid gap-4 sm:grid-cols-3">
             <MetricCard icon={BookOpen} label={t("metric.total_papers")} value={profile.totalPapers} />

@@ -8,6 +8,7 @@
 - 被判定为同一学者的拆分 OpenAlex 档案联合获取论文并归到主身份；研究方向由 OpenAlex 细粒度 topics、keywords 与标题高频短语交叉提取，宽泛学科标签降权。
 - 联合论文会执行保守的身份一致性审查；只有同时与核心机构、合作者和主题断开的微小论文簇才自动排除，较大冲突簇保留并提示人工确认。
 - LangGraph 分页获取 OpenAlex 论文，以 DOI 查询 Crossref 出版元数据，裁决后再生成引用统计、研究方向、兴趣演化、代表论文和合作网络。
+- DeepSeek 多 Agent 链路由“分析规划、研究方向、研究变化、学者总结、证据复核”五个 Agent 组成；Flash 默认处理常规任务，规划判定复杂或输出校验失败时自动升级 Pro。模型结果不能绕过 DOI、论文索引、指标复算和证据 ID 门禁。
 - 概览展示本次收录、DOI 数、跨来源核验数、待核实数、来源差异和分页完整性；待核实只表示缺少 DOI 或 Crossref 暂无记录。
 - 最终总结经过证据审查，论文依据必须能回溯到裁决后的统一论文集；不通过审查的新画像不会发布。
 - 已有画像立即从 PostgreSQL 返回；超过刷新阈值时只向 `refresh_jobs` 幂等排队，由 worker 异步获取 OpenAlex/Crossref 新数据，Web 请求不再同步重复运行完整工作流。
@@ -40,7 +41,7 @@
 | UI / 图谱 | Radix primitives、lucide-react、vis-network |
 | API | FastAPI、Uvicorn、SQLAlchemy 2、psycopg |
 | 工作流 | LangGraph |
-| 数据源 | OpenAlex、Crossref；可选 OpenAI 兼容 LLM |
+| 数据源 / 模型 | OpenAlex、Crossref；DeepSeek V4 或其他 OpenAI 兼容 LLM |
 | 数据库 | PostgreSQL 17、Alembic |
 | 身份认证 | 本地账号密码、scrypt 密码摘要、服务端会话 Cookie |
 | 实时更新 | PostgreSQL `LISTEN/NOTIFY`、Server-Sent Events |
@@ -114,6 +115,10 @@ nano .env
 | `POSTGRES_APP_PASSWORD` | 与上面不同的强密码 | 与上面不同的强密码 |
 | `OPENALEX_API_KEY` | OpenAlex 免费账号 key | OpenAlex 免费账号 key |
 | `CREDENTIAL_ENCRYPTION_KEY` | 启用个人 key 时填写 | 启用个人 key 时填写 |
+| `LLM_API_KEY` | DeepSeek API key | DeepSeek API key |
+| `LLM_BASE_URL` | `https://api.deepseek.com` | `https://api.deepseek.com` |
+| `LLM_FAST_MODEL` | `deepseek-v4-flash` | `deepseek-v4-flash` |
+| `LLM_STRONG_MODEL` | `deepseek-v4-pro` | `deepseek-v4-pro` |
 
 密码会被拼入数据库连接 URL，当前模板要求使用足够长的字母、数字、下划线和短横线组合。不要在密码中放 `@`、`:`、`/`、`#`、`%` 等未编码 URL 字符。
 
@@ -123,7 +128,7 @@ nano .env
 APP_ENV=production
 ```
 
-本地账号不依赖邮箱、短信或第三方平台。`OPENALEX_API_KEY` 仅保存在服务器 `.env`，Web 与 worker 共用且不得提交到 Git。`CREDENTIAL_ENCRYPTION_KEY` 只在后续通过 HTTPS 开放个人 key 设置时需要，可用 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` 生成。`LLM_*` 可留空，系统会使用确定性规则分析。
+本地账号不依赖邮箱、短信或第三方平台。`OPENALEX_API_KEY` 仅保存在服务器 `.env`，Web 与 worker 共用且不得提交到 Git。`CREDENTIAL_ENCRYPTION_KEY` 只在后续通过 HTTPS 开放个人 key 设置时需要，可用 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` 生成。`LLM_API_KEY` 留空时所有 Agent 安全降级到可复算规则；启用时必须同时填写 Base URL、Flash/Pro 模型、路由模式和 Pro 每日调用上限。模型 key、提示词和原始响应不进入前端或数据库。
 
 公开部署不能把 OpenAlex 当作真正无限上游。平台管理员在 [OpenAlex API 设置](https://openalex.org/settings/api) 注册免费 key；普通搜索结果缓存 24 小时、空结果缓存 15 分钟、身份指纹缓存 30 天；并发的同名冷请求只允许一个 Web/worker 实际访问上游，其余请求等待同一 PostgreSQL 任务。额度状态按 `openalex:server` 写入 `upstream_rate_limits`，达到保护线后停止新的上游调用，优先返回旧缓存或已发布学者的本地结果；没有可用事实时提示稍后重试，不自动付费。
 

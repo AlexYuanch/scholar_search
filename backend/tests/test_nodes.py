@@ -2,6 +2,7 @@ from nodes import (
     _fallback_topic_analysis,
     _filter_identity_outlier_works,
     adjudicate_sources,
+    agent_analyze_topics,
     analyze_coauthors,
     build_collaboration_graph,
     collect_crossref_records,
@@ -557,6 +558,88 @@ def test_evidence_review_rejects_untraceable_paper_claim():
     assert result["evidence_review"]["publishable"] is True
 
 
+def test_topic_agent_reorganizes_traceable_directions(monkeypatch):
+    import llm
+
+    state = default_state()
+    state["deduped_works"] = [
+        {
+            "id": "W1",
+            "title": "Knowledge Graph Completion with Language Models",
+            "publication_year": 2025,
+            "cited_by_count": 10,
+            "primary_topic": {"display_name": "Knowledge graph", "score": 0.9},
+            "topics": [{"display_name": "Knowledge graph", "score": 0.9}],
+            "keywords": [],
+            "concepts": [],
+        },
+        {
+            "id": "W2",
+            "title": "Question Answering over Knowledge Graphs",
+            "publication_year": 2024,
+            "cited_by_count": 8,
+            "primary_topic": {"display_name": "Question answering", "score": 0.9},
+            "topics": [{"display_name": "Question answering", "score": 0.9}],
+            "keywords": [],
+            "concepts": [],
+        },
+    ]
+    state["agent_plan"] = {"topic_tier": "fast"}
+    monkeypatch.setattr(llm, "run_structured_agent", lambda *_args, **_kwargs: (
+        llm.TopicAgentOutput(directions=[
+            llm.TopicDirection(
+                name="Knowledge Graph Question Answering",
+                description_zh="围绕知识图谱上的问答与知识补全开展研究。",
+                description_en="Research on question answering and completion over knowledge graphs.",
+                source_topics=["Knowledge graph", "Question answering"],
+                confidence="high",
+            ),
+        ]),
+        {
+            "agent": "topic_agent",
+            "status": "success",
+            "model": "deepseek-v4-flash",
+            "tier": "fast",
+            "plannedTier": "fast",
+            "attemptedModels": ["deepseek-v4-flash"],
+            "escalated": False,
+            "reasons": [],
+        },
+    ))
+
+    result = agent_analyze_topics(state)
+
+    assert result["topic_clusters"][0]["topic"] == "Knowledge Graph Question Answering"
+    assert result["topic_clusters"][0]["paper_indices"] == [0, 1]
+    assert result["topic_clusters"][0]["agent_generated"] is True
+    assert result["agent_runs"][0]["status"] == "success"
+
+
+def test_agent_evidence_rejection_rebuilds_summary():
+    state = default_state()
+    state["target_author_profile"] = {
+        "display_name": "Ada Lovelace",
+        "last_known_institutions": [{"display_name": "Analytical Engine Lab"}],
+    }
+    state["adjudicated_works"] = [{"id": "W1", "title": "Known paper"}]
+    state["citation_summary"] = {"total_papers": 1, "total_citations": 3, "h_index": 1}
+    state["profile_summary"] = "Unsupported summary [1]"
+    state["profile_summary_i18n"] = {"zh": "不受支持的总结 [1]", "en": "Unsupported summary [1]"}
+    state["profile_evidence"] = [{"id": "1", "type": "metric", "text": "One paper."}]
+    state["agent_review"] = {
+        "summarySupported": False,
+        "approvedEvidenceIds": ["1"],
+        "flags": ["unsupported_claim"],
+        "confidence": "low",
+    }
+
+    result = review_profile_evidence(state)
+
+    assert result["profile_summary_i18n"] == {}
+    assert "summary_rebuilt_after_agent_review" in result["evidence_review"]["flags"]
+    assert result["evidence_review"]["agentReviewed"] is True
+
+
 def test_generate_profile_report_falls_back_to_evidence_when_llm_lacks_citations(monkeypatch):
     import llm
 
@@ -578,13 +661,66 @@ def test_generate_profile_report_falls_back_to_evidence_when_llm_lacks_citations
         }]
     }
 
-    monkeypatch.setattr(llm, "report_llm", lambda _data: "No evidence markers here.")
+    monkeypatch.setattr(llm, "run_structured_agent", lambda *_args, **_kwargs: (
+        None,
+        {
+            "agent": "report_agent",
+            "status": "fallback",
+            "model": "deepseek-v4-flash",
+            "tier": "fast",
+            "plannedTier": "fast",
+            "attemptedModels": ["deepseek-v4-flash"],
+            "escalated": False,
+            "reasons": ["invalid_report_citations"],
+        },
+    ))
 
     result = generate_profile_report(state)
 
     assert "[1]" in result["profile_summary"]
+    assert result["profile_summary_i18n"] == {}
     assert result["profile_evidence"][0]["type"] == "metric"
     assert any(item["type"] == "paper" for item in result["profile_evidence"])
+    assert result["agent_runs"][0]["status"] == "fallback"
+
+
+def test_generate_profile_report_returns_bilingual_agent_summary(monkeypatch):
+    import llm
+
+    state = default_state()
+    state["target_author_id"] = "A0"
+    state["target_author_profile"] = {
+        "display_name": "Ada Lovelace",
+        "last_known_institutions": [{"display_name": "Analytical Engine Lab"}],
+    }
+    state["citation_summary"] = {"total_papers": 3, "total_citations": 42, "h_index": 2}
+    state["topic_clusters"] = [{"topic": "Computing", "weight": 0.7, "paper_indices": [0]}]
+    state["coauthors"] = [{"name": "Charles Babbage", "papers": 2}]
+    state["representative_papers"] = {}
+    monkeypatch.setattr(llm, "run_structured_agent", lambda *_args, **_kwargs: (
+        llm.ProfileReportOutput(
+            summary_zh="该学者围绕可计算方法开展研究，论文与引用指标见依据 [1]。其方向由论文主题支持 [2]，合作网络也有共同署名记录 [3]。",
+            summary_en="The scholar works on computational methods, with publication and citation metrics supported by evidence [1]. The research direction is grounded in paper topics [2], while collaboration patterns are supported by coauthorship records [3].",
+            evidence_ids=["1", "2", "3"],
+            confidence="high",
+        ),
+        {
+            "agent": "report_agent",
+            "status": "success",
+            "model": "deepseek-v4-flash",
+            "tier": "fast",
+            "plannedTier": "fast",
+            "attemptedModels": ["deepseek-v4-flash"],
+            "escalated": False,
+            "reasons": [],
+        },
+    ))
+
+    result = generate_profile_report(state)
+
+    assert result["profile_summary_i18n"]["zh"].startswith("该学者")
+    assert result["profile_summary_i18n"]["en"].startswith("The scholar")
+    assert result["agent_runs"][0]["model"] == "deepseek-v4-flash"
 
 
 def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
@@ -625,6 +761,18 @@ def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
     state["profile_evidence"] = [{"id": "1", "type": "metric", "text": "Metric evidence"}]
     state["data_audit"] = {"status": "partial", "collectedWorks": 60}
     state["evidence_review"] = {"publishable": True, "summaryConfidence": "medium"}
+    state["profile_summary_i18n"] = {"zh": "总结 [1]", "en": "Summary [1]"}
+    state["agent_plan"] = {"topic_tier": "fast"}
+    state["agent_runs"] = [{
+        "agent": "topic_agent",
+        "status": "success",
+        "model": "deepseek-v4-flash",
+        "tier": "fast",
+        "plannedTier": "fast",
+        "attemptedModels": ["deepseek-v4-flash"],
+        "escalated": False,
+        "reasons": [],
+    }]
 
     result = format_web_payload(state)
     payload = result["web_payload"]
@@ -633,6 +781,9 @@ def test_format_web_payload_includes_author_id_evidence_and_top_50_papers():
     assert payload["profileEvidence"] == state["profile_evidence"]
     assert payload["dataAudit"] == state["data_audit"]
     assert payload["evidenceReview"] == state["evidence_review"]
+    assert payload["profileSummaryI18n"] == state["profile_summary_i18n"]
+    assert payload["agentAnalysis"]["status"] == "completed"
+    assert payload["agentAnalysis"]["runs"][0]["agent"] == "topic_agent"
     assert payload["affiliationEvidence"]["publicationAffiliationStatements"][0] == {
         "text": "Analytical Engine Research Institute, Analytical University",
         "years": list(range(2059, 1999, -1)),
@@ -652,8 +803,13 @@ def test_workflow_uses_multi_source_adjudication_and_review_nodes():
     assert "collect_works" in node_names
     assert "collect_crossref" in node_names
     assert "adjudicate_sources" in node_names
+    assert "plan_agents" in node_names
+    assert "agent_analyze_trajectory" in node_names
+    assert "agent_review_report" in node_names
     assert "review_evidence" in node_names
-    assert node_names.index("adjudicate_sources") < node_names.index("analyze_citations")
+    assert node_names.index("adjudicate_sources") < node_names.index("plan_agents")
+    assert node_names.index("plan_agents") < node_names.index("analyze_citations")
+    assert node_names.index("generate_report") < node_names.index("agent_review_report")
     assert node_names.index("review_evidence") < node_names.index("format_payload")
 
 
@@ -696,6 +852,11 @@ def test_default_state_has_multi_source_fields_without_semantic_scholar():
     assert state["source_audit"] == {}
     assert state["adjudicated_works"] == []
     assert state["data_audit"] == {}
+    assert state["agent_plan"] == {}
+    assert state["agent_runs"] == []
+    assert state["trajectory_analysis"] == {}
+    assert state["profile_summary_i18n"] == {}
+    assert state["agent_review"] == {}
     assert state["evidence_review"] == {}
     assert "query_name" not in state
     assert "optional_institution" not in state

@@ -73,7 +73,10 @@ services:
       OPENALEX_MIN_REMAINING_CREDITS: ${OPENALEX_MIN_REMAINING_CREDITS:-200}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_FAST_MODEL: ${LLM_FAST_MODEL:-}
+      LLM_STRONG_MODEL: ${LLM_STRONG_MODEL:-}
+      LLM_ROUTER_MODE: ${LLM_ROUTER_MODE:-auto}
+      LLM_STRONG_DAILY_LIMIT: ${LLM_STRONG_DAILY_LIMIT:-100}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -110,7 +113,10 @@ services:
       OPENALEX_MIN_REMAINING_CREDITS: ${OPENALEX_MIN_REMAINING_CREDITS:-200}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_FAST_MODEL: ${LLM_FAST_MODEL:-}
+      LLM_STRONG_MODEL: ${LLM_STRONG_MODEL:-}
+      LLM_ROUTER_MODE: ${LLM_ROUTER_MODE:-auto}
+      LLM_STRONG_DAILY_LIMIT: ${LLM_STRONG_DAILY_LIMIT:-100}
     depends_on:
       migrate:
         condition: service_completed_successfully

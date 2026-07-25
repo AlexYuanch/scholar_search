@@ -26,9 +26,12 @@ class ScholarProfileState(TypedDict):
 
     # ── 研究方向 ──
     topic_clusters: List[Dict[str, Any]]
+    agent_plan: Dict[str, Any]
+    agent_runs: Annotated[List[Dict[str, Any]], operator.add]
 
     # ── 兴趣演化 ──
     interest_timeline: List[Dict[str, Any]]
+    trajectory_analysis: Dict[str, Any]
 
     # ── 代表论文 ──
     representative_papers: Dict[str, List[Dict[str, Any]]]
@@ -40,8 +43,10 @@ class ScholarProfileState(TypedDict):
 
     # ── 最终输出 ──
     profile_summary: str
+    profile_summary_i18n: Dict[str, str]
     profile_evidence: List[Dict[str, Any]]
     analysis_claims: List[Dict[str, Any]]
+    agent_review: Dict[str, Any]
     evidence_review: Dict[str, Any]
     web_payload: Dict[str, Any]
 
@@ -68,14 +73,19 @@ def default_state() -> Dict[str, Any]:
         "works_complete": False,
         "citation_summary": {},
         "topic_clusters": [],
+        "agent_plan": {},
+        "agent_runs": [],
         "interest_timeline": [],
+        "trajectory_analysis": {},
         "representative_papers": {},
         "coauthors": [],
         "graph_nodes": [],
         "graph_edges": [],
         "profile_summary": "",
+        "profile_summary_i18n": {},
         "profile_evidence": [],
         "analysis_claims": [],
+        "agent_review": {},
         "evidence_review": {},
         "web_payload": {},
         "openalex_api_key": "",

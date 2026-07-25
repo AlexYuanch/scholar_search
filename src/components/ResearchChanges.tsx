@@ -1,11 +1,13 @@
 import { ArrowDownRight, ArrowUpRight, CircleMinus, Sparkles } from "lucide-react"
 import type { ScholarProfile } from "@/types"
+import type { Lang } from "@/i18n"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface Props {
   profile: ScholarProfile
   t: (key: string) => string
+  lang: Lang
 }
 
 type DirectionKind = "emerging" | "rising" | "steady" | "falling"
@@ -222,7 +224,7 @@ function ActivityMatrix({ analysis, t }: { analysis: ChangeAnalysis; t: (key: st
   )
 }
 
-export default function ResearchChanges({ profile, t }: Props) {
+export default function ResearchChanges({ profile, t, lang }: Props) {
   const analysis = analyzeChanges(profile)
   if (!analysis) {
     return (
@@ -237,6 +239,11 @@ export default function ResearchChanges({ profile, t }: Props) {
 
   const comparable = analysis.previousAssignments > 0 && analysis.currentAssignments > 0
   const directionGroups: DirectionKind[] = ["emerging", "rising", "steady", "falling"]
+  const agentSummary = (
+    lang === "zh"
+      ? profile.agentAnalysis?.trajectory?.summaryZh
+      : profile.agentAnalysis?.trajectory?.summaryEn
+  )?.trim()
 
   return (
     <Card>
@@ -269,6 +276,16 @@ export default function ResearchChanges({ profile, t }: Props) {
             <p className="text-xs text-muted-foreground">{t("changes.in_recent_window")}</p>
           </div>
         </div>
+
+        {agentSummary && (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Sparkles className="h-4 w-4 text-primary" />
+              {t("agent.trajectory_insight")}
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{agentSummary}</p>
+          </div>
+        )}
 
         {comparable ? (
           <div className="grid gap-3 md:grid-cols-2">

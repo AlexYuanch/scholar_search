@@ -102,6 +102,7 @@ export interface ScholarProfile {
   graphNodes: Array<{ id: string; name: string; institution?: string; type: string }>
   graphEdges: Array<{ source: string; target: string; weight: number; papers?: EdgePaper[] }>
   profileSummary: string
+  profileSummaryI18n?: { zh?: string; en?: string }
   profileEvidence: Array<{
     id: string
     type: "metric" | "paper" | "topic" | "coauthor"
@@ -135,6 +136,48 @@ export interface ScholarProfile {
     flags: string[]
     publishable: boolean
     summaryConfidence: "high" | "medium" | "low"
+    agentReviewed?: boolean
+    agentConfidence?: "high" | "medium" | "low" | ""
+    agentFlags?: string[]
+  }
+  agentAnalysis?: {
+    status: "completed" | "partial" | "fallback" | "disabled"
+    plan: {
+      topic_tier?: "fast" | "strong"
+      trajectory_tier?: "fast" | "strong"
+      report_tier?: "fast" | "strong"
+      review_tier?: "fast" | "strong"
+      rationale?: string
+    }
+    runs: Array<{
+      agent: string
+      status: string
+      model: string
+      tier: string
+      plannedTier: string
+      attemptedModels: string[]
+      escalated: boolean
+      reasons: string[]
+    }>
+    trajectory?: {
+      summaryZh?: string
+      summaryEn?: string
+      emerging?: string[]
+      rising?: string[]
+      steady?: string[]
+      falling?: string[]
+      confidence?: "high" | "medium" | "low"
+      previousWindow?: { start: number; end: number }
+      currentWindow?: { start: number; end: number }
+    }
+    review?: {
+      summarySupported?: boolean
+      approvedEvidenceIds?: string[]
+      flags?: string[]
+      confidence?: "high" | "medium" | "low"
+      noteZh?: string
+      noteEn?: string
+    }
   }
   identityAudit?: {
     primaryAuthorId: string

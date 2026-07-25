@@ -674,6 +674,39 @@ def analyze_citations(state: ScholarProfileState) -> dict:
 
 # ── 阶段四: Agent 驱动的方向分析 ──────────────────────────
 
+def plan_agent_analysis(state: ScholarProfileState) -> dict:
+    """由路由 Agent 根据本次数据复杂度规划下游模型。"""
+    from llm import plan_agents
+
+    works = _analysis_works(state)
+    years = {int(work.get("publication_year") or 0) for work in works if work.get("publication_year")}
+    candidate_topics = {
+        _topic_key(topic.get("display_name", ""))
+        for work in works
+        for topic in (work.get("topics") or [])
+        if topic.get("display_name")
+    }
+    audit = state.get("data_audit") or {}
+    identity = state.get("identity_audit") or {}
+    context = {
+        "paper_count": len(works),
+        "active_years": len(years),
+        "source_conflicts": int(audit.get("conflictCount") or 0),
+        "crossref_verified": int(audit.get("crossrefVerified") or 0),
+        "works_complete": bool(state.get("works_complete")),
+        "identity_risk": bool(
+            identity.get("possibleConflatedIdentity")
+            or identity.get("largeConflictWorks")
+            or identity.get("rejectedAuthorIds")
+        ),
+        "broad_topic_span": len(candidate_topics) >= 18,
+    }
+    plan, trace = plan_agents(context)
+    return {
+        "agent_plan": plan.model_dump(),
+        "agent_runs": [trace],
+    }
+
 _BROAD_TOPIC_LABELS = {
     "agricultural and biological sciences", "agriculture", "artificial intelligence",
     "arts and humanities", "biochemistry", "biology", "business", "chemistry",
@@ -887,13 +920,103 @@ def _fallback_topic_analysis(works: list) -> dict:
 
 
 def agent_analyze_topics(state: ScholarProfileState) -> dict:
-    """基于可追溯的主题、关键词和标题短语提取细粒度研究方向。"""
+    """使用方向 Agent 重组可追溯候选主题，失败时保留确定性结果。"""
+    from llm import TopicAgentOutput, run_structured_agent
+    from prompts import AGENT_ANALYZE_TOPICS
+
     works = _analysis_works(state)
     if not works:
         return {"topic_clusters": [], "representative_papers": {}}
-    result = _fallback_topic_analysis(works)
-    result["warnings"] = ["细粒度研究方向已由 OpenAlex topics、keywords 与论文标题交叉提取"]
-    return result
+    baseline = _fallback_topic_analysis(works)
+    candidates = baseline["topic_clusters"][:12]
+    candidate_names = {item["topic"] for item in candidates}
+    payload_candidates = []
+    for item in candidates:
+        ranked_indices = sorted(
+            item.get("paper_indices") or [],
+            key=lambda index: -(works[index].get("cited_by_count") or 0),
+        )
+        payload_candidates.append({
+            "name": item["topic"],
+            "paper_count": len(item.get("paper_indices") or []),
+            "sources": item.get("sources") or [],
+            "representative_titles": [
+                works[index].get("title", "")
+                for index in ranked_indices[:3]
+                if works[index].get("title")
+            ],
+        })
+
+    def validate(output: TopicAgentOutput) -> list[str]:
+        issues = []
+        minimum_directions = 1 if len(candidates) <= 2 else 2
+        if not minimum_directions <= len(output.directions) <= 10:
+            issues.append("topic_count_out_of_range")
+        seen_names = set()
+        for direction in output.directions:
+            key = _topic_key(direction.name)
+            if not _topic_is_specific(direction.name) or key in _MID_LEVEL_TOPIC_LABELS:
+                issues.append("broad_topic_label")
+            if key in seen_names:
+                issues.append("duplicate_topic_label")
+            seen_names.add(key)
+            if not direction.source_topics or any(source not in candidate_names for source in direction.source_topics):
+                issues.append("untraceable_source_topic")
+            if len(direction.description_zh.strip()) < 8 or len(direction.description_en.strip()) < 12:
+                issues.append("topic_description_too_short")
+        return list(dict.fromkeys(issues))
+
+    planned_tier = (state.get("agent_plan") or {}).get("topic_tier", "fast")
+    output, trace = run_structured_agent(
+        "topic_agent",
+        planned_tier=planned_tier,
+        system_prompt=AGENT_ANALYZE_TOPICS,
+        payload={"candidates": payload_candidates},
+        schema=TopicAgentOutput,
+        validate=validate,
+        temperature=0.2,
+        max_tokens=1600,
+    )
+    if not output:
+        return {
+            **baseline,
+            "agent_runs": [trace],
+            "warnings": ["研究方向 Agent 不可用，已使用可追溯规则结果"],
+        }
+
+    baseline_by_name = {item["topic"]: item for item in candidates}
+    merged = []
+    for direction in output.directions:
+        source_items = [baseline_by_name[name] for name in direction.source_topics]
+        indices = sorted({
+            index
+            for item in source_items
+            for index in (item.get("paper_indices") or [])
+        })
+        merged.append({
+            "topic": direction.name.strip(),
+            "description": direction.description_zh.strip(),
+            "description_en": direction.description_en.strip(),
+            "confidence": direction.confidence,
+            "score": round(sum(float(item.get("score") or 0) for item in source_items), 2),
+            "paper_indices": indices,
+            "sources": sorted({
+                source
+                for item in source_items
+                for source in (item.get("sources") or [])
+            }),
+            "source_topics": direction.source_topics,
+            "agent_generated": True,
+        })
+    total_score = sum(float(item["score"]) for item in merged) or 1.0
+    for item in merged:
+        item["weight"] = round(float(item["score"]) / total_score, 3)
+    merged.sort(key=lambda item: (-item["weight"], -len(item["paper_indices"])))
+    return {
+        "topic_clusters": merged,
+        "representative_papers": _representative_papers(works, merged),
+        "agent_runs": [trace],
+    }
 
 
 # ── 阶段五: 兴趣演化 ────────────────────────────────────────
@@ -934,6 +1057,109 @@ def analyze_interest_evolution(state: ScholarProfileState) -> dict:
         })
 
     return {"interest_timeline": timeline}
+
+
+def agent_analyze_trajectory(state: ScholarProfileState) -> dict:
+    """使用趋势 Agent 解读相邻三年窗口，确定性计数仍作为唯一事实基础。"""
+    from llm import TrajectoryAgentOutput, run_structured_agent
+    from prompts import AGENT_ANALYZE_TRAJECTORY
+
+    timeline = state.get("interest_timeline") or []
+    years = [int(item.get("year") or 0) for item in timeline if item.get("year")]
+    if not years:
+        return {
+            "trajectory_analysis": {},
+            "agent_runs": [{
+                "agent": "trajectory_agent",
+                "status": "skipped",
+                "model": "",
+                "tier": "",
+                "plannedTier": (state.get("agent_plan") or {}).get("trajectory_tier", "fast"),
+                "attemptedModels": [],
+                "escalated": False,
+                "reasons": ["insufficient_timeline"],
+            }],
+        }
+
+    latest = max(years)
+    current_start = latest - 2
+    previous_start = latest - 5
+    previous_end = current_start - 1
+    previous = defaultdict(int)
+    current = defaultdict(int)
+    for item in timeline:
+        year = int(item.get("year") or 0)
+        target = current if current_start <= year <= latest else previous if previous_start <= year <= previous_end else None
+        if target is None:
+            continue
+        for topic in item.get("topics") or []:
+            target[str(topic.get("topic") or "")] += int(topic.get("count") or 0)
+    valid_topics = set(previous) | set(current)
+    if not previous or not current:
+        return {
+            "trajectory_analysis": {},
+            "agent_runs": [{
+                "agent": "trajectory_agent",
+                "status": "skipped",
+                "model": "",
+                "tier": "",
+                "plannedTier": (state.get("agent_plan") or {}).get("trajectory_tier", "fast"),
+                "attemptedModels": [],
+                "escalated": False,
+                "reasons": ["insufficient_comparable_windows"],
+            }],
+        }
+
+    def validate(output: TrajectoryAgentOutput) -> list[str]:
+        listed = output.emerging + output.rising + output.steady + output.falling
+        issues = []
+        if any(topic not in valid_topics for topic in listed):
+            issues.append("unknown_trajectory_topic")
+        if len(listed) != len(set(listed)):
+            issues.append("duplicate_trajectory_classification")
+        if len(output.summary_zh.strip()) < 20 or len(output.summary_en.strip()) < 30:
+            issues.append("trajectory_summary_too_short")
+        return issues
+
+    payload = {
+        "previous_window": {
+            "start": previous_start,
+            "end": previous_end,
+            "topic_counts": dict(previous),
+        },
+        "current_window": {
+            "start": current_start,
+            "end": latest,
+            "topic_counts": dict(current),
+        },
+    }
+    planned_tier = (state.get("agent_plan") or {}).get("trajectory_tier", "fast")
+    output, trace = run_structured_agent(
+        "trajectory_agent",
+        planned_tier=planned_tier,
+        system_prompt=AGENT_ANALYZE_TRAJECTORY,
+        payload=payload,
+        schema=TrajectoryAgentOutput,
+        validate=validate,
+        temperature=0.2,
+        max_tokens=1000,
+    )
+    if not output:
+        return {"trajectory_analysis": {}, "agent_runs": [trace]}
+    return {
+        "trajectory_analysis": {
+            "summaryZh": output.summary_zh.strip(),
+            "summaryEn": output.summary_en.strip(),
+            "emerging": output.emerging,
+            "rising": output.rising,
+            "steady": output.steady,
+            "falling": output.falling,
+            "confidence": output.confidence,
+            "previousWindow": {"start": previous_start, "end": previous_end},
+            "currentWindow": {"start": current_start, "end": latest},
+        },
+        "agent_runs": [trace],
+    }
 
 
 # ── 阶段六: 合作网络 ────────────────────────────────────────
@@ -1078,12 +1304,6 @@ def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[
     return evidence
 
 
-def _summary_has_valid_evidence(summary: str, evidence: list[dict]) -> bool:
-    valid_ids = {item["id"] for item in evidence}
-    cited_ids = set(re.findall(r"\[(\d+)\]", summary or ""))
-    return bool(summary and len(summary.strip()) >= 20 and cited_ids & valid_ids)
-
-
 def _fallback_summary(profile: dict, inst_name: str, state: ScholarProfileState, evidence: list[dict]) -> str:
     cs = state["citation_summary"]
     topic_names = [t["topic"] for t in state["topic_clusters"][:5]]
@@ -1104,7 +1324,10 @@ def _fallback_summary(profile: dict, inst_name: str, state: ScholarProfileState,
 
 
 def generate_profile_report(state: ScholarProfileState) -> dict:
-    """使用 LLM Agent 生成学者的学术总结（回退模板）。"""
+    """使用总结 Agent 生成双语学者分析，失败时回退到证据模板。"""
+    from llm import ProfileReportOutput, run_structured_agent
+    from prompts import AGENT_PROFILE_REPORT
+
     profile = state["target_author_profile"] or {}
     insts = [i.get("display_name", "") for i in (profile.get("last_known_institutions") or [])]
     inst_name = insts[0] if insts else "未知机构"
@@ -1112,36 +1335,110 @@ def generate_profile_report(state: ScholarProfileState) -> dict:
     topic_names = [t["topic"] for t in state["topic_clusters"][:5]]
     top_coauthors = [{"name": c["name"], "papers": c["papers"]} for c in state["coauthors"][:5]]
     evidence = _build_profile_evidence(state, inst_name)
+    representative = _flatten_representative_papers(state["representative_papers"])[:5]
+    valid_ids = {item["id"] for item in evidence}
+    report_input = {
+        "name": profile.get("display_name", ""),
+        "publication_affiliation": inst_name,
+        "metrics": {
+            "total_papers": cs.get("total_papers", 0),
+            "total_citations": cs.get("total_citations", 0),
+            "h_index": cs.get("h_index", 0),
+        },
+        "topics": topic_names,
+        "top_coauthors": top_coauthors,
+        "representative_papers": [p.get("title", "") for p in representative],
+        "trajectory": state.get("trajectory_analysis") or {},
+        "evidence": evidence,
+    }
 
-    # 尝试用 LLM 生成
-    from llm import report_llm
+    def validate(output: ProfileReportOutput) -> list[str]:
+        issues = []
+        cited = set(re.findall(r"\[(\d+)\]", output.summary_zh + " " + output.summary_en))
+        declared = set(output.evidence_ids)
+        if not cited or not cited <= valid_ids or not declared <= valid_ids or not cited <= declared:
+            issues.append("invalid_report_citations")
+        if len(output.summary_zh.strip()) < 60 or len(output.summary_en.split()) < 45:
+            issues.append("report_too_short")
+        return issues
 
-    try:
-        representative = _flatten_representative_papers(state["representative_papers"])[:5]
-        report_input = {
-            "name": profile.get("display_name", ""),
-            "institution": inst_name,
-            "totalPapers": cs.get("total_papers", 0),
-            "totalCitations": cs.get("total_citations", 0),
-            "hIndex": cs.get("h_index", 0),
-            "topics": topic_names,
-            "top_coauthors": top_coauthors,
-            "representative_papers": [p.get("title", "") for p in representative],
-            "evidence": evidence,
-            "trend": "活跃年份: " + ", ".join(str(t.get("year", "")) for t in cs.get("yearly_trend", [])[:5]),
+    planned_tier = (state.get("agent_plan") or {}).get("report_tier", "fast")
+    output, trace = run_structured_agent(
+        "report_agent",
+        planned_tier=planned_tier,
+        system_prompt=AGENT_PROFILE_REPORT,
+        payload=report_input,
+        schema=ProfileReportOutput,
+        validate=validate,
+        temperature=0.3,
+        max_tokens=1800,
+    )
+    if output:
+        return {
+            "profile_summary": output.summary_zh.strip(),
+            "profile_summary_i18n": {
+                "zh": output.summary_zh.strip(),
+                "en": output.summary_en.strip(),
+            },
+            "profile_evidence": evidence,
+            "agent_runs": [trace],
         }
-        summary = report_llm(report_input)
-        if _summary_has_valid_evidence(summary, evidence):
-            return {
-                "profile_summary": summary,
-                "profile_evidence": evidence,
-                "warnings": ["Agent 生成总结 ✓"],
-            }
-    except Exception as e:
-        pass  # fallback to template
 
     summary = _fallback_summary(profile, inst_name, state, evidence)
-    return {"profile_summary": summary, "profile_evidence": evidence}
+    return {
+        "profile_summary": summary,
+        "profile_summary_i18n": {},
+        "profile_evidence": evidence,
+        "agent_runs": [trace],
+    }
+
+
+def agent_review_profile(state: ScholarProfileState) -> dict:
+    """由证据批判 Agent 审核总结，确定性审查仍保留最终否决权。"""
+    from llm import EvidenceReviewOutput, run_structured_agent
+    from prompts import AGENT_REVIEW_EVIDENCE
+
+    valid_ids = {str(item.get("id")) for item in state.get("profile_evidence") or []}
+    summaries = state.get("profile_summary_i18n") or {"zh": state.get("profile_summary") or ""}
+
+    def validate(output: EvidenceReviewOutput) -> list[str]:
+        issues = []
+        approved = set(output.approved_evidence_ids)
+        if not approved <= valid_ids:
+            issues.append("review_unknown_evidence_id")
+        cited = set(re.findall(r"\[(\d+)\]", " ".join(summaries.values())))
+        if output.summary_supported and not cited <= approved:
+            issues.append("review_missing_cited_evidence")
+        return issues
+
+    planned_tier = (state.get("agent_plan") or {}).get("review_tier", "fast")
+    output, trace = run_structured_agent(
+        "evidence_agent",
+        planned_tier=planned_tier,
+        system_prompt=AGENT_REVIEW_EVIDENCE,
+        payload={
+            "summaries": summaries,
+            "evidence": state.get("profile_evidence") or [],
+            "trajectory": state.get("trajectory_analysis") or {},
+        },
+        schema=EvidenceReviewOutput,
+        validate=validate,
+        temperature=0,
+        max_tokens=900,
+    )
+    if not output:
+        return {"agent_review": {}, "agent_runs": [trace]}
+    return {
+        "agent_review": {
+            "summarySupported": output.summary_supported,
+            "approvedEvidenceIds": output.approved_evidence_ids,
+            "flags": output.flags,
+            "confidence": output.confidence,
+            "noteZh": output.note_zh.strip(),
+            "noteEn": output.note_en.strip(),
+        },
+        "agent_runs": [trace],
+    }
 
 
 def review_profile_evidence(state: ScholarProfileState) -> dict:
@@ -1199,14 +1496,30 @@ def review_profile_evidence(state: ScholarProfileState) -> dict:
     rejected_ids = [str(item.get("id")) for item in rejected]
     metric_approved = any(item.get("type") == "metric" for item in approved)
     summary = state.get("profile_summary") or ""
-    if any(f"[{evidence_id}]" in summary for evidence_id in rejected_ids):
+    summary_i18n = dict(state.get("profile_summary_i18n") or {})
+    agent_review = state.get("agent_review") or {}
+    agent_approved = set(agent_review.get("approvedEvidenceIds") or [])
+    cited_ids = set(re.findall(r"\[(\d+)\]", summary + " " + " ".join(summary_i18n.values())))
+    agent_rejected_summary = bool(
+        agent_review
+        and (
+            not agent_review.get("summarySupported", False)
+            or not cited_ids <= agent_approved
+        )
+    )
+    if any(f"[{evidence_id}]" in summary for evidence_id in rejected_ids) or agent_rejected_summary:
         profile = state.get("target_author_profile") or {}
         institutions = [
             item.get("display_name", "")
             for item in (profile.get("last_known_institutions") or [])
         ]
         summary = _fallback_summary(profile, institutions[0] if institutions else "未知机构", state, approved)
-        flags.append("summary_rebuilt_after_evidence_review")
+        summary_i18n = {}
+        flags.append(
+            "summary_rebuilt_after_agent_review"
+            if agent_rejected_summary
+            else "summary_rebuilt_after_evidence_review"
+        )
 
     unique_flags = list(dict.fromkeys(flags))
     review = {
@@ -1216,9 +1529,13 @@ def review_profile_evidence(state: ScholarProfileState) -> dict:
         "publishable": metric_approved,
         "summaryConfidence": (
             "high" if metric_approved and not unique_flags and audit.get("status") == "sufficient"
+            and (not agent_review or agent_review.get("confidence") == "high")
             else "medium" if metric_approved
             else "low"
         ),
+        "agentReviewed": bool(agent_review),
+        "agentConfidence": agent_review.get("confidence", ""),
+        "agentFlags": agent_review.get("flags") or [],
     }
     claims = [{
         "claimId": f"evidence-{item.get('id')}",
@@ -1229,6 +1546,7 @@ def review_profile_evidence(state: ScholarProfileState) -> dict:
     } for item in approved]
     return {
         "profile_summary": summary,
+        "profile_summary_i18n": summary_i18n,
         "profile_evidence": approved,
         "analysis_claims": claims,
         "evidence_review": review,
@@ -1278,6 +1596,21 @@ def format_web_payload(state: ScholarProfileState) -> dict:
             seen.add(key)
             unique_repr.append(p)
 
+    agent_runs = state.get("agent_runs") or []
+    successful_agents = [run for run in agent_runs if run.get("status") == "success"]
+    attempted_agents = [
+        run for run in agent_runs
+        if run.get("agent") != "router_agent" and run.get("status") != "skipped"
+    ]
+    if successful_agents and all(run.get("status") == "success" for run in attempted_agents):
+        agent_status = "completed"
+    elif successful_agents:
+        agent_status = "partial"
+    elif any(run.get("status") == "disabled" for run in agent_runs):
+        agent_status = "disabled"
+    else:
+        agent_status = "fallback"
+
     payload = {
         "name": profile.get("display_name", ""),
         "authorId": state["target_author_id"],
@@ -1301,9 +1634,17 @@ def format_web_payload(state: ScholarProfileState) -> dict:
         "graphNodes": state["graph_nodes"],
         "graphEdges": state["graph_edges"],
         "profileSummary": state["profile_summary"],
+        "profileSummaryI18n": state.get("profile_summary_i18n") or {},
         "profileEvidence": state["profile_evidence"],
         "identityAudit": state.get("identity_audit") or {},
         "dataAudit": state.get("data_audit") or {},
         "evidenceReview": state.get("evidence_review") or {},
+        "agentAnalysis": {
+            "status": agent_status,
+            "plan": state.get("agent_plan") or {},
+            "runs": agent_runs,
+            "trajectory": state.get("trajectory_analysis") or {},
+            "review": state.get("agent_review") or {},
+        },
     }
     return {"web_payload": payload}

@@ -13,6 +13,9 @@ flowchart LR
   SEARCH --> PG
   WF --> OA["OpenAlex"]
   WF --> CR["Crossref DOI metadata"]
+  WF --> ROUTER["DeepSeek router agent"]
+  ROUTER --> FLASH["DeepSeek V4 Flash"]
+  ROUTER --> PRO["DeepSeek V4 Pro"]
   MAINT["Worker 每小时维护"] --> JOB["refresh_jobs / search jobs"]
   WORKER["Refresh worker"] -->|"SKIP LOCKED"| JOB
   WORKER --> OA
@@ -26,7 +29,7 @@ flowchart LR
 |----|------|------|
 | 前端 | Vite + React + TypeScript | 身份确认、三栏画像、证据化对比、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
 | API | FastAPI | 密码登录、Cookie 会话、受保护查询、NDJSON 与 SSE |
-| 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、并行分析、证据审查和载荷格式化 |
+| 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、模型路由、多个学术分析 Agent、确定性证据审查和载荷格式化 |
 | Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、加密用户凭据、持久搜索缓存、按用户额度状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
@@ -52,7 +55,9 @@ flowchart LR
 
 多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责作者、论文、引用、topics、keywords 和署名发现，Crossref 只对 OpenAlex 论文中的 DOI 进行出版元数据核验。被验证为同一身份的多个作者档案并发取数，中心 authorship 统一为主 ID。随后建立机构、合作者和主题频率核心，只排除同时具有明确冲突机构、且与核心合作者/主题均断开的微小论文连通簇；无机构论文和较大冲突簇不会自动删除。过滤结果、排除 Work ID 和风险数量写入 `identityAudit`，再按 DOI/OpenAlex Work ID 去重。`adjudicate_sources` 以规范化 DOI 合并记录，Crossref 优先提供标题、年份和期刊，OpenAlex 继续提供引用、主题和 authorships；所有字段来源、原始记录、核验状态和冲突写入论文 `raw_json`。
 
-研究方向节点聚合 OpenAlex 四级 topics、与标题匹配或跨论文重复的 keywords，以及论文标题中的高频 2–4 元短语。明确的宽泛学科词被过滤，中层领域词降权；细粒度主题按数据支持度、近年论文和有限引用权重排序，并保留关联论文索引供近期变化、代表作和证据审查复算。`review_evidence` 在载荷格式化前检查指标可复算性和论文链接可追溯性，输出结构化审查结果并参与发布门禁。
+研究方向先聚合 OpenAlex 四级 topics、与标题匹配或跨论文重复的 keywords，以及论文标题中的高频 2–4 元短语，形成保留论文索引的候选主题。`router_agent` 根据论文规模、活跃年份、身份风险和来源冲突规划后续层级；`topic_agent` 只能重组候选主题并引用原始候选名称，不能凭空创建方向；`trajectory_agent` 只消费两个相邻三年窗口的方向计数；`report_agent` 生成带证据 ID 的双语总结；`evidence_agent` 复核总结与证据。所有结构输出由 Pydantic 校验，Flash 校验失败时在预算允许范围内升级 Pro。
+
+模型输出不是事实来源。`review_evidence` 仍在载荷格式化前确定性检查指标可复算性、论文链接可追溯性和证据 ID；Agent 审查只能降低置信度或触发模板重建，不能批准确定性门禁拒绝的内容。`agentAnalysis` 只保存 Agent 名称、模型、层级、升级原因、状态、趋势结论和审查摘要，不保存 key、完整提示词或原始响应。`LLM_STRONG_DAILY_LIMIT` 为单进程 Pro 调用保护线；达到后自动降级 Flash。
 
 ## 数据模型
 

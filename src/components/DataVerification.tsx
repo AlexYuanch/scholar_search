@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Clock3, Database, FileCheck2, ShieldCheck } from "lucide-react"
+import { AlertTriangle, BrainCircuit, CheckCircle2, Clock3, Database, FileCheck2, ShieldCheck } from "lucide-react"
 import type { ScholarProfile } from "@/types"
 import type { Lang } from "@/i18n"
 import { Badge } from "@/components/ui/badge"
@@ -44,6 +44,7 @@ export default function DataVerification({ profile, t, lang }: {
       }).format(new Date(updatedAt))
     : "—"
   const confidence = profile.evidenceReview?.summaryConfidence || "low"
+  const agentAnalysis = profile.agentAnalysis
 
   return (
     <Card>
@@ -137,6 +138,33 @@ export default function DataVerification({ profile, t, lang }: {
           <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
             {failureDetail}
           </p>
+        )}
+        {agentAnalysis && (
+          <div className="rounded-lg border bg-muted/30 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <BrainCircuit className="h-4 w-4 text-primary" />
+                <p className="text-sm font-medium">{t("agent.verification_title")}</p>
+              </div>
+              <Badge variant="outline">{t(`agent.status_${agentAnalysis.status}`)}</Badge>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{t("agent.verification_desc")}</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {agentAnalysis.runs.map((run) => (
+                <div key={run.agent} className="flex min-w-0 items-start justify-between gap-3 rounded-md bg-background/70 px-3 py-2 text-xs">
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground">{t(`agent.run_${run.agent}`)}</p>
+                    <p className="mt-0.5 truncate text-muted-foreground">
+                      {run.model || t("agent.deterministic_fallback")}
+                    </p>
+                  </div>
+                  <Badge variant="secondary" className="shrink-0">
+                    {t(`agent.run_status_${run.status}`)}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
         <div className="rounded-lg border bg-muted/40 p-4">
           <p className="text-xs font-medium">{t("verification.limitations")}</p>

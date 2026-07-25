@@ -4,17 +4,23 @@ DAG 结构（多来源裁决 + Agent 分析 + 证据审查）:
 
   fetch_profile → collect_works → dedup_works → collect_crossref → adjudicate_sources
                                                                 ↓
+                                                        plan_agents
+                                                                ↓
                                           ┌──────────────────────┴──────────────────────┐
                                           ↓                                             ↓
                                   analyze_citations                          agent_analyze_topics
                                           ↓                                             ↓
                                           └─────────→ analyze_evolution ←──────────────┘
                                                           ↓
+                                                analyze_trajectory_agent
+                                                          ↓
                                                 analyze_coauthors
                                                           ↓
                                                    build_graph
                                                           ↓
-                                                generate_report → review_evidence
+                                                generate_report → review_report_agent
+                                                                          ↓
+                                                                  review_evidence
                                                           ↓
                                                 format_payload → END
 """
@@ -26,12 +32,15 @@ from nodes import (
     deduplicate_works,
     collect_crossref_records,
     adjudicate_sources,
+    plan_agent_analysis,
     analyze_citations,
     agent_analyze_topics,
     analyze_interest_evolution,
+    agent_analyze_trajectory,
     analyze_coauthors,
     build_collaboration_graph,
     generate_profile_report,
+    agent_review_profile,
     review_profile_evidence,
     format_web_payload,
 )
@@ -43,12 +52,15 @@ NODES = [
     ("dedup_works", deduplicate_works),
     ("collect_crossref", collect_crossref_records),
     ("adjudicate_sources", adjudicate_sources),
+    ("plan_agents", plan_agent_analysis),
     ("analyze_citations", analyze_citations),
     ("agent_analyze_topics", agent_analyze_topics),
     ("analyze_evolution", analyze_interest_evolution),
+    ("agent_analyze_trajectory", agent_analyze_trajectory),
     ("analyze_coauthors", analyze_coauthors),
     ("build_graph", build_collaboration_graph),
     ("generate_report", generate_profile_report),
+    ("agent_review_report", agent_review_profile),
     ("review_evidence", review_profile_evidence),
     ("format_payload", format_web_payload),
 ]
@@ -69,19 +81,22 @@ def build() -> StateGraph:
     builder.add_edge("collect_crossref", "adjudicate_sources")
 
     # 并行分析
-    builder.add_edge("adjudicate_sources", "analyze_citations")
-    builder.add_edge("adjudicate_sources", "agent_analyze_topics")
+    builder.add_edge("adjudicate_sources", "plan_agents")
+    builder.add_edge("plan_agents", "analyze_citations")
+    builder.add_edge("plan_agents", "agent_analyze_topics")
 
     # Agent 完成后 → 兴趣演化
     builder.add_edge("agent_analyze_topics", "analyze_evolution")
+    builder.add_edge("analyze_evolution", "agent_analyze_trajectory")
 
     # 汇聚后 → 合作网络
-    builder.add_edge(["analyze_citations", "analyze_evolution"], "analyze_coauthors")
+    builder.add_edge(["analyze_citations", "agent_analyze_trajectory"], "analyze_coauthors")
 
     # 串行尾
     builder.add_edge("analyze_coauthors", "build_graph")
     builder.add_edge("build_graph", "generate_report")
-    builder.add_edge("generate_report", "review_evidence")
+    builder.add_edge("generate_report", "agent_review_report")
+    builder.add_edge("agent_review_report", "review_evidence")
     builder.add_edge("review_evidence", "format_payload")
     builder.add_edge("format_payload", END)
 

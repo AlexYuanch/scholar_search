@@ -33,6 +33,14 @@ function citation(id?: string) {
 }
 
 function localizedIntroduction(profile: ScholarProfile, lang: Lang, t: Translate) {
+  const agentSummary = profile.profileSummaryI18n?.[lang]?.trim()
+  if (agentSummary) {
+    return agentSummary
+      .split(/\n+/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+  }
+
   const employment = profile.affiliationEvidence?.verifiedEmployment
   const firstSentence = employment
     ? fill(t("intro.verified_employment"), {

@@ -31,6 +31,12 @@ OWNER_PASSWORD=$(env_value POSTGRES_OWNER_PASSWORD)
 APP_PASSWORD=$(env_value POSTGRES_APP_PASSWORD)
 CREDENTIAL_ENCRYPTION_KEY=$(env_value CREDENTIAL_ENCRYPTION_KEY)
 OPENALEX_API_KEY=$(env_value OPENALEX_API_KEY)
+LLM_API_KEY=$(env_value LLM_API_KEY)
+LLM_BASE_URL=$(env_value LLM_BASE_URL)
+LLM_FAST_MODEL=$(env_value LLM_FAST_MODEL)
+LLM_STRONG_MODEL=$(env_value LLM_STRONG_MODEL)
+LLM_ROUTER_MODE=$(env_value LLM_ROUTER_MODE)
+LLM_STRONG_DAILY_LIMIT=$(env_value LLM_STRONG_DAILY_LIMIT)
 
 if [ -z "$PUBLIC_HOST" ] || [ -z "$PUBLIC_APP_URL" ]; then
     echo "PUBLIC_HOST 和 PUBLIC_APP_URL 不能为空。" >&2
@@ -68,6 +74,26 @@ fi
 if [ -z "$OPENALEX_API_KEY" ]; then
     echo "OPENALEX_API_KEY 不能为空，请先在 OpenAlex 免费注册并写入服务器 .env。" >&2
     exit 1
+fi
+
+if [ -n "$LLM_API_KEY" ]; then
+    case "$LLM_API_KEY" in
+        *your*|*YOUR*|*你的*|*REPLACE_WITH_*)
+            echo "LLM_API_KEY 仍是示例值，请填写真实模型 API key。" >&2
+            exit 1
+            ;;
+    esac
+    if [ -z "$LLM_BASE_URL" ] || [ -z "$LLM_FAST_MODEL" ] || [ -z "$LLM_STRONG_MODEL" ]; then
+        echo "启用 LLM 时必须同时配置 LLM_BASE_URL、LLM_FAST_MODEL 和 LLM_STRONG_MODEL。" >&2
+        exit 1
+    fi
+    case "$LLM_ROUTER_MODE" in
+        auto|fast|strong|off) ;;
+        *) echo "LLM_ROUTER_MODE 只能是 auto、fast、strong 或 off。" >&2; exit 1 ;;
+    esac
+    case "$LLM_STRONG_DAILY_LIMIT" in
+        ''|*[!0-9]*) echo "LLM_STRONG_DAILY_LIMIT 必须是非负整数。" >&2; exit 1 ;;
+    esac
 fi
 
 if [ -n "$CREDENTIAL_ENCRYPTION_KEY" ]; then
