@@ -7,6 +7,11 @@ from sqlalchemy import text
 from auth import hash_password, verify_password
 from credentials import decrypt_secret, encrypt_secret
 from repository import APIQuotaExceeded, PostgresRepository
+from research_graph import build_research_graph_batch
+from research_graph_repository import (
+    apply_research_graph_batch,
+    get_research_graph,
+)
 from worker import process_one_job, process_one_search_job
 
 
@@ -525,3 +530,194 @@ def test_postgres_openalex_search_job_is_processed_by_worker():
             conn.execute(text(
                 "delete from public.openalex_search_cache where query_key = :query_key"
             ), {"query_key": query_key})
+
+
+def test_dynamic_research_graph_is_incremental_unique_and_queryable():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    author_id = f"https://openalex.org/A-GRAPH-{unique}"
+    coauthor_id = f"https://openalex.org/A-GRAPH-CO-{unique}"
+    institution_id = f"https://openalex.org/I-GRAPH-{unique}"
+    topic_id = f"https://openalex.org/T-GRAPH-{unique}"
+    work_prefix = f"https://openalex.org/W-GRAPH-{unique}"
+
+    author = {
+        "id": author_id,
+        "display_name": f"Graph Scholar {unique}",
+        "works_count": 2,
+        "cited_by_count": 5,
+        "summary_stats": {"h_index": 1},
+        "affiliations": [{
+            "institution": {
+                "id": institution_id,
+                "display_name": f"Graph University {unique}",
+            },
+            "years": [2022, 2024],
+        }],
+        "last_known_institutions": [{
+            "id": institution_id,
+            "display_name": f"Graph University {unique}",
+        }],
+    }
+
+    def work(index: int, year: int, referenced=None, abstract=True):
+        abstract_index = {
+            "We": [0],
+            "propose": [1],
+            "incremental": [2],
+            "graphs.": [3],
+        } if abstract else None
+        return {
+            "id": f"{work_prefix}-{index}",
+            "doi": f"10.5555/{unique}.{index}",
+            "title": f"Graph paper {index}",
+            "publication_year": year,
+            "publication_date": f"{year}-01-01",
+            "updated_date": f"{year}-02-01T00:00:00Z",
+            "cited_by_count": index,
+            "abstract_inverted_index": abstract_index,
+            "referenced_works": referenced or [],
+            "authorships": [
+                {
+                    "author_position": "first",
+                    "author": {"id": author_id, "display_name": "Graph Scholar"},
+                    "institutions": [{
+                        "id": institution_id,
+                        "display_name": "Graph University",
+                    }],
+                },
+                {
+                    "author_position": "last",
+                    "author": {
+                        "id": coauthor_id,
+                        "display_name": "Graph Collaborator",
+                    },
+                    "institutions": [],
+                },
+            ],
+            "primary_topic": {
+                "id": topic_id,
+                "display_name": f"Dynamic Graph {unique}",
+                "score": 0.9,
+            },
+            "topics": [{
+                "id": topic_id,
+                "display_name": f"Dynamic Graph {unique}",
+                "score": 0.9,
+            }],
+            "primary_location": {"source": {"display_name": "Graph Journal"}},
+            "type": "article",
+            "language": "en",
+        }
+
+    try:
+        first_work = work(1, 2022)
+        repository.publish_profile({
+            "target_author_id": author_id,
+            "target_author_profile": author,
+            "deduped_works": [first_work],
+            "works_complete": True,
+            "web_payload": {
+                "name": f"Graph Scholar {unique}",
+                "totalPapers": 1,
+                "totalCitations": 1,
+            },
+            "warnings": [],
+            "errors": [],
+        })
+        first_batch = build_research_graph_batch(author, [first_work])
+        apply_research_graph_batch(
+            repository,
+            first_batch,
+            force_rebuild=False,
+            warnings=[],
+        )
+        apply_research_graph_batch(
+            repository,
+            first_batch,
+            force_rebuild=False,
+            warnings=[],
+        )
+        second_work = work(
+            2,
+            2024,
+            referenced=[f"{work_prefix}-1"],
+            abstract=False,
+        )
+        second_batch = build_research_graph_batch(
+            author,
+            [second_work],
+        )
+        apply_research_graph_batch(
+            repository,
+            second_batch,
+            force_rebuild=False,
+            warnings=[],
+        )
+
+        graph = get_research_graph(repository, author_id)
+
+        assert len(graph["papers"]) == 2
+        assert graph["papers"][0]["year"] == 2024
+        assert graph["papers"][0]["insight"]["based_on_abstract"] is False
+        assert graph["topic_evolution"][0]["works_count"] == 2
+        assert graph["collaborations"][0]["works_count"] == 2
+        assert graph["affiliations"][0]["is_current"] is True
+        assert any(
+            citation["cited"]["title"] == "Graph paper 1"
+            for citation in graph["citations"]
+        )
+        years = [
+            event["event_year"]
+            for event in graph["timeline"]
+            if event["event_year"]
+        ]
+        assert years == sorted(years, reverse=True)
+
+        with repository.engine.connect() as conn:
+            counts = {
+                table: conn.execute(text(f"select count(*) from public.{table}")).scalar_one()
+                for table in (
+                    "work_topics",
+                    "scholar_topics",
+                    "collaborations",
+                    "work_citations",
+                )
+            }
+        assert all(value >= 1 for value in counts.values())
+
+        apply_research_graph_batch(
+            repository,
+            build_research_graph_batch(author, [second_work]),
+            force_rebuild=True,
+            warnings=[],
+        )
+        rebuilt = get_research_graph(repository, author_id)
+        assert [paper["source_id"] for paper in rebuilt["papers"]] == [
+            f"{work_prefix}-2"
+        ]
+        assert rebuilt["topic_evolution"][0]["works_count"] == 1
+        assert rebuilt["collaborations"][0]["works_count"] == 1
+        assert {
+            event["title"]
+            for event in rebuilt["timeline"]
+            if event["event_type"] == "paper_published"
+        } == {"Graph paper 2"}
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text("""
+                delete from public.works
+                where source_work_id like :work_prefix
+            """), {"work_prefix": f"{work_prefix}%"})
+            conn.execute(text("""
+                delete from public.scholars
+                where source_author_id in (:author_id, :coauthor_id)
+            """), {"author_id": author_id, "coauthor_id": coauthor_id})
+            conn.execute(text("""
+                delete from public.institutions
+                where source_institution_id = :institution_id
+            """), {"institution_id": institution_id})
+            conn.execute(text("""
+                delete from public.research_topics
+                where source_topic_id = :topic_id
+            """), {"topic_id": topic_id})

@@ -1,4 +1,10 @@
-import type { Candidate, ScholarProfile } from './types'
+import type {
+  Candidate,
+  ResearchGraph,
+  ResearchGraphObject,
+  ResearchGraphObjectType,
+  ScholarProfile,
+} from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
 const SEARCH_TIMEOUT_MS = 30_000
@@ -347,4 +353,35 @@ export async function getAuthorWorks(
 
 export function profileEventsUrl(scholarId: string, version: number): string {
   return `${API_BASE}/profiles/${encodeURIComponent(scholarId)}/events?version=${version}`
+}
+
+export async function getResearchGraph(authorId: string): Promise<ResearchGraph> {
+  const response = await authenticatedFetch(
+    `/authors/${encodeURIComponent(authorId)}/research-graph`,
+  )
+  return response.json()
+}
+
+export async function refreshResearchGraph(
+  authorId: string,
+  forceRebuild = false,
+): Promise<{ status: "queued"; job_id: string; force_rebuild: boolean }> {
+  const response = await authenticatedFetch(
+    `/authors/${encodeURIComponent(authorId)}/research-graph/refresh`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ force_rebuild: forceRebuild }),
+    },
+  )
+  return response.json()
+}
+
+export async function getResearchGraphObject(
+  objectType: ResearchGraphObjectType,
+  objectId: string,
+): Promise<ResearchGraphObject> {
+  const response = await authenticatedFetch(
+    `/research-graph/objects/${objectType}/${encodeURIComponent(objectId)}`,
+  )
+  return response.json()
 }

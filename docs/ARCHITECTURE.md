@@ -68,7 +68,15 @@ flowchart LR
 | `institutions` | 机构实体；`unique(source, source_institution_id)` |
 | `scholar_institutions` | 学者—机构多对多 |
 | `works` | 全部论文；`unique(source, source_work_id)` |
+| `work_external_ids` | DOI/OpenAlex/Crossref 稳定标识到规范论文的唯一映射 |
 | `authorships` | 论文—作者事实、顺序和原始署名 |
+| `research_topics`、`work_topics`、`scholar_topics` | 主题实体、论文—主题和学者—主题时间统计；关系唯一且记录来源/置信度 |
+| `collaborations`、`collaboration_works` | 规范化作者对及共同论文；作者 UUID 排序保证同一合作只存一次 |
+| `work_citations` | 引用边；未在本地图谱出现的被引论文保留 OpenAlex ID，后续增量可回连 |
+| `paper_insights` | 仅基于摘要的抽取式问题、方法、贡献、方向关系和原句证据 |
+| `timeline_events` | 论文、主题、合作和机构事件；`unique(scholar_id, event_key)` |
+| `research_graph_sync_state` | 最近尝试/成功、水位、指纹、版本、warning 和错误 |
+| `research_graph_refresh_jobs` | 单学者增量/重建任务；每个学者只允许一个活跃任务 |
 | `scholar_profiles` | 每位学者一份最新成功 JSONB、warnings、工作流版本和数据指纹 |
 | `profile_status` | 轻量状态、版本和更新时间 |
 | `refresh_jobs` | 任务状态、次数、退避、原因、错误和请求用户 |
@@ -111,9 +119,18 @@ flowchart LR
 - `POST /api/tracking/{author_id}/refresh` 先通过会话确定用户，再验证该用户确实存在对应 `favorites` 记录和平台数据源配置；随后调用现有 `enqueue_refresh` 并写入 `requested_by_user_id`。数据库活跃任务唯一索引与 Repository 的 `on conflict do nothing` 共同防止重复排队，返回已有或新任务 ID。Web 请求不调用 LangGraph，worker 继续通过 `FOR UPDATE SKIP LOCKED` 领取任务。
 - 新前端统一使用 `/api/tracking...`；旧 `/api/favorites...` 仅作为兼容别名保留，数据库表名和历史 migration 不改写。主画像和追踪侧栏在写操作成功后递增本地修订号并重新读取追踪 API，避免同一页面的两个入口显示相互矛盾的状态。
 
+### 动态研究图谱
+
+1. 画像访问发现图谱缺失或超过 7 天时，幂等插入 `research_graph_refresh_jobs`；人工接口可请求普通增量或 `force_rebuild` 单学者全量读取。
+2. worker 读取最近成功时间，普通更新使用向前重叠 2 天的 `from_updated_date`；首次和重建不带水位，但都只处理当前学者。
+3. OpenAlex 作者与论文分页必须完整结束。任何页失败时不进入图谱内容事务；Crossref 失败只产生 warning，已经成功保存的 Crossref 标题、年份、期刊和类型不被 OpenAlex 回退值覆盖。
+4. DOI 和 OpenAlex ID 先通过 `work_external_ids` 定位规范论文，再原子 upsert 署名、机构、主题、合作、引用、摘要理解和时间线。所有关系使用主键/唯一键去重。
+5. 摘要理解只抽取 OpenAlex 摘要原句；摘要缺失时 `based_on_abstract=false`，四个理解字段与证据数组为空。
+6. 读取接口在数据库内按单学者聚合，并限制局部网络为 30 个节点、60 条边。对象详情 API 只接受作者、论文、机构和主题 UUID，全部经过登录依赖。
+
 ### Worker
 
-Worker 先使用 `FOR UPDATE SKIP LOCKED` 领取 `openalex_search_jobs`，再领取 `refresh_jobs`，优先读取服务器 `OPENALEX_API_KEY`；仅在服务端 key 缺失时按 `requested_by_user_id` 解密兼容个人 key。搜索成功发布共享缓存，失败按上游 `Retry-After` 或指数退避重排；画像失败最多重试 3 次，未通过质量门槛不会进入发布事务。每小时维护为追踪/近期访问用户排队，并使用 PostgreSQL advisory lock 避免多 worker 重复调度。
+Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`research_graph_refresh_jobs` 和 `refresh_jobs`，优先读取服务器 `OPENALEX_API_KEY`；仅在服务端 key 缺失时按 `requested_by_user_id` 解密兼容个人 key。搜索成功发布共享缓存；图谱只有完整上游批次才进入原子 upsert；画像仍须通过质量门槛。三类任务失败最多重试 3 次。每小时维护为追踪/近期访问用户与过期图谱排队，并使用 PostgreSQL advisory lock 避免多 worker 重复调度。
 
 ## 身份认证
 

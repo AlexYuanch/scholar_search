@@ -345,3 +345,57 @@ def get_works(
     if cursor:
         warnings.append(f"OpenAlex 论文分页达到上限 {max_pages} 页，结果可能不完整")
     return works, warnings
+
+
+def get_graph_works(
+    author_id: str,
+    *,
+    updated_since: str | None,
+    api_key: str,
+    budget_provider: str,
+    max_pages: int = DEFAULT_MAX_PAGES,
+) -> tuple[List[dict], list[str], bool]:
+    """Fetch graph fields, optionally only works updated since a UTC date.
+
+    Unlike the profile collector, this function never presents a partial page
+    sequence as successful because graph persistence is an atomic batch.
+    """
+    works: List[dict] = []
+    warnings: list[str] = []
+    cursor = "*"
+    page = 0
+    filters = [f"authorships.author.id:{author_id}"]
+    if updated_since:
+        filters.append(f"from_updated_date:{updated_since}")
+
+    while cursor and page < max_pages:
+        page += 1
+        try:
+            data = _get(
+                "/works",
+                api_key=api_key,
+                budget_provider=budget_provider,
+                filter=",".join(filters),
+                per_page=200,
+                cursor=cursor,
+                sort="updated_date:asc",
+                select=(
+                    "id,doi,title,publication_year,publication_date,cited_by_count,"
+                    "authorships,abstract_inverted_index,referenced_works,primary_topic,"
+                    "topics,keywords,primary_location,type,language,updated_date"
+                ),
+            )
+        except OpenAlexError as exc:
+            warnings.append(
+                f"OpenAlex 图谱批次在第 {page} 页失败；本批次未写入: {exc}"
+            )
+            return works, warnings, False
+        works.extend(data.get("results", []))
+        cursor = data.get("meta", {}).get("next_cursor")
+
+    if cursor:
+        warnings.append(
+            f"OpenAlex 图谱分页达到上限 {max_pages} 页；本批次未写入"
+        )
+        return works, warnings, False
+    return works, warnings, True

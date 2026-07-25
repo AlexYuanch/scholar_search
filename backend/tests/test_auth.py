@@ -222,9 +222,17 @@ def test_all_scholar_query_routes_require_authentication():
         client.get("/api/authors/A1/works"),
         client.get(f"/api/profiles/{scholar_id}/events"),
         client.post("/api/tracking/A1/refresh"),
+        client.get("/api/authors/A1/research-graph"),
+        client.post(
+            "/api/authors/A1/research-graph/refresh",
+            json={"force_rebuild": False},
+        ),
+        client.get(f"/api/research-graph/objects/paper/{scholar_id}"),
     ]
 
-    assert [response.status_code for response in requests] == [401, 401, 401, 401, 401, 401]
+    assert [response.status_code for response in requests] == [
+        401, 401, 401, 401, 401, 401, 401, 401, 401,
+    ]
 
 
 def test_search_rate_limit_returns_friendly_error(monkeypatch):

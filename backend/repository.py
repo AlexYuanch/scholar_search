@@ -683,7 +683,14 @@ class InMemoryRepository:
     def delete_user_api_credential(self, user_id: str, provider: str) -> bool:
         with self._lock:
             deleted = self.user_api_credentials.pop((user_id, provider), None) is not None
-            for job in [*self.jobs.values(), *self.openalex_search_jobs.values()]:
+            graph_jobs = (
+                getattr(self, "_research_graph_store", {}).get("jobs", {}).values()
+            )
+            for job in [
+                *self.jobs.values(),
+                *self.openalex_search_jobs.values(),
+                *graph_jobs,
+            ]:
                 if (
                     job.get("requested_by_user_id") == user_id
                     and job.get("status") == "pending"
@@ -1904,6 +1911,31 @@ class PostgresRepository:
                     finished_at = now(), updated_at = now()
                 where requested_by_user_id = cast(:user_id as uuid)
                   and status = 'pending'
+            """), {"user_id": user_id, "error": error})
+            conn.execute(text("""
+                update public.research_graph_refresh_jobs
+                set status = 'failed', last_error = :error,
+                    finished_at = now(), updated_at = now()
+                where requested_by_user_id = cast(:user_id as uuid)
+                  and status = 'pending'
+            """), {"user_id": user_id, "error": error})
+            conn.execute(text("""
+                update public.research_graph_sync_state gs
+                set status = 'failed', last_error = :error, updated_at = now()
+                where exists (
+                    select 1
+                    from public.research_graph_refresh_jobs j
+                    where j.scholar_id = gs.scholar_id
+                      and j.requested_by_user_id = cast(:user_id as uuid)
+                      and j.status = 'failed'
+                      and j.last_error = :error
+                )
+                  and not exists (
+                    select 1
+                    from public.research_graph_refresh_jobs active
+                    where active.scholar_id = gs.scholar_id
+                      and active.status in ('pending', 'running')
+                )
             """), {"user_id": user_id, "error": error})
         return deleted
 

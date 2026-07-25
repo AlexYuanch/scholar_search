@@ -28,9 +28,13 @@
 - 学者简介和依据由结构化画像事实按当前界面语言生成，不再复用后端固定语言文本。OpenAlex `affiliations` 和论文 `raw_affiliation_strings` 只作为论文关联证据；它们不会生成任职机构、学院、实验室、职称或培养阶段。任职与教育字段只有在独立任职/教育来源明确支持时才展示，否则整项省略并说明未作推断。
 - 画像严格按“学者简介 → 当前主要研究方向 → 研究方向时间线 → 近期研究变化 → 论文/引用/h-index → 代表论文 → 全部论文 → 合作者与网络 → 数据来源/更新时间/置信度/局限”展示。
 - 研究方向时间线标签可点击；点击后跳到全部论文，并按该年份和方向筛选数据库中的关联论文，支持一键清除筛选。
-- 画像保留“概览 / 论文 / 合作网络”三栏切换；标题链接到当前学者的 OpenAlex 主页，合作姓名和图节点先打开详情侧栏，只有用户点击“查询画像”才切换学者，合作连线用于查看共同论文。
+- 画像保留“概览 / 论文 / 合作网络 / 研究图谱”四栏切换；标题链接到当前学者的 OpenAlex 主页，合作姓名和图节点先打开详情侧栏，只有用户点击“查询画像”才切换学者，合作连线用于查看共同论文。
 - 支持选择第二位学者进行证据化对比，覆盖研究方向、时间线、代表作、论文与引用、影响力、合作者和近期变化；每项均展示统计依据。
 - 画像总览按最近发表年份比较连续两个三年阶段，展示论文数量变化、近期开始活跃及研究比重升降，并用六年矩阵呈现方向演化。
+- 动态研究图谱以单个学者为范围，增量保存规范论文、作者/机构/主题、合作、引用与时间线关系；每条关系带来源、更新时间和置信度，数据库唯一键阻止重复关系。
+- “研究图谱”栏以可读时间线、方向/合作变化清单、机构经历、代表论文—主题—引用关系和最多 30 个节点的局部网络展示，不构建巨型全局图；作者、论文、机构和主题节点均可点击读取详情。
+- 图谱首次构建走全量 OpenAlex，之后按最近成功时间减 2 天做重叠增量；画像访问、人工刷新和单学者重建只向 `research_graph_refresh_jobs` 排队。OpenAlex 分页不完整时整批不写，Crossref 失败不覆盖此前成功的出版字段。
+- 有 OpenAlex 摘要的论文保存抽取式问题、方法、贡献、方向关系和原句证据，并明确标为“基于摘要”；摘要缺失时这些字段保持空值，不生成替代内容。
 - 流式画像只展示“核验身份、聚合学术成果、分析研究轨迹、核验分析依据”四个用户阶段；前端区分无结果、网络、超时、限流、登录失效和任务失败，并支持重试。OpenAlex 搜索限流会保留 `Retry-After` 并返回 HTTP 429，不会误报为内部 500。切换学者时会取消旧搜索、画像、论文分页和实时换版请求，避免旧响应覆盖新学者。
 
 ## 技术栈
@@ -235,7 +239,9 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 
 主要表：
 
-- 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`authorships`
+- 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`work_external_ids`、`authorships`
+- 动态图谱：`research_topics`、`work_topics`、`scholar_topics`、`collaborations`、`collaboration_works`、`work_citations`、`paper_insights`、`timeline_events`
+- 图谱同步：`research_graph_sync_state`、`research_graph_refresh_jobs`
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
 - 上游搜索缓存与保护：`openalex_search_cache`、`openalex_identity_cache`、`openalex_search_jobs`、`upstream_rate_limits`
 - 用户与会话：`app_users`、`user_api_credentials`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`
@@ -251,6 +257,9 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | `POST /api/profile` | 必须登录 | 返回最新画像并记录当前用户历史 |
 | `POST /api/profile/stream` | 必须登录、限速 | 已有画像立即返回；过期画像异步排队，首次画像输出 NDJSON 进度流 |
 | `GET /api/authors/{author_id}/works` | 必须登录 | 全量论文游标分页 |
+| `GET /api/authors/{author_id}/research-graph` | 必须登录 | 单学者时间线、关系清单与局部网络 |
+| `POST /api/authors/{author_id}/research-graph/refresh` | 必须登录 | 幂等排队增量更新；`force_rebuild=true` 重建该学者 |
+| `GET /api/research-graph/objects/{type}/{id}` | 必须登录 | 返回作者、论文、机构或主题详情 |
 | `POST /api/auth/register` | 公开、限速 | 创建本地账号并自动登录 |
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
 | `GET /api/auth/me` | 可匿名 | 查询当前会话 |
@@ -275,7 +284,7 @@ npm run build
 npm run test:db
 ```
 
-`npm test` 使用受控工作流与 in-memory Repository 做快速回归，并覆盖 key 加密、缺 key 错误、接口越权、worker 解密，以及论文关联字段绝不升级为任职/职称/学位声明。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、分页、会话、跨用户追踪与凭据隔离、搜索缓存持久性与任务去重、重建 Repository 后的数据持久性，以及旧缓存中的错误专业身份字段被剔除、论文关联证据从已保存元数据安全重建。外部 OpenAlex/Crossref 全链路另以手动真实数据验收，数据库测试中的受控工作流输出不冒充外部数据验证。
+`npm test` 使用受控工作流与 in-memory Repository 做快速回归，并覆盖 key 加密、缺 key 错误、接口越权、worker 解密，以及图谱 DOI 去重、关系唯一性、时间线排序、机构/合作/引用、摘要有无、增量更新和失败保留旧数据。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、分页、会话、跨用户追踪与凭据隔离、搜索缓存持久性与任务去重、图谱原子 upsert 和重建 Repository 后的数据持久性。外部 OpenAlex/Crossref 全链路另以手动真实数据验收，数据库测试中的受控输出不冒充外部数据验证。
 
 ## 备份
 
@@ -303,9 +312,11 @@ backend/
   manage_users.py  # 服务器端本地账号管理命令
   events.py        # LISTEN/NOTIFY 到 SSE
   worker.py        # 刷新与维护 worker
+  research_graph.py # OpenAlex 增量批次与摘要证据抽取
+  research_graph_repository.py # 图谱关系、队列与读取投影
   migrations/      # Alembic 迁移
 src/
-  App.tsx          # 身份确认、三栏画像、登录、研究追踪与自动换版
+  App.tsx          # 身份确认、四栏画像、登录、研究追踪与自动换版
   api.ts           # Cookie API、NDJSON 与 SSE 地址
   auth.tsx         # 后端会话上下文
 deploy/

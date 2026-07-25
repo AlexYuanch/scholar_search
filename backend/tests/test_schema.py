@@ -24,14 +24,25 @@ EXPECTED_TABLES = {
     "openalex_search_jobs",
     "profile_status",
     "refresh_jobs",
+    "research_graph_refresh_jobs",
+    "research_graph_sync_state",
+    "research_topics",
     "scholar_aliases",
     "scholar_institutions",
     "scholar_profiles",
+    "scholar_topics",
     "scholars",
+    "collaborations",
+    "collaboration_works",
+    "paper_insights",
+    "timeline_events",
     "user_history",
     "user_sessions",
     "upstream_rate_limits",
     "user_api_credentials",
+    "work_citations",
+    "work_external_ids",
+    "work_topics",
     "works",
 }
 
@@ -123,6 +134,52 @@ def test_user_api_credentials_and_queue_ownership_are_present():
     assert queue_columns == {
         ("refresh_jobs", "requested_by_user_id"),
         ("openalex_search_jobs", "requested_by_user_id"),
+    }
+
+
+def test_dynamic_research_graph_columns_and_relation_sources_are_present():
+    with psycopg.connect(DATABASE_URL) as connection:
+        work_columns = {
+            row[0]
+            for row in connection.execute("""
+                select column_name
+                from information_schema.columns
+                where table_schema = 'public' and table_name = 'works'
+            """)
+        }
+        sourced_relations = {
+            row[0]
+            for row in connection.execute("""
+                select table_name
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name in (
+                      'authorships', 'scholar_institutions', 'work_topics',
+                      'scholar_topics', 'collaborations', 'collaboration_works',
+                      'work_citations', 'timeline_events'
+                  )
+                  and column_name = 'source'
+            """)
+        }
+
+    assert {
+        "abstract",
+        "publication_date",
+        "venue",
+        "source_updated_at",
+        "last_synced_at",
+        "metadata_sources",
+        "confidence",
+    } <= work_columns
+    assert sourced_relations == {
+        "authorships",
+        "scholar_institutions",
+        "work_topics",
+        "scholar_topics",
+        "collaborations",
+        "collaboration_works",
+        "work_citations",
+        "timeline_events",
     }
 
 

@@ -49,6 +49,12 @@ from openalex import (
     validate_openalex_api_key,
 )
 from quality import assess_profile_quality
+from research_graph_repository import (
+    enqueue_research_graph_refresh,
+    get_research_graph,
+    get_research_graph_object,
+    research_graph_needs_refresh,
+)
 from repository import (
     APIQuotaExceeded,
     LoginRateLimitExceeded,
@@ -263,6 +269,16 @@ def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> No
     repository.touch_access(author_id)
     if user:
         repository.record_history(user.id, author_id, query_name)
+        try:
+            if research_graph_needs_refresh(repository, author_id):
+                enqueue_research_graph_refresh(
+                    repository,
+                    author_id,
+                    requested_by_user_id=user.id,
+                    reason="profile_access",
+                )
+        except (KeyError, RepositoryNotConfigured):
+            pass
 
 
 def _consume_api_quota(action: str, user: AuthUser, request: Request) -> None:
@@ -406,6 +422,10 @@ class PasswordLoginRequest(BaseModel):
 
 class OpenAlexCredentialRequest(BaseModel):
     api_key: str = Field(min_length=8, max_length=512)
+
+
+class ResearchGraphRefreshRequest(BaseModel):
+    force_rebuild: bool = False
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -770,6 +790,53 @@ def author_works(
         "total": page["total"],
         "next_cursor": _encode_cursor(next_offset) if next_offset < page["total"] else None,
     }
+
+
+@app.get("/api/authors/{author_id:path}/research-graph")
+def author_research_graph(
+    author_id: str,
+    _user: AuthUser = Depends(require_user),
+):
+    """Return a readable scholar-scoped graph projection."""
+    return get_research_graph(repository, author_id)
+
+
+@app.post("/api/authors/{author_id:path}/research-graph/refresh")
+def refresh_author_research_graph(
+    author_id: str,
+    req: ResearchGraphRefreshRequest,
+    user: AuthUser = Depends(require_user),
+):
+    """Queue an incremental update or an explicit one-scholar rebuild."""
+    _require_openalex_credential(user)
+    try:
+        job_id = enqueue_research_graph_refresh(
+            repository,
+            author_id,
+            requested_by_user_id=user.id,
+            reason="manual_rebuild" if req.force_rebuild else "manual_refresh",
+            force_rebuild=req.force_rebuild,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Scholar profile not found") from exc
+    return {
+        "status": "queued",
+        "job_id": job_id,
+        "force_rebuild": req.force_rebuild,
+    }
+
+
+@app.get("/api/research-graph/objects/{object_type}/{object_id}")
+def research_graph_object(
+    object_type: str,
+    object_id: UUID,
+    _user: AuthUser = Depends(require_user),
+):
+    """Return details for a clicked author, paper, institution, or topic."""
+    item = get_research_graph_object(repository, object_type, str(object_id))
+    if not item:
+        raise HTTPException(status_code=404, detail="Research graph object not found")
+    return item
 
 
 @app.post("/api/profile/stream")
