@@ -78,7 +78,7 @@ fi
 
 if [ -n "$LLM_API_KEY" ]; then
     case "$LLM_API_KEY" in
-        *your*|*YOUR*|*你的*|*REPLACE_WITH_*)
+        your_api_key|YOUR_API_KEY|your_DeepSeek_API_Key|YOUR_DEEPSEEK_API_KEY|你的DeepSeek_API_Key|REPLACE_WITH_*)
             echo "LLM_API_KEY 仍是示例值，请填写真实模型 API key。" >&2
             exit 1
             ;;

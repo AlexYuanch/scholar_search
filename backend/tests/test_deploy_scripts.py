@@ -61,6 +61,13 @@ def test_production_deploy_rejects_loopback_public_url():
     assert "PUBLIC_APP_URL 不能指向 localhost 或回环地址" in script
 
 
+def test_production_deploy_does_not_reject_random_keys_containing_your():
+    script = DEPLOY.read_text()
+
+    assert "*your*" not in script
+    assert "your_DeepSeek_API_Key" in script
+
+
 def test_compose_runs_daily_postgres_backups_without_manual_profile():
     compose = COMPOSE.read_text()
 
