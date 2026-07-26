@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import {
   Search, BarChart3, Users,
   ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe,
@@ -35,6 +35,18 @@ interface WorkflowStage {
 }
 type Accent = "blue" | "green" | "purple" | "orange"
 type PanelPaper = string | { title: string; id?: string; topics?: string[] }
+type CandidateGroup = "all" | "high" | "medium" | "review"
+type CandidateSortKey = "recommended" | "papers" | "citations" | "hIndex" | "latest"
+type CandidateIdentityGroup = Exclude<CandidateGroup, "all">
+
+const CANDIDATE_GROUP_ORDER: Record<CandidateIdentityGroup, number> = { high: 0, medium: 1, review: 2 }
+
+function candidateGroupFor(candidate: Candidate): CandidateIdentityGroup {
+  if (candidate.identity_group) return candidate.identity_group
+  if (candidate.identity_confidence === "high") return "high"
+  if (candidate.identity_confidence === "medium") return "medium"
+  return "review"
+}
 
 // ── 候选人列表 ──────────────────────────────────────────────
 
@@ -44,6 +56,86 @@ function CandidateList({ candidates, onSelect, loading, t }: {
   loading: boolean
   t: (k: string) => string
 }) {
+  const [group, setGroup] = useState<CandidateGroup>("all")
+  const [sortKey, setSortKey] = useState<CandidateSortKey>("recommended")
+  const [institutionQuery, setInstitutionQuery] = useState("")
+  const [topicQuery, setTopicQuery] = useState("")
+  const [onlyOrcid, setOnlyOrcid] = useState(false)
+
+  const hasTopics = candidates.some((candidate) => (candidate.research_topics ?? []).length > 0)
+
+  const formatMatchReason = (reason: NonNullable<Candidate["match_reasons"]>[number]) => {
+    const details = reason.details ?? {}
+    if (reason.code === "orcid") return `${t("candidate.reason_orcid")}: ${reason.value ?? ""}`
+    if (reason.code === "primary_institution") return `${t("candidate.reason_primary_institution")}: ${reason.value ?? ""}`
+    if (reason.code === "merged_profile") {
+      return t("candidate.reason_merged_profile")
+        .replace("{works}", String(details.shared_works ?? 0))
+        .replace("{coauthors}", String(details.shared_coauthors ?? 0))
+        .replace("{topics}", String(details.shared_topics ?? 0))
+        .replace("{institutions}", String(details.shared_institutions ?? 0))
+    }
+    if (reason.code === "published_profile") {
+      return t("candidate.reason_published_profile").replace("{count}", String(reason.value ?? 1))
+    }
+    return t("candidate.reason_independent_profile")
+      .replace("{works}", String(details.sampled_works ?? 0))
+      .replace("{coauthors}", String(details.coauthor_count ?? 0))
+      .replace("{topics}", String(details.topic_count ?? 0))
+  }
+
+  const filteredCandidates = useMemo(() => {
+    const institutionNeedle = institutionQuery.trim().toLocaleLowerCase()
+    const topicNeedle = topicQuery.trim().toLocaleLowerCase()
+    const filtered = candidates.filter((candidate) => {
+      const candidateGroup = candidateGroupFor(candidate)
+      const institutions = [
+        candidate.primary_institution,
+        candidate.institution,
+        ...(candidate.institutions ?? []),
+        ...(candidate.other_institutions ?? []),
+      ].filter(Boolean).join(" ").toLocaleLowerCase()
+      const topics = (candidate.research_topics ?? []).join(" ").toLocaleLowerCase()
+      return (
+        (group === "all" || candidateGroup === group)
+        && (!institutionNeedle || institutions.includes(institutionNeedle))
+        && (!topicNeedle || topics.includes(topicNeedle))
+        && (!onlyOrcid || Boolean(candidate.orcid))
+      )
+    })
+    return filtered
+      .map((candidate, index) => ({ candidate, index }))
+      .sort((left, right) => {
+        const leftGroup = CANDIDATE_GROUP_ORDER[candidateGroupFor(left.candidate)]
+        const rightGroup = CANDIDATE_GROUP_ORDER[candidateGroupFor(right.candidate)]
+        if (leftGroup !== rightGroup) return leftGroup - rightGroup
+        if (sortKey === "papers") return right.candidate.works_count - left.candidate.works_count || left.index - right.index
+        if (sortKey === "citations") return right.candidate.cited_by_count - left.candidate.cited_by_count || left.index - right.index
+        if (sortKey === "hIndex") return right.candidate.h_index - left.candidate.h_index || left.index - right.index
+        if (sortKey === "latest") return (right.candidate.latest_publication_year ?? 0) - (left.candidate.latest_publication_year ?? 0) || left.index - right.index
+        return (
+          (right.candidate.identity_score ?? 0) - (left.candidate.identity_score ?? 0)
+          || Number(Boolean(right.candidate.orcid)) - Number(Boolean(left.candidate.orcid))
+          || (right.candidate.match_reasons?.length ?? 0) - (left.candidate.match_reasons?.length ?? 0)
+          || left.index - right.index
+        )
+      })
+      .map(({ candidate }) => candidate)
+  }, [candidates, group, institutionQuery, onlyOrcid, sortKey, topicQuery])
+
+  const groupCounts = useMemo(() => candidates.reduce((counts, candidate) => {
+    counts[candidateGroupFor(candidate)] += 1
+    return counts
+  }, { high: 0, medium: 0, review: 0 }), [candidates])
+
+  const clearFilters = () => {
+    setGroup("all")
+    setSortKey("recommended")
+    setInstitutionQuery("")
+    setTopicQuery("")
+    setOnlyOrcid(false)
+  }
+
   const evidenceLabel = (evidence: NonNullable<Candidate["identity_evidence"]>[number]) => {
     if (evidence.type === "orcid") return `ORCID ${String(evidence.value || "").replace("https://orcid.org/", "")}`
     if (evidence.type === "primary_institution") return `${t("candidate.primary_inst")}: ${evidence.value}`
@@ -72,8 +164,66 @@ function CandidateList({ candidates, onSelect, loading, t }: {
       <p className="mb-4 rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
         {t("candidate.confirm_prompt")}
       </p>
+      <div className="mb-4 space-y-3 rounded-lg border bg-card p-3">
+        <div className="flex flex-wrap gap-2">
+          {(["all", "high", "medium", "review"] as const).map((key) => (
+            <Button
+              key={key}
+              size="sm"
+              variant={group === key ? "default" : "outline"}
+              onClick={() => setGroup(key)}
+            >
+              {t(`candidate.group_${key}`)}{key !== "all" ? ` (${groupCounts[key]})` : ` (${candidates.length})`}
+            </Button>
+          ))}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <input
+            value={institutionQuery}
+            onChange={(event) => setInstitutionQuery(event.target.value)}
+            placeholder={t("candidate.filter_institution")}
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+          />
+          {hasTopics && (
+            <input
+              value={topicQuery}
+              onChange={(event) => setTopicQuery(event.target.value)}
+              placeholder={t("candidate.filter_topic")}
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+            />
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="flex items-center gap-2 text-muted-foreground">
+            <input type="checkbox" checked={onlyOrcid} onChange={(event) => setOnlyOrcid(event.target.checked)} />
+            {t("candidate.only_orcid")}
+          </label>
+          <label className="flex items-center gap-2 text-muted-foreground">
+            <span>{t("candidate.sort_label")}</span>
+            <select value={sortKey} onChange={(event) => setSortKey(event.target.value as CandidateSortKey)} className="h-9 rounded-md border bg-background px-2 text-sm text-foreground">
+              <option value="recommended">{t("candidate.sort_recommended")}</option>
+              <option value="papers">{t("candidate.sort_papers")}</option>
+              <option value="citations">{t("candidate.sort_citations")}</option>
+              <option value="hIndex">{t("candidate.sort_hindex")}</option>
+              <option value="latest">{t("candidate.sort_latest")}</option>
+            </select>
+          </label>
+          {(group !== "all" || institutionQuery || topicQuery || onlyOrcid || sortKey !== "recommended") && (
+            <Button variant="ghost" size="sm" onClick={clearFilters}>{t("candidate.clear_filters")}</Button>
+          )}
+          <span className="ml-auto text-xs text-muted-foreground">
+            {t("candidate.filtered_count").replace("{visible}", String(filteredCandidates.length)).replace("{total}", String(candidates.length))}
+          </span>
+        </div>
+      </div>
+      {filteredCandidates.length === 0 && (
+        <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+          <p>{t("candidate.no_filtered")}</p>
+          <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>{t("candidate.clear_filters")}</Button>
+        </div>
+      )}
       <div className="space-y-2">
-        {candidates.map((c) => (
+        {filteredCandidates.map((c) => (
           <Card key={c.id}
             className="transition-colors hover:bg-muted/30"
           >
@@ -87,8 +237,8 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-medium text-sm">{c.name}</p>
-                    <Badge variant={c.identity_confidence === "high" ? "default" : "outline"}>
-                      {t(`candidate.confidence_${c.identity_confidence || "single"}`)}
+                    <Badge variant={candidateGroupFor(c) === "high" ? "default" : "outline"}>
+                      {t(`candidate.group_${candidateGroupFor(c)}`)}
                     </Badge>
                   </div>
                   <p className="mt-1 max-w-xl break-words text-xs text-muted-foreground">
@@ -112,6 +262,27 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                   </div>
                   {(c.merged_count ?? 1) > 1 && (
                     <p className="mt-1 text-xs text-primary">{t("candidate.merged_hint")}</p>
+                  )}
+                  {c.latest_publication_year && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t("candidate.latest_publication").replace("{year}", String(c.latest_publication_year))}
+                    </p>
+                  )}
+                  {c.research_topics?.length ? (
+                    <p className="mt-1 break-words text-xs text-muted-foreground">
+                      <span className="font-medium text-foreground">{t("candidate.research_topics")}:</span>{" "}
+                      {c.research_topics.slice(0, 4).join(" · ")}
+                    </p>
+                  ) : null}
+                  {(c.match_reasons?.length ?? 0) > 0 && (
+                    <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 p-2.5">
+                      <p className="text-xs font-medium">{t("candidate.match_reasons")}</p>
+                      <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
+                        {c.match_reasons?.slice(0, 3).map((reason, index) => (
+                          <li key={`${reason.code}-${index}`}>· {formatMatchReason(reason)}</li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                   <div className="mt-3 rounded-md bg-muted/60 p-2.5">
                     <p className="text-xs font-medium">{t("candidate.identity_basis")}</p>

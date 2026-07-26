@@ -35,6 +35,8 @@ OPENALEX_MIN_REMAINING_CREDITS = int(
 )
 AFFILIATION_SELECTION_VERSION = 2
 
+_IDENTITY_GROUP_ORDER = {"high": 0, "medium": 1, "review": 2}
+
 
 class SearchCoalesceTimeout(RuntimeError):
     """Raised when another process owns a cold search for too long."""
@@ -46,6 +48,8 @@ def normalize_search_query(value: str) -> tuple[str, str]:
 
 
 def _candidate_identity_evidence(author: dict) -> list[dict]:
+    if isinstance(author.get("identity_evidence"), list):
+        return author["identity_evidence"]
     evidence = []
     if author.get("orcid"):
         evidence.append({"type": "orcid", "value": author["orcid"]})
@@ -93,9 +97,76 @@ def _candidate_payload(author: dict) -> dict:
         or author.get("historical_institutions")
         or [institution for institution in institutions if institution != primary_institution]
     )
+    identity_confidence = str(author.get("identity_confidence") or "single")
+    fingerprint = author.get("identity_fingerprint") or {}
+    evidence = _candidate_identity_evidence(author)
+    evidence_types = {str(item.get("type")) for item in evidence}
+    if identity_confidence == "high":
+        identity_group = "high"
+        identity_score = 90
+    elif identity_confidence == "medium" or "orcid" in evidence_types:
+        identity_group = "medium"
+        identity_score = 65
+    else:
+        identity_group = "review"
+        identity_score = 35
+
+    match_reasons = []
+    if author.get("orcid"):
+        match_reasons.append({
+            "code": "orcid",
+            "label": "orcid",
+            "value": str(author["orcid"]).replace("https://orcid.org/", ""),
+        })
+        identity_score += 10
+    if primary_institution:
+        match_reasons.append({
+            "code": "primary_institution",
+            "label": "primary_institution",
+            "value": primary_institution,
+        })
+    for item in evidence:
+        if item.get("type") == "merged_profile":
+            details = {
+                key: int(item.get(key) or 0)
+                for key in ("shared_works", "shared_coauthors", "shared_topics", "shared_institutions")
+            }
+            match_reasons.append({"code": "merged_profile", "label": "merged_profile", "details": details})
+            identity_score += min(details["shared_works"] * 4, 16)
+            identity_score += min(details["shared_coauthors"] * 2, 12)
+            identity_score += min(details["shared_topics"] * 2, 10)
+            identity_score += min(details["shared_institutions"] * 4, 8)
+        elif item.get("type") == "published_profile":
+            match_reasons.append({
+                "code": "published_profile",
+                "label": "published_profile",
+                "value": item.get("merged_count", 1),
+            })
+            identity_score += 8
+        elif item.get("type") == "independent_profile":
+            match_reasons.append({
+                "code": "independent_profile",
+                "label": "independent_profile",
+                "details": {
+                    "sampled_works": int(item.get("sampled_works") or 0),
+                    "coauthor_count": int(item.get("coauthor_count") or 0),
+                    "topic_count": int(item.get("topic_count") or 0),
+                },
+            })
+
+    research_topics = list(dict.fromkeys(
+        str(topic).strip()
+        for topic in (fingerprint.get("topic_names") or author.get("research_topics") or [])
+        if str(topic).strip()
+    ))[:12]
+    latest_publication_year = max(
+        (int(year) for year in (fingerprint.get("publication_years") or []) if str(year).isdigit()),
+        default=None,
+    )
+    identity_score = max(0, min(100, identity_score))
     return {
         "id": author["id"],
-        "name": author["display_name"],
+        "name": author.get("display_name") or author.get("name") or "",
         "institution": primary_institution,
         "institutions": institutions,
         "primary_institution": primary_institution,
@@ -103,14 +174,33 @@ def _candidate_payload(author: dict) -> dict:
         "affiliation_selection_version": AFFILIATION_SELECTION_VERSION,
         "works_count": author.get("works_count", 0),
         "cited_by_count": author.get("cited_by_count", 0),
-        "h_index": (author.get("summary_stats") or {}).get("h_index", 0),
+        "h_index": (author.get("summary_stats") or {}).get("h_index", author.get("h_index", 0)),
         "orcid": author.get("orcid"),
         "merged_count": author.get("merged_count", 1),
         "merged_ids": author.get("merged_ids", [author.get("id", "")]),
         "disambiguation": author.get("disambiguation", ""),
-        "identity_confidence": author.get("identity_confidence", "single"),
-        "identity_evidence": _candidate_identity_evidence(author),
+        "identity_confidence": identity_confidence,
+        "identity_evidence": evidence,
+        "identity_group": identity_group,
+        "identity_score": identity_score,
+        "match_reasons": match_reasons,
+        "latest_publication_year": latest_publication_year,
+        "research_topics": research_topics,
     }
+
+
+def _sort_candidate_payloads(candidates: list[dict]) -> list[dict]:
+    """Default to identity confidence; keep the original order as a stable tie-breaker."""
+    return [candidate for _, candidate in sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            _IDENTITY_GROUP_ORDER.get(item[1].get("identity_group"), 2),
+            -int(item[1].get("identity_score") or 0),
+            0 if item[1].get("orcid") else 1,
+            -len(item[1].get("match_reasons") or []),
+            item[0],
+        ),
+    )]
 
 
 def _cache_supports_primary_affiliation(cached: dict | None) -> bool:
@@ -187,7 +277,7 @@ def build_live_candidate_payload(
             incomplete = True
 
     merged = dedup_authors(candidates)
-    return [_candidate_payload(author) for author in merged], not incomplete
+    return _sort_candidate_payloads([_candidate_payload(author) for author in merged]), not incomplete
 
 
 def build_local_candidate_payload(repository, query_text: str) -> list[dict]:
@@ -208,7 +298,7 @@ def build_local_candidate_payload(repository, query_text: str) -> list[dict]:
             if len(known_merged_ids) > 1:
                 author["identity_confidence"] = "high"
                 author["published_profile_merged_count"] = len(known_merged_ids)
-    return [_candidate_payload(author) for author in merged]
+    return _sort_candidate_payloads([_candidate_payload(author) for author in merged])
 
 
 def _retry_after_seconds(exc: OpenAlexError) -> int | None:
@@ -273,8 +363,14 @@ def run_claimed_search_job(
 
 
 def _cached_response(cached: dict, source: str) -> dict:
+    candidates = [
+        candidate
+        if candidate.get("identity_group") and "match_reasons" in candidate
+        else _candidate_payload(candidate)
+        for candidate in (cached.get("candidates") or [])
+    ]
     return {
-        "candidates": cached.get("candidates") or [],
+        "candidates": _sort_candidate_payloads(candidates),
         "source": source,
         "updated_at": cached.get("updated_at"),
     }

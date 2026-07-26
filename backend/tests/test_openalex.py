@@ -296,7 +296,10 @@ def test_author_identity_fingerprint_uses_works_coauthors_and_topics(monkeypatch
                     {"author": {"id": "C1"}},
                 ],
                 "primary_topic": {"id": "T1"},
-                "topics": [{"id": "T1"}, {"id": "T2"}],
+                "topics": [
+                    {"id": "T1", "display_name": "Analytical Engines"},
+                    {"id": "T2", "display_name": "History of Computing"},
+                ],
             },
             {
                 "id": "W2",
@@ -316,4 +319,5 @@ def test_author_identity_fingerprint_uses_works_coauthors_and_topics(monkeypatch
     assert fingerprint["work_ids"] == ["W2", "https://doi.org/10.1000/one"]
     assert fingerprint["coauthor_ids"] == ["C1", "C2"]
     assert fingerprint["topic_ids"] == ["T1", "T2"]
+    assert fingerprint["topic_names"] == ["Analytical Engines", "History of Computing"]
     assert fingerprint["publication_years"] == [2025, 2026]
