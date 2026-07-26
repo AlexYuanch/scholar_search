@@ -36,9 +36,8 @@ interface WorkflowStage {
 }
 type Accent = "blue" | "green" | "purple" | "orange"
 type PanelPaper = string | { title: string; id?: string; topics?: string[] }
-type CandidateGroup = "all" | "high" | "medium" | "review"
 type CandidateSortKey = "recommended" | "papers" | "citations" | "hIndex" | "latest"
-type CandidateIdentityGroup = Exclude<CandidateGroup, "all">
+type CandidateIdentityGroup = "high" | "medium" | "review"
 
 const CANDIDATE_GROUP_ORDER: Record<CandidateIdentityGroup, number> = { high: 0, medium: 1, review: 2 }
 
@@ -57,7 +56,6 @@ function CandidateList({ candidates, onSelect, loading, t }: {
   loading: boolean
   t: (k: string) => string
 }) {
-  const [group, setGroup] = useState<CandidateGroup>("all")
   const [sortKey, setSortKey] = useState<CandidateSortKey>("recommended")
   const [institutionQuery, setInstitutionQuery] = useState("")
   const [topicQuery, setTopicQuery] = useState("")
@@ -65,31 +63,10 @@ function CandidateList({ candidates, onSelect, loading, t }: {
 
   const hasTopics = candidates.some((candidate) => (candidate.research_topics ?? []).length > 0)
 
-  const formatMatchReason = (reason: NonNullable<Candidate["match_reasons"]>[number]) => {
-    const details = reason.details ?? {}
-    if (reason.code === "orcid") return `${t("candidate.reason_orcid")}: ${reason.value ?? ""}`
-    if (reason.code === "primary_institution") return `${t("candidate.reason_primary_institution")}: ${reason.value ?? ""}`
-    if (reason.code === "merged_profile") {
-      return t("candidate.reason_merged_profile")
-        .replace("{works}", String(details.shared_works ?? 0))
-        .replace("{coauthors}", String(details.shared_coauthors ?? 0))
-        .replace("{topics}", String(details.shared_topics ?? 0))
-        .replace("{institutions}", String(details.shared_institutions ?? 0))
-    }
-    if (reason.code === "published_profile") {
-      return t("candidate.reason_published_profile").replace("{count}", String(reason.value ?? 1))
-    }
-    return t("candidate.reason_independent_profile")
-      .replace("{works}", String(details.sampled_works ?? 0))
-      .replace("{coauthors}", String(details.coauthor_count ?? 0))
-      .replace("{topics}", String(details.topic_count ?? 0))
-  }
-
   const filteredCandidates = useMemo(() => {
     const institutionNeedle = institutionQuery.trim().toLocaleLowerCase()
     const topicNeedle = topicQuery.trim().toLocaleLowerCase()
     const filtered = candidates.filter((candidate) => {
-      const candidateGroup = candidateGroupFor(candidate)
       const institutions = [
         candidate.primary_institution,
         candidate.institution,
@@ -98,8 +75,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
       ].filter(Boolean).join(" ").toLocaleLowerCase()
       const topics = (candidate.research_topics ?? []).join(" ").toLocaleLowerCase()
       return (
-        (group === "all" || candidateGroup === group)
-        && (!institutionNeedle || institutions.includes(institutionNeedle))
+        (!institutionNeedle || institutions.includes(institutionNeedle))
         && (!topicNeedle || topics.includes(topicNeedle))
         && (!onlyOrcid || Boolean(candidate.orcid))
       )
@@ -122,63 +98,25 @@ function CandidateList({ candidates, onSelect, loading, t }: {
         )
       })
       .map(({ candidate }) => candidate)
-  }, [candidates, group, institutionQuery, onlyOrcid, sortKey, topicQuery])
-
-  const groupCounts = useMemo(() => candidates.reduce((counts, candidate) => {
-    counts[candidateGroupFor(candidate)] += 1
-    return counts
-  }, { high: 0, medium: 0, review: 0 }), [candidates])
+  }, [candidates, institutionQuery, onlyOrcid, sortKey, topicQuery])
 
   const clearFilters = () => {
-    setGroup("all")
     setSortKey("recommended")
     setInstitutionQuery("")
     setTopicQuery("")
     setOnlyOrcid(false)
   }
 
-  const evidenceLabel = (evidence: NonNullable<Candidate["identity_evidence"]>[number]) => {
-    if (evidence.type === "orcid") return `ORCID ${String(evidence.value || "").replace("https://orcid.org/", "")}`
-    if (evidence.type === "primary_institution") return `${t("candidate.primary_inst")}: ${evidence.value}`
-    if (evidence.type === "merged_profile") {
-      return t("candidate.merge_evidence")
-        .replace("{works}", String(evidence.shared_works ?? 0))
-        .replace("{coauthors}", String(evidence.shared_coauthors ?? 0))
-        .replace("{topics}", String(evidence.shared_topics ?? 0))
-        .replace("{institutions}", String(evidence.shared_institutions ?? 0))
-    }
-    if (evidence.type === "published_profile") {
-      return t("candidate.published_profile_evidence")
-        .replace("{count}", String(evidence.merged_count ?? 1))
-    }
-    return t("candidate.independent_evidence")
-      .replace("{works}", String(evidence.sampled_works ?? 0))
-      .replace("{coauthors}", String(evidence.coauthor_count ?? 0))
-      .replace("{topics}", String(evidence.topic_count ?? 0))
-  }
-
   return (
-    <section className="mx-auto max-w-3xl px-6 py-6">
-      <h3 className="mb-4 text-sm font-medium text-muted-foreground">
-        {candidates.length} {t("candidate.title")}
-      </h3>
-      <p className="mb-4 rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+    <section className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      <h2 className="text-lg font-semibold">
+        {t("candidate.result_count").replace("{count}", String(candidates.length))}
+      </h2>
+      <p className="mt-1 text-sm text-muted-foreground">
         {t("candidate.confirm_prompt")}
       </p>
       {candidates.length > 1 && (
-        <div className="mb-4 space-y-3 rounded-lg border bg-card p-3">
-          <div className="flex flex-wrap gap-2">
-            {(["all", "high", "medium", "review"] as const).map((key) => (
-              <Button
-                key={key}
-                size="sm"
-                variant={group === key ? "default" : "outline"}
-                onClick={() => setGroup(key)}
-              >
-                {t(`candidate.group_${key}`)}{key !== "all" ? ` (${groupCounts[key]})` : ` (${candidates.length})`}
-              </Button>
-            ))}
-          </div>
+        <div className="my-5 space-y-3 rounded-xl border bg-muted/20 p-3 sm:p-4">
           <div className="grid gap-2 sm:grid-cols-2">
             <input
               value={institutionQuery}
@@ -210,7 +148,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                 <option value="latest">{t("candidate.sort_latest")}</option>
               </select>
             </label>
-            {(group !== "all" || institutionQuery || topicQuery || onlyOrcid || sortKey !== "recommended") && (
+            {(institutionQuery || topicQuery || onlyOrcid || sortKey !== "recommended") && (
               <Button variant="ghost" size="sm" onClick={clearFilters}>{t("candidate.clear_filters")}</Button>
             )}
             <span className="ml-auto text-xs text-muted-foreground">
@@ -225,79 +163,61 @@ function CandidateList({ candidates, onSelect, loading, t }: {
           <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>{t("candidate.clear_filters")}</Button>
         </div>
       )}
-      <div className="space-y-2">
+      <div className="mt-5 space-y-3">
         {filteredCandidates.map((c) => (
           <Card key={c.id}
-            className="transition-colors hover:bg-muted/30"
+            className="overflow-hidden transition-colors hover:border-primary/30"
           >
-            <CardContent className="min-w-0 p-4">
-              <div className="flex min-w-0 items-start gap-3">
-                <Avatar className="h-10 w-10 shrink-0">
-                  <AvatarFallback className="text-xs bg-primary/10 text-primary">
+            <CardContent className="min-w-0 p-5">
+              <div className="flex min-w-0 items-start gap-4">
+                <Avatar className="h-12 w-12 shrink-0">
+                  <AvatarFallback className="bg-primary/10 text-sm text-primary">
                     {c.name.split(" ").map(n => n[0]).join("")}
                   </AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-medium text-sm">{c.name}</p>
-                    <Badge variant={candidateGroupFor(c) === "high" ? "default" : "outline"}>
-                      {t(`candidate.group_${candidateGroupFor(c)}`)}
-                    </Badge>
+                    <p className="text-base font-semibold">{c.name}</p>
+                    {c.orcid && <Badge variant="outline">{t("candidate.orcid_available")}</Badge>}
                   </div>
-                  <p className="mt-1 max-w-xl break-words text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">{t("candidate.primary_inst")}:</span>{" "}
+                  <p className="mt-1 max-w-2xl break-words text-sm text-muted-foreground">
                     {c.primary_institution || c.institution || t("candidate.unknown_inst")}
                   </p>
-                  <p className="mt-0.5 max-w-xl break-words text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">{t("candidate.other_inst")}:</span>{" "}
-                    {c.other_institutions?.length
-                      ? c.other_institutions.join(" · ")
-                      : t("candidate.no_other_inst")}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    ORCID {c.orcid ? c.orcid.replace("https://orcid.org/", "") : t("candidate.orcid_missing")}
-                  </p>
-                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {c.other_institutions?.length ? (
+                    <p className="mt-0.5 max-w-2xl break-words text-xs text-muted-foreground">
+                      {c.other_institutions.slice(0, 3).join(" · ")}
+                    </p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
                     <span>{c.works_count} {t("candidate.papers")}</span>
                     <span>{c.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
                     <span>h-index {c.h_index}</span>
-                    <span>{t("candidate.merged_count").replace("{count}", String(c.merged_count ?? 1))}</span>
+                    {c.latest_publication_year && (
+                      <span>{t("candidate.latest_publication").replace("{year}", String(c.latest_publication_year))}</span>
+                    )}
                   </div>
-                  {(c.merged_count ?? 1) > 1 && (
-                    <p className="mt-1 text-xs text-primary">{t("candidate.merged_hint")}</p>
-                  )}
-                  {c.latest_publication_year && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {t("candidate.latest_publication").replace("{year}", String(c.latest_publication_year))}
-                    </p>
-                  )}
                   {c.research_topics?.length ? (
-                    <p className="mt-1 break-words text-xs text-muted-foreground">
-                      <span className="font-medium text-foreground">{t("candidate.research_topics")}:</span>{" "}
-                      {c.research_topics.slice(0, 4).join(" · ")}
-                    </p>
-                  ) : null}
-                  {(c.match_reasons?.length ?? 0) > 0 && (
-                    <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 p-2.5">
-                      <p className="text-xs font-medium">{t("candidate.match_reasons")}</p>
-                      <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
-                        {c.match_reasons?.slice(0, 3).map((reason, index) => (
-                          <li key={`${reason.code}-${index}`}>· {formatMatchReason(reason)}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  <div className="mt-3 rounded-md bg-muted/60 p-2.5">
-                    <p className="text-xs font-medium">{t("candidate.identity_basis")}</p>
-                    <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
-                      {(c.identity_evidence ?? []).map((evidence, index) => (
-                        <li key={`${evidence.type}-${index}`}>· {evidenceLabel(evidence)}</li>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {c.research_topics.slice(0, 4).map((topic) => (
+                        <Badge key={topic} variant="secondary" className="font-normal">{topic}</Badge>
                       ))}
-                    </ul>
-                  </div>
+                    </div>
+                  ) : null}
+                  {c.orcid ? (
+                    <a
+                      href={c.orcid.startsWith("http") ? c.orcid : `https://orcid.org/${c.orcid}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-3 inline-flex text-xs text-primary hover:underline"
+                    >
+                      ORCID {c.orcid.replace("https://orcid.org/", "")}
+                    </a>
+                  ) : (
+                    <p className="mt-3 text-xs text-muted-foreground">{t("candidate.verify_hint")}</p>
+                  )}
                 </div>
               </div>
-              <Button className="mt-3 w-full sm:w-auto" size="sm" onClick={() => onSelect(c)}>
+              <Button className="mt-4 w-full sm:w-auto" size="sm" onClick={() => onSelect(c)}>
                 {t("candidate.confirm")}<ChevronRight className="h-4 w-4" />
               </Button>
             </CardContent>
@@ -687,7 +607,7 @@ export default function App() {
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-2 px-3 sm:px-6">
           <div className="flex items-center gap-2 font-semibold cursor-pointer" onClick={handleReset}>
             <BarChart3 className="h-5 w-5 text-primary" />
-            <span className="hidden sm:inline">ScholarProfile</span>
+            <span className="hidden sm:inline">ScholarSearch</span>
           </div>
 
           <div className="flex items-center gap-1">

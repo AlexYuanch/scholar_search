@@ -240,33 +240,37 @@ export default function ScholarIntroduction({
           )}
         </dl>
         {profile.profileEvidence.length > 0 && (
-          <div className="space-y-2 border-t pt-4">
-            <h4 className="text-xs font-medium text-muted-foreground">{t("section.evidence")}</h4>
-            {profile.profileEvidence.map((item) => {
-              const currentPaperIndex = paperEvidenceIndexById.get(item.id) ?? 0
-              const text = localizedEvidence(profile, item, currentPaperIndex, lang, t)
-              return (
-                <div key={item.id} className="flex items-start gap-2 text-xs text-muted-foreground">
-                  <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">
-                    [{item.id}]
-                  </Badge>
-                  {item.url ? (
-                    <a
-                      href={item.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-start gap-1 text-primary hover:underline"
-                    >
+          <details className="group border-t pt-4">
+            <summary className="cursor-pointer list-none text-xs font-medium text-muted-foreground hover:text-foreground">
+              {t("section.evidence")}
+            </summary>
+            <div className="mt-3 space-y-2">
+              {profile.profileEvidence.map((item) => {
+                const currentPaperIndex = paperEvidenceIndexById.get(item.id) ?? 0
+                const text = localizedEvidence(profile, item, currentPaperIndex, lang, t)
+                return (
+                  <div key={item.id} className="flex items-start gap-2 text-xs text-muted-foreground">
+                    <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">
+                      [{item.id}]
+                    </Badge>
+                    {item.url ? (
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-start gap-1 text-primary hover:underline"
+                      >
+                        <span>{text}</span>
+                        <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+                      </a>
+                    ) : (
                       <span>{text}</span>
-                      <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
-                    </a>
-                  ) : (
-                    <span>{text}</span>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </details>
         )}
       </CardContent>
     </Card>

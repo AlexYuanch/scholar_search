@@ -54,7 +54,7 @@ interface Props {
 
 type ProfileTab = "overview" | "papers" | "network" | "research-graph"
 
-function MetricCard({
+function MetricItem({
   icon: Icon,
   label,
   value,
@@ -64,19 +64,15 @@ function MetricCard({
   value: string | number
 }) {
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="flex items-center gap-3">
-          <div className="rounded-lg bg-primary/10 p-2">
-            <Icon className="h-5 w-5 text-primary" />
-          </div>
-          <div className="flex flex-col">
-            <span className="text-sm text-muted-foreground">{label}</span>
-            <span className="text-2xl font-bold">{value}</span>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <div className="flex items-center gap-3 rounded-lg bg-muted/40 p-3">
+      <div className="rounded-lg bg-primary/10 p-2">
+        <Icon className="h-5 w-5 text-primary" />
+      </div>
+      <div className="flex flex-col">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="text-xl font-bold">{value}</span>
+      </div>
+    </div>
   )
 }
 
@@ -230,28 +226,28 @@ export default function ProfileSection({
               <CardTitle className="text-base">{t("section.research_directions")}</CardTitle>
               <CardDescription>{t("section.research_desc")}</CardDescription>
             </CardHeader>
-            <CardContent className="p-3 sm:p-6">
+            <CardContent className="space-y-5 p-4 sm:p-6">
               <TopicsSection topics={profile.topics} />
+              <Separator />
+              <div className="grid gap-3 sm:grid-cols-3">
+                <MetricItem icon={BookOpen} label={t("metric.total_papers")} value={profile.totalPapers} />
+                <MetricItem
+                  icon={Quote}
+                  label={t("metric.total_citations")}
+                  value={profile.totalCitations.toLocaleString()}
+                />
+                <MetricItem icon={BarChart3} label={t("metric.h_index")} value={profile.hIndex} />
+              </div>
             </CardContent>
           </Card>
 
+          <ResearchChanges profile={profile} t={t} lang={lang} />
           <ResearchTimeline
             profile={profile}
             onTopicClick={handleTimelineTopicClick}
             updating={analysisUpdating}
             t={t}
           />
-          <ResearchChanges profile={profile} t={t} lang={lang} />
-
-          <div className="grid gap-4 sm:grid-cols-3">
-            <MetricCard icon={BookOpen} label={t("metric.total_papers")} value={profile.totalPapers} />
-            <MetricCard
-              icon={Quote}
-              label={t("metric.total_citations")}
-              value={profile.totalCitations.toLocaleString()}
-            />
-            <MetricCard icon={BarChart3} label={t("metric.h_index")} value={profile.hIndex} />
-          </div>
 
           <DataVerification profile={profile} t={t} lang={lang} />
         </TabsContent>

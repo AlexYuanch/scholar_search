@@ -1,9 +1,8 @@
-import { AlertTriangle, BrainCircuit, CheckCircle2, Clock3, Database, FileCheck2, ShieldCheck } from "lucide-react"
+import { AlertTriangle, Clock3, Database, ShieldCheck } from "lucide-react"
 import type { ScholarProfile } from "@/types"
 import type { Lang } from "@/i18n"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-
 
 export default function DataVerification({ profile, t, lang }: {
   profile: ScholarProfile
@@ -13,29 +12,6 @@ export default function DataVerification({ profile, t, lang }: {
   const audit = profile.dataAudit
   if (!audit) return null
 
-  const verifiedPercent = audit.collectedWorks
-    ? Math.round(audit.crossrefVerified / audit.collectedWorks * 100)
-    : 0
-  const statusKey = `verification.status_${audit.status}`
-  const StatusIcon = audit.status === "sufficient" ? CheckCircle2 : AlertTriangle
-  const detail = t("verification.detail")
-    .replace("{expected}", String(audit.openalexExpected))
-    .replace("{fetched}", String(audit.openalexFetched))
-    .replace("{merged}", String(audit.duplicateRecordsMerged))
-    .replace("{conflicts}", String(audit.conflictCount))
-  const failureDetail = t("verification.failed").replace("{count}", String(audit.crossrefFailed))
-  const identityDetail = t("verification.identity_merged").replace(
-    "{count}",
-    String(profile.identityAudit?.mergedCount ?? 1),
-  )
-  const identityExcludedDetail = t("verification.identity_excluded").replace(
-    "{count}",
-    String(profile.identityAudit?.excludedWorks ?? 0),
-  )
-  const identityOrcidDetail = t("verification.identity_orcid").replace(
-    "{count}",
-    String(profile.identityAudit?.orcidMatchedWorks ?? 0),
-  )
   const updatedAt = profile.updatedAt || audit.retrievedAt
   const updatedLabel = updatedAt && !Number.isNaN(new Date(updatedAt).getTime())
     ? new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
@@ -44,11 +20,17 @@ export default function DataVerification({ profile, t, lang }: {
       }).format(new Date(updatedAt))
     : "—"
   const confidence = profile.evidenceReview?.summaryConfidence || "low"
-  const agentAnalysis = profile.agentAnalysis
+  const excludedWorks = profile.identityAudit?.excludedWorks ?? 0
+  const hasAttention = audit.status !== "sufficient" || excludedWorks > 0 || audit.crossrefFailed > 0
+  const detail = t("verification.detail")
+    .replace("{expected}", String(audit.openalexExpected))
+    .replace("{fetched}", String(audit.openalexFetched))
+    .replace("{merged}", String(audit.duplicateRecordsMerged))
+    .replace("{conflicts}", String(audit.conflictCount))
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="bg-muted/15">
+      <CardHeader className="pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -58,122 +40,63 @@ export default function DataVerification({ profile, t, lang }: {
             <CardDescription className="mt-1">{t("verification.description")}</CardDescription>
           </div>
           <Badge variant="outline" className="gap-1">
-            <StatusIcon className="h-3.5 w-3.5" />
-            {t(statusKey)}
+            {hasAttention
+              ? <AlertTriangle className="h-3.5 w-3.5" />
+              : <ShieldCheck className="h-3.5 w-3.5" />
+            }
+            {t(`verification.status_${hasAttention ? "partial" : "sufficient"}`)}
           </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-lg bg-muted/60 p-3">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg bg-background/80 p-3">
             <p className="text-xs text-muted-foreground">{t("verification.collected")}</p>
-            <p className="mt-1 text-xl font-bold tabular-nums">{audit.collectedWorks}</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums">
+              {profile.totalPapers} {t("candidate.papers")}
+            </p>
           </div>
-          <div className="rounded-lg bg-muted/60 p-3">
-            <p className="text-xs text-muted-foreground">{t("verification.with_doi")}</p>
-            <p className="mt-1 text-xl font-bold tabular-nums">{audit.worksWithDoi}</p>
+          <div className="rounded-lg bg-background/80 p-3">
+            <p className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Clock3 className="h-3.5 w-3.5" />
+              {t("verification.updated_at")}
+            </p>
+            <p className="mt-1 text-sm font-medium">{updatedLabel}</p>
           </div>
-          <div className="rounded-lg bg-muted/60 p-3">
-            <p className="text-xs text-muted-foreground">{t("verification.crossref_verified")}</p>
-            <p className="mt-1 text-xl font-bold tabular-nums">{audit.crossrefVerified}</p>
-          </div>
-          <div className="rounded-lg bg-muted/60 p-3">
-            <p className="text-xs text-muted-foreground">{t("verification.pending")}</p>
-            <p className="mt-1 text-xl font-bold tabular-nums">{audit.unverifiedWorks}</p>
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-            <span>{t("verification.rate")}</span>
-            <span className="tabular-nums">{verifiedPercent}%</span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-muted">
-            <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${verifiedPercent}%` }} />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <FileCheck2 className="h-4 w-4 shrink-0 text-primary" />
-          <span>{t("verification.sources")}</span>
-          {audit.sources.map((source) => <Badge key={source} variant="secondary">{source}</Badge>)}
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="flex items-start gap-2 rounded-lg border p-3 text-xs text-muted-foreground">
-            <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-            <div>
-              <p className="font-medium text-foreground">{t("verification.updated_at")}</p>
-              <p className="mt-1">{updatedLabel}</p>
-            </div>
-          </div>
-          <div className="flex items-start gap-2 rounded-lg border p-3 text-xs text-muted-foreground">
-            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-            <div>
-              <p className="font-medium text-foreground">{t("verification.confidence")}</p>
-              <p className="mt-1">{t(`verification.confidence_${confidence}`)}</p>
+          <div className="rounded-lg bg-background/80 p-3">
+            <p className="text-xs text-muted-foreground">{t("verification.sources")}</p>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {audit.sources.map((source) => <Badge key={source} variant="secondary">{source}</Badge>)}
             </div>
           </div>
         </div>
 
-        {(profile.identityAudit?.mergedCount ?? 1) > 1 && (
-          <p className="text-xs leading-relaxed text-primary">{identityDetail}</p>
-        )}
-        {(profile.identityAudit?.excludedWorks ?? 0) > 0 && (
-          <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">{identityExcludedDetail}</p>
-        )}
-        {(profile.identityAudit?.orcidMatchedWorks ?? 0) > 0 && (
-          <p className="text-xs leading-relaxed text-primary">{identityOrcidDetail}</p>
-        )}
-
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {detail}
-        </p>
-        {audit.crossrefLimited && (
-          <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
-            {t("verification.limited")}
+        {excludedWorks > 0 && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
+            {t("verification.identity_excluded").replace("{count}", String(excludedWorks))}
           </p>
         )}
-        {audit.crossrefFailed > 0 && (
-          <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
-            {failureDetail}
-          </p>
-        )}
-        {agentAnalysis && (
-          <div className="rounded-lg border bg-muted/30 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <BrainCircuit className="h-4 w-4 text-primary" />
-                <p className="text-sm font-medium">{t("agent.verification_title")}</p>
-              </div>
-              <Badge variant="outline">{t(`agent.status_${agentAnalysis.status}`)}</Badge>
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">{t("agent.verification_desc")}</p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {agentAnalysis.runs.map((run) => (
-                <div key={run.agent} className="flex min-w-0 items-start justify-between gap-3 rounded-md bg-background/70 px-3 py-2 text-xs">
-                  <div className="min-w-0">
-                    <p className="font-medium text-foreground">{t(`agent.run_${run.agent}`)}</p>
-                    <p className="mt-0.5 truncate text-muted-foreground">
-                      {run.model || t("agent.deterministic_fallback")}
-                    </p>
-                  </div>
-                  <Badge variant="secondary" className="shrink-0">
-                    {t(`agent.run_status_${run.status}`)}
-                  </Badge>
-                </div>
-              ))}
-            </div>
+
+        <details className="group rounded-lg border bg-background/60">
+          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium">
+            {t("verification.more")}
+          </summary>
+          <div className="space-y-3 border-t px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+            <p>{detail}</p>
+            <p>
+              {t("verification.confidence")}: {t(`verification.confidence_${confidence}`)}
+            </p>
+            {audit.crossrefLimited && <p>{t("verification.limited")}</p>}
+            {audit.crossrefFailed > 0 && (
+              <p>{t("verification.failed").replace("{count}", String(audit.crossrefFailed))}</p>
+            )}
+            <ul className="space-y-1">
+              <li>· {t("verification.limit_openalex")}</li>
+              <li>· {t("verification.limit_citations")}</li>
+              <li>· {t("verification.limit_identity")}</li>
+            </ul>
           </div>
-        )}
-        <div className="rounded-lg border bg-muted/40 p-4">
-          <p className="text-xs font-medium">{t("verification.limitations")}</p>
-          <ul className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
-            <li>· {t("verification.limit_openalex")}</li>
-            <li>· {t("verification.limit_citations")}</li>
-            <li>· {t("verification.limit_identity")}</li>
-          </ul>
-        </div>
+        </details>
       </CardContent>
     </Card>
   )

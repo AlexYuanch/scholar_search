@@ -23,29 +23,6 @@ function initials(name: string) {
   return name.split(" ").filter(Boolean).map((part) => part[0]).join("").slice(0, 3)
 }
 
-function identityEvidenceLabel(
-  evidence: NonNullable<Candidate["identity_evidence"]>[number],
-  t: (key: string) => string,
-) {
-  if (evidence.type === "orcid") return `ORCID ${String(evidence.value || "").replace("https://orcid.org/", "")}`
-  if (evidence.type === "primary_institution") return `${t("candidate.primary_inst")}: ${evidence.value}`
-  if (evidence.type === "merged_profile") {
-    return t("candidate.merge_evidence")
-      .replace("{works}", String(evidence.shared_works ?? 0))
-      .replace("{coauthors}", String(evidence.shared_coauthors ?? 0))
-      .replace("{topics}", String(evidence.shared_topics ?? 0))
-      .replace("{institutions}", String(evidence.shared_institutions ?? 0))
-  }
-  if (evidence.type === "published_profile") {
-    return t("candidate.published_profile_evidence")
-      .replace("{count}", String(evidence.merged_count ?? 1))
-  }
-  return t("candidate.independent_evidence")
-    .replace("{works}", String(evidence.sampled_works ?? 0))
-    .replace("{coauthors}", String(evidence.coauthor_count ?? 0))
-    .replace("{topics}", String(evidence.topic_count ?? 0))
-}
-
 function recentSummary(profile: ScholarProfile, startYear: number): RecentSummary {
   const rows = profile.yearlyTrend.filter((item) => item.year >= startYear)
   return {
@@ -535,7 +512,9 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
 
               {candidates.length > 0 && (
                 <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground">{candidates.length} {t("candidate.title")}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {t("candidate.result_count").replace("{count}", String(candidates.length))}
+                  </p>
                   {candidates.map((candidate) => (
                     <Card key={candidate.id}>
                       <CardContent className="min-w-0 p-4">
@@ -547,44 +526,25 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="break-words text-sm font-medium">{candidate.name}</p>
-                              <Badge variant={candidate.identity_confidence === "high" ? "default" : "outline"}>
-                                {t(`candidate.confidence_${candidate.identity_confidence || "single"}`)}
-                              </Badge>
+                              {candidate.orcid && <Badge variant="outline">{t("candidate.orcid_available")}</Badge>}
                             </div>
                             <p className="mt-1 break-words text-xs text-muted-foreground">
-                              <span className="font-medium text-foreground">{t("candidate.primary_inst")}:</span>{" "}
                               {candidate.primary_institution || candidate.institution || t("candidate.unknown_inst")}
-                            </p>
-                            <p className="mt-0.5 break-words text-xs text-muted-foreground">
-                              <span className="font-medium text-foreground">{t("candidate.other_inst")}:</span>{" "}
-                              {candidate.other_institutions?.length
-                                ? candidate.other_institutions.join(" · ")
-                                : t("candidate.no_other_inst")}
-                            </p>
-                            <p className="mt-0.5 break-words text-xs text-muted-foreground">
-                              ORCID {candidate.orcid
-                                ? candidate.orcid.replace("https://orcid.org/", "")
-                                : t("candidate.orcid_missing")}
                             </p>
                             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                               <span>{candidate.works_count} {t("candidate.papers")}</span>
                               <span>{candidate.cited_by_count.toLocaleString()} {t("candidate.citations")}</span>
                               <span>h-index {candidate.h_index}</span>
-                              <span>{t("candidate.merged_count").replace("{count}", String(candidate.merged_count ?? 1))}</span>
                             </div>
+                            {candidate.research_topics?.length ? (
+                              <p className="mt-2 break-words text-xs text-muted-foreground">
+                                {candidate.research_topics.slice(0, 3).join(" · ")}
+                              </p>
+                            ) : null}
                           </div>
                         </div>
                         <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground" />
                         </div>
-                        <div className="mt-3 rounded-md bg-muted/60 p-2.5">
-                          <p className="text-xs font-medium">{t("candidate.identity_basis")}</p>
-                          <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
-                            {(candidate.identity_evidence ?? []).map((evidence, index) => (
-                              <li key={`${evidence.type}-${index}`}>· {identityEvidenceLabel(evidence, t)}</li>
-                            ))}
-                          </ul>
-                        </div>
-                        <p className="mt-3 text-xs text-muted-foreground">{t("candidate.confirm_prompt")}</p>
                         <Button className="mt-3 w-full" size="sm" onClick={() => void loadCandidate(candidate)}>
                           {t("candidate.confirm")}
                         </Button>
