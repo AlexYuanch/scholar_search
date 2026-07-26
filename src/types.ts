@@ -42,6 +42,16 @@ export interface Candidate {
   merged_ids?: string[]
   disambiguation?: string
   identity_confidence?: string
+  identity_group?: "high" | "medium" | "review"
+  identity_score?: number
+  match_reasons?: Array<{
+    code: string
+    label?: string
+    value?: string | number
+    details?: Record<string, number>
+  }>
+  latest_publication_year?: number | null
+  research_topics?: string[]
   identity_evidence?: Array<{
     type: "orcid" | "primary_institution" | "merged_profile" | "published_profile" | "independent_profile"
     value?: string

@@ -253,6 +253,7 @@ def get_author_identity_fingerprint(
     work_ids = set()
     coauthor_ids = set()
     topic_ids = set()
+    topic_names = set()
     publication_years = []
     for work in data.get("results", []):
         work_key = work.get("doi") or work.get("id")
@@ -267,13 +268,18 @@ def get_author_identity_fingerprint(
         primary_topic = work.get("primary_topic") or {}
         if primary_topic.get("id"):
             topic_ids.add(str(primary_topic["id"]))
+        if primary_topic.get("display_name"):
+            topic_names.add(str(primary_topic["display_name"]).strip())
         for topic in work.get("topics") or []:
             if topic.get("id"):
                 topic_ids.add(str(topic["id"]))
+            if topic.get("display_name"):
+                topic_names.add(str(topic["display_name"]).strip())
     return {
         "work_ids": sorted(work_ids),
         "coauthor_ids": sorted(coauthor_ids),
         "topic_ids": sorted(topic_ids),
+        "topic_names": sorted(topic_names, key=str.casefold),
         "publication_years": sorted(set(publication_years)),
         "sampled_works": len(data.get("results", [])),
     }

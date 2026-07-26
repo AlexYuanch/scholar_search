@@ -92,7 +92,9 @@ def test_stale_search_returns_immediately_and_enqueues_worker_refresh():
     )
 
     assert result["source"] == "stale"
-    assert result["candidates"] == _payload()
+    assert result["candidates"][0]["id"] == "A1"
+    assert result["candidates"][0]["identity_group"] == "review"
+    assert result["candidates"][0]["identity_score"] == 35
     assert len(repository.openalex_search_jobs) == 1
     assert next(iter(repository.openalex_search_jobs.values()))["status"] == "pending"
 
@@ -182,6 +184,49 @@ def test_identity_fingerprints_are_reused_across_different_queries():
     )
 
     assert enriched_ids == ["A2"]
+
+
+def test_candidate_payload_exposes_identity_sorting_and_topic_filters():
+    candidate = search_service._candidate_payload({
+        "id": "A1",
+        "display_name": "Ada Lovelace",
+        "last_known_institutions": [{"display_name": "Analytical Engine Institute"}],
+        "affiliations": [],
+        "works_count": 10,
+        "cited_by_count": 100,
+        "summary_stats": {"h_index": 5},
+        "orcid": "https://orcid.org/0000-0001-0000-0001",
+        "identity_confidence": "medium",
+        "identity_signals": [{
+            "confidence": "medium",
+            "sharedWorks": 3,
+            "sharedCoauthors": 2,
+            "sharedTopics": 2,
+            "sharedInstitutions": 1,
+        }],
+        "identity_fingerprint": {
+            "topic_names": ["Analytical Engines", "History of Computing"],
+            "publication_years": [2024, 2025],
+        },
+    })
+
+    assert candidate["identity_group"] == "medium"
+    assert candidate["identity_score"] > 65
+    assert candidate["latest_publication_year"] == 2025
+    assert candidate["research_topics"] == ["Analytical Engines", "History of Computing"]
+    assert {reason["code"] for reason in candidate["match_reasons"]} >= {
+        "orcid", "primary_institution", "merged_profile",
+    }
+
+
+def test_candidate_default_sort_prioritizes_identity_over_citations():
+    candidates = search_service._sort_candidate_payloads([
+        {"id": "review", "identity_group": "review", "identity_score": 35, "cited_by_count": 100000},
+        {"id": "high", "identity_group": "high", "identity_score": 90, "cited_by_count": 2},
+        {"id": "medium", "identity_group": "medium", "identity_score": 65, "cited_by_count": 500},
+    ])
+
+    assert [candidate["id"] for candidate in candidates] == ["high", "medium", "review"]
 
 
 def test_shared_budget_reserve_blocks_only_uncached_searches():
