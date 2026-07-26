@@ -576,6 +576,27 @@ def _incremental_since(last_success_at: str | None, force_rebuild: bool) -> str 
     )).date().isoformat()
 
 
+def _published_profile_work_ids(repository, author_id: str, cached_profile: dict) -> set[str] | None:
+    analysis_version = int(((cached_profile.get("payload") or {}).get("analysisVersion")) or 0)
+    if analysis_version < 2:
+        return None
+    work_ids: set[str] = set()
+    offset = 0
+    while True:
+        page = repository.list_works(
+            author_id,
+            limit=1000,
+            offset=offset,
+            sort="citations",
+        )
+        items = page.get("items") or []
+        work_ids.update(str(item.get("id") or "") for item in items if item.get("id"))
+        offset += len(items)
+        if not items or offset >= int(page.get("total") or 0):
+            break
+    return work_ids
+
+
 def sync_scholar_research_graph(
     repository,
     author_id: str,
@@ -596,6 +617,11 @@ def sync_scholar_research_graph(
         force_rebuild,
     )
     cached_profile = repository.get_profile(author_id) or {}
+    published_work_ids = _published_profile_work_ids(
+        repository,
+        author_id,
+        cached_profile,
+    )
     merged_author_ids = (
         (((cached_profile.get("payload") or {}).get("identityAudit") or {}).get(
             "mergedAuthorIds"
@@ -625,6 +651,19 @@ def sync_scholar_research_graph(
             )
         works.extend(author_works)
 
+    source_fetched_works = len(works)
+    if published_work_ids is not None:
+        works = [
+            work
+            for work in works
+            if str(work.get("id") or "") in published_work_ids
+        ]
+        excluded = source_fetched_works - len(works)
+        if excluded:
+            warnings.append(
+                f"研究图谱跳过 {excluded} 篇未进入身份裁决后画像的论文"
+            )
+
     dois = [normalize_doi(work.get("doi")) for work in works]
     crossref_records, crossref_report = verify_dois([doi for doi in dois if doi])
     if crossref_report.get("failed"):
@@ -648,5 +687,6 @@ def sync_scholar_research_graph(
         **result,
         "mode": "full" if published_since is None else "incremental",
         "fetched_works": len(works),
+        "source_fetched_works": source_fetched_works,
         "warnings": warnings,
     }

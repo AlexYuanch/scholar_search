@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Search, BarChart3, Users,
   ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe,
-  Heart, History, LogIn, LogOut, RefreshCw,
+  Heart, History, LogIn, LogOut, RefreshCw, BookOpen, Network, ShieldCheck,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -144,7 +144,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
 
 export default function App() {
   const { t, lang, setLang } = useTranslation()
-  const { user, loading: authLoading, refreshUser, signOut } = useAuth()
+  const { user, refreshUser, signOut } = useAuth()
 
   // 搜索状态
   const [query, setQuery] = useState("")
@@ -156,6 +156,7 @@ export default function App() {
   const [noResults, setNoResults] = useState(false)
   const [searched, setSearched] = useState(false)
   const [authDialogOpen, setAuthDialogOpen] = useState(false)
+  const [pendingSearch, setPendingSearch] = useState<string | null>(null)
   const [accountMode, setAccountMode] = useState<"history" | "favorites" | null>(null)
   const [favorite, setFavorite] = useState(false)
   const [liveUpdateMessage, setLiveUpdateMessage] = useState("")
@@ -348,13 +349,7 @@ export default function App() {
     }
   }, [favorite, profile, reportError, t, user])
 
-  // 搜索
-  const handleSearch = useCallback(async () => {
-    if (!user) {
-      setAuthDialogOpen(true)
-      return
-    }
-    const q = query.trim()
+  const executeSearch = useCallback(async (q: string) => {
     if (!q) return
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -390,7 +385,19 @@ export default function App() {
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [query, reportError, t, user])
+  }, [reportError, t])
+
+  // 搜索
+  const handleSearch = useCallback(async () => {
+    const q = query.trim()
+    if (!q) return
+    if (!user) {
+      setPendingSearch(q)
+      setAuthDialogOpen(true)
+      return
+    }
+    await executeSearch(q)
+  }, [executeSearch, query, user])
 
   // 图谱交互
   const handleEdgeClick = useCallback((data: {
@@ -562,7 +569,7 @@ export default function App() {
 
       {/* 搜索区 */}
       <section className={`relative overflow-hidden border-b bg-gradient-to-b from-background to-muted/30 ${graphFullscreen ? "hidden" : ""}`}>
-        <div className="mx-auto max-w-3xl px-4 py-10 text-center sm:px-6 sm:py-16">
+        <div className="mx-auto max-w-5xl px-4 py-10 text-center sm:px-6 sm:py-16">
           {!profile && (
             <>
               <h1 className="mb-4 text-3xl font-bold tracking-tight sm:text-5xl">
@@ -573,7 +580,7 @@ export default function App() {
               </p>
             </>
           )}
-          <div className="mx-auto flex max-w-xl flex-col gap-2 sm:flex-row">
+          <div className="mx-auto flex max-w-2xl flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
@@ -590,6 +597,27 @@ export default function App() {
               {loading ? t("search.loading") : t("search.button")}
             </Button>
           </div>
+          {!user && !searched && !profile && (
+            <div className="mx-auto mt-12 grid max-w-4xl gap-3 text-left sm:grid-cols-3">
+              {[
+                { icon: ShieldCheck, title: t("landing.identity_title"), text: t("landing.identity_desc") },
+                { icon: BookOpen, title: t("landing.research_title"), text: t("landing.research_desc") },
+                { icon: Network, title: t("landing.network_title"), text: t("landing.network_desc") },
+              ].map(({ icon: Icon, title, text }) => (
+                <div key={title} className="rounded-xl border bg-background/80 p-5 shadow-sm">
+                  <Icon className="h-5 w-5 text-primary" />
+                  <h2 className="mt-3 text-sm font-semibold">{title}</h2>
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{text}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          {!user && !searched && !profile && (
+            <div className="mx-auto mt-5 flex max-w-4xl items-start gap-3 rounded-xl border border-primary/15 bg-primary/5 p-4 text-left">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              <p className="text-xs leading-relaxed text-muted-foreground">{t("landing.trust_note")}</p>
+            </div>
+          )}
         </div>
       </section>
 
@@ -719,7 +747,7 @@ export default function App() {
       )}
 
       {/* 空状态 */}
-      {!searched && !loading && !error && !profile && !candidates.length && (
+      {user && !searched && !loading && !error && !profile && !candidates.length && (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <Users className="h-12 w-12 mb-4 opacity-30" />
           <p className="text-sm">{t("search.empty")}</p>
@@ -750,9 +778,18 @@ export default function App() {
       />
       </div>
       <AuthDialog
-        open={authDialogOpen || (!authLoading && !user)}
-        required={!user}
-        onClose={() => setAuthDialogOpen(false)}
+        open={authDialogOpen}
+        onAuthenticated={() => {
+          if (!pendingSearch) return
+          const nextQuery = pendingSearch
+          setPendingSearch(null)
+          setQuery(nextQuery)
+          void executeSearch(nextQuery)
+        }}
+        onClose={() => {
+          setAuthDialogOpen(false)
+          setPendingSearch(null)
+        }}
         t={t}
       />
     </div>

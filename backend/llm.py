@@ -37,6 +37,15 @@ class TopicAgentOutput(BaseModel):
     directions: list[TopicDirection]
 
 
+class TrajectoryInsight(BaseModel):
+    direction: str
+    change_kind: Literal["emerging", "rising", "steady", "falling"]
+    interpretation_zh: str
+    interpretation_en: str
+    evidence_work_ids: list[str]
+    confidence: Literal["high", "medium", "low"] = "medium"
+
+
 class TrajectoryAgentOutput(BaseModel):
     summary_zh: str
     summary_en: str
@@ -44,6 +53,7 @@ class TrajectoryAgentOutput(BaseModel):
     rising: list[str] = Field(default_factory=list)
     steady: list[str] = Field(default_factory=list)
     falling: list[str] = Field(default_factory=list)
+    insights: list[TrajectoryInsight] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"] = "medium"
 
 

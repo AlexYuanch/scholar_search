@@ -1,8 +1,11 @@
 from nodes import (
     _fallback_topic_analysis,
     _filter_identity_outlier_works,
+    _validate_topic_agent_output,
+    _validate_trajectory_agent_output,
     adjudicate_sources,
     agent_analyze_topics,
+    agent_analyze_trajectory,
     analyze_coauthors,
     build_collaboration_graph,
     collect_crossref_records,
@@ -379,6 +382,7 @@ def test_specific_topic_analysis_prefers_fine_grained_phrases_over_broad_fields(
             "keywords": [
                 {"display_name": "Artificial intelligence", "score": 0.8},
                 {"display_name": "Knowledge graph", "score": 0.7},
+                {"display_name": "Large language model", "score": 0.9},
             ],
             "concepts": [{"display_name": "Data science", "score": 0.9, "level": 1}],
         },
@@ -392,6 +396,7 @@ def test_specific_topic_analysis_prefers_fine_grained_phrases_over_broad_fields(
             "keywords": [
                 {"display_name": "Knowledge graph", "score": 0.9},
                 {"display_name": "Artificial intelligence", "score": 0.7},
+                {"display_name": "Large language model", "score": 0.9},
             ],
             "concepts": [{"display_name": "Artificial intelligence", "score": 0.9, "level": 1}],
         },
@@ -402,7 +407,10 @@ def test_specific_topic_analysis_prefers_fine_grained_phrases_over_broad_fields(
             "cited_by_count": 3,
             "primary_topic": {"id": "T2", "display_name": "Semantic Web and Ontologies", "score": 0.8},
             "topics": [{"id": "T2", "display_name": "Semantic Web and Ontologies", "score": 0.8}],
-            "keywords": [{"display_name": "Knowledge graph", "score": 0.9}],
+            "keywords": [
+                {"display_name": "Knowledge graph", "score": 0.9},
+                {"display_name": "Retrieval augmented generation", "score": 0.9},
+            ],
             "concepts": [{"display_name": "Data science", "score": 0.7, "level": 1}],
         },
     ]
@@ -474,6 +482,228 @@ def test_identity_outlier_filter_keeps_new_topic_with_core_collaborator():
 
     assert len(kept) == 21
     assert audit["excludedWorks"] == 0
+
+
+def test_identity_filter_keeps_orcid_anchored_cross_direction_work():
+    works = [
+        {
+            "id": "TRAFFIC",
+            "doi": "https://doi.org/10.1000/traffic",
+            "title": "Urban Traffic Forecasting",
+            "publication_year": 2025,
+            "authorships": [
+                {"author": {"id": "A1"}, "institutions": [{"id": "I1"}]},
+                {"author": {"id": "C1"}},
+            ],
+            "topics": [{"id": "T-TRAFFIC", "display_name": "Traffic Forecasting"}],
+        },
+        {
+            "id": "ROUGH",
+            "doi": "https://doi.org/10.1000/rough",
+            "title": "Rough Set Based Feature Selection",
+            "publication_year": 2018,
+            "authorships": [
+                {"author": {"id": "A1"}, "institutions": [{"id": "I2"}]},
+                {"author": {"id": "C2"}},
+            ],
+            "topics": [{"id": "T-ROUGH", "display_name": "Rough Sets"}],
+        },
+        {
+            "id": "SPEECH",
+            "doi": "https://doi.org/10.1000/speech",
+            "title": "Robust Speech Recognition",
+            "publication_year": 2025,
+            "authorships": [
+                {"author": {"id": "A1"}, "institutions": [{"id": "I9"}]},
+                {"author": {"id": "C9"}},
+            ],
+            "topics": [{"id": "T-SPEECH", "display_name": "Speech Recognition"}],
+        },
+    ]
+
+    kept, audit = _filter_identity_outlier_works(
+        works,
+        "A1",
+        orcid_works=[
+            {"doi": "10.1000/traffic", "title": "Urban Traffic Forecasting", "year": 2025},
+            {"doi": "10.1000/rough", "title": "Rough Set Based Feature Selection", "year": 2018},
+        ],
+    )
+
+    assert {work["id"] for work in kept} == {"TRAFFIC", "ROUGH"}
+    assert audit["resolutionMethod"] == "orcid_anchor"
+    assert audit["orcidMatchedWorks"] == 2
+    assert audit["excludedWorks"] == 1
+
+
+def test_identity_filter_excludes_large_disconnected_conflict_cluster():
+    core = [{
+        "id": f"CORE-{index}",
+        "publication_year": 2020 + index % 6,
+        "authorships": [
+            {"author": {"id": "A1"}, "institutions": [{"id": "I1"}]},
+            {"author": {"id": "C1"}},
+        ],
+        "topics": [{"id": "T1", "display_name": "Urban Computing"}],
+    } for index in range(12)]
+    conflict = [{
+        "id": f"CONFLICT-{index}",
+        "publication_year": 2020 + index % 6,
+        "authorships": [
+            {"author": {"id": "A1"}, "institutions": [{"id": "I9"}]},
+            {"author": {"id": "C9"}},
+        ],
+        "topics": [{"id": "T9", "display_name": "Speech Recognition"}],
+    } for index in range(10)]
+
+    kept, audit = _filter_identity_outlier_works(
+        core + conflict,
+        "A1",
+        target_institution_ids={"I1"},
+    )
+
+    assert {work["id"] for work in kept} == {work["id"] for work in core}
+    assert audit["excludedWorks"] == 10
+    assert audit["excludedClusters"][0]["workCount"] == 10
+    assert audit["possibleConflatedIdentity"] is True
+
+
+def test_title_phrases_require_three_repeated_papers():
+    works = [{
+        "id": f"W{index}",
+        "title": (
+            "End to End Deep Learning for Robust Speech Recognition"
+            if index < 2 else f"Independent Study {index}"
+        ),
+        "publication_year": 2025,
+        "cited_by_count": 1,
+        "topics": [],
+        "keywords": [],
+        "concepts": [],
+    } for index in range(5)]
+
+    result = _fallback_topic_analysis(works)
+
+    assert all(
+        "speech recognition" not in item["topic"].casefold()
+        for item in result["topic_clusters"]
+    )
+
+
+def test_topic_agent_validator_rejects_paper_title_as_direction():
+    from llm import TopicAgentOutput, TopicDirection
+
+    output = TopicAgentOutput(directions=[TopicDirection(
+        name="End to End Deep Learning for Robust Speech Recognition",
+        description_zh="围绕鲁棒语音识别方法开展研究。",
+        description_en="Research on robust speech recognition methods.",
+        source_topics=["Speech Recognition"],
+        confidence="medium",
+    )])
+
+    issues = _validate_topic_agent_output(
+        output,
+        candidate_names={"Speech Recognition"},
+        representative_titles=[
+            "End-to-End Deep Learning for Robust Speech Recognition",
+        ],
+        minimum_directions=1,
+    )
+
+    assert "topic_name_word_count" in issues or "paper_title_as_topic" in issues
+
+
+def test_trajectory_validator_requires_real_evidence_and_rejects_count_restatement():
+    from llm import TrajectoryAgentOutput, TrajectoryInsight
+
+    output = TrajectoryAgentOutput(
+        summary_zh="该方向从3篇变成8篇，数量有所上升。",
+        summary_en="The direction increased from 3 papers to 8 papers.",
+        emerging=[],
+        rising=["Urban Computing"],
+        steady=[],
+        falling=[],
+        insights=[TrajectoryInsight(
+            direction="Urban Computing",
+            change_kind="rising",
+            interpretation_zh="论文从3篇增加到8篇。",
+            interpretation_en="The papers increased from 3 to 8.",
+            evidence_work_ids=["W404"],
+            confidence="medium",
+        )],
+        confidence="medium",
+    )
+
+    issues = _validate_trajectory_agent_output(
+        output,
+        valid_topics={"Urban Computing"},
+        valid_evidence_ids={"W1", "W2"},
+    )
+
+    assert "unknown_trajectory_evidence" in issues
+    assert "count_only_trajectory" in issues
+
+
+def test_trajectory_agent_publishes_content_insight_with_real_papers(monkeypatch):
+    import llm
+
+    works = [
+        {
+            "id": "W1",
+            "title": "Traffic Forecasting with Graph Models",
+            "publication_year": 2022,
+        },
+        {
+            "id": "W2",
+            "title": "Citywide Mobility Prediction with Foundation Models",
+            "publication_year": 2025,
+        },
+    ]
+    state = default_state()
+    state["deduped_works"] = works
+    state["topic_clusters"] = [{
+        "topic": "Spatio Temporal Mobility Prediction",
+        "description": "研究城市交通与移动模式预测。",
+        "description_en": "Urban traffic and mobility prediction.",
+        "paper_indices": [0, 1],
+    }]
+    state["interest_timeline"] = [
+        {"year": 2022, "topics": [{"topic": "Spatio Temporal Mobility Prediction", "count": 1}]},
+        {"year": 2025, "topics": [{"topic": "Spatio Temporal Mobility Prediction", "count": 1}]},
+    ]
+    state["agent_plan"] = {"trajectory_tier": "fast"}
+    monkeypatch.setattr(llm, "run_structured_agent", lambda *_args, **_kwargs: (
+        llm.TrajectoryAgentOutput(
+            summary_zh="研究持续关注城市移动预测，近期方法证据转向面向城市尺度的基础模型。",
+            summary_en="The work remains focused on urban mobility prediction while recent evidence shifts toward city-scale foundation models.",
+            steady=["Spatio Temporal Mobility Prediction"],
+            insights=[llm.TrajectoryInsight(
+                direction="Spatio Temporal Mobility Prediction",
+                change_kind="steady",
+                interpretation_zh="研究问题仍是城市移动预测，近期代表作显示方法从图模型延伸到基础模型。",
+                interpretation_en="The research problem remains urban mobility prediction, while recent work extends the method from graph models to foundation models.",
+                evidence_work_ids=["W1", "W2"],
+                confidence="high",
+            )],
+            confidence="high",
+        ),
+        {
+            "agent": "trajectory_agent",
+            "status": "success",
+            "model": "deepseek-v4-flash",
+            "tier": "fast",
+            "plannedTier": "fast",
+            "attemptedModels": ["deepseek-v4-flash"],
+            "escalated": False,
+            "reasons": [],
+        },
+    ))
+
+    result = agent_analyze_trajectory(state)
+
+    insight = result["trajectory_analysis"]["insights"][0]
+    assert insight["direction"] == "Spatio Temporal Mobility Prediction"
+    assert [paper["id"] for paper in insight["evidencePapers"]] == ["W1", "W2"]
 
 
 def test_crossref_collection_and_adjudication_merge_by_doi(monkeypatch):
@@ -803,11 +1033,15 @@ def test_workflow_uses_multi_source_adjudication_and_review_nodes():
     assert "collect_works" in node_names
     assert "collect_crossref" in node_names
     assert "adjudicate_sources" in node_names
+    assert "collect_orcid_identity" in node_names
+    assert "resolve_work_identity" in node_names
     assert "plan_agents" in node_names
     assert "agent_analyze_trajectory" in node_names
     assert "agent_review_report" in node_names
     assert "review_evidence" in node_names
     assert node_names.index("adjudicate_sources") < node_names.index("plan_agents")
+    assert node_names.index("adjudicate_sources") < node_names.index("resolve_work_identity")
+    assert node_names.index("resolve_work_identity") < node_names.index("plan_agents")
     assert node_names.index("plan_agents") < node_names.index("analyze_citations")
     assert node_names.index("generate_report") < node_names.index("agent_review_report")
     assert node_names.index("review_evidence") < node_names.index("format_payload")
@@ -847,6 +1081,8 @@ def test_default_state_has_multi_source_fields_without_semantic_scholar():
     assert "raw_works" in state
     assert state["target_author_ids"] == []
     assert state["identity_audit"] == {}
+    assert state["orcid_works"] == []
+    assert state["orcid_audit"] == {}
     assert "deduped_works" in state
     assert state["source_works"] == {}
     assert state["source_audit"] == {}

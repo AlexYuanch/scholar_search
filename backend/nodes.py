@@ -311,7 +311,7 @@ def _work_identity_signals(work: dict, primary_author_id: str) -> dict[str, set[
             for institution in authorship.get("institutions") or []:
                 key = institution.get("id") or _normalized_title(institution.get("display_name"))
                 if key:
-                    institutions.add(str(key))
+                    institutions.add(_normalized_title(str(key)))
         elif author_id:
             coauthors.add(author_id)
     topics = set()
@@ -324,51 +324,32 @@ def _work_identity_signals(work: dict, primary_author_id: str) -> dict[str, set[
     return {"institutions": institutions, "coauthors": coauthors, "topics": topics}
 
 
-def _filter_identity_outlier_works(works: list[dict], primary_author_id: str) -> tuple[list[dict], dict]:
-    """排除与核心身份三类信号均断开的很小论文簇；大簇只告警。"""
-    if len(works) < 20:
-        return works, {
-            "collectedWorks": len(works),
-            "excludedWorks": 0,
-            "excludedWorkIds": [],
-            "largeConflictWorks": 0,
-            "possibleConflatedIdentity": False,
-        }
-    signals = [_work_identity_signals(work, primary_author_id) for work in works]
-    counts = {category: defaultdict(int) for category in ("institutions", "coauthors", "topics")}
-    for item in signals:
-        for category, values in item.items():
-            for value in values:
-                counts[category][value] += 1
-    thresholds = {
-        "institutions": max(3, math.ceil(len(works) * 0.03)),
-        "coauthors": max(3, math.ceil(len(works) * 0.03)),
-        "topics": max(3, math.ceil(len(works) * 0.04)),
-    }
-    core = {
-        category: {value for value, count in counts[category].items() if count >= thresholds[category]}
-        for category in counts
-    }
-    unsupported = set()
-    for index, item in enumerate(signals):
-        populated = sum(bool(values) for values in item.values())
-        supported = any(item[category] & core[category] for category in item)
-        has_explicit_institution_conflict = bool(item["institutions"] and not (item["institutions"] & core["institutions"]))
-        if populated >= 2 and has_explicit_institution_conflict and not supported:
-            unsupported.add(index)
+def _identity_work_key(work: dict) -> tuple[str, str, int | None]:
+    from crossref import normalize_doi
 
-    components = []
-    remaining = set(unsupported)
+    doi = normalize_doi(work.get("doi"))
+    title = _normalized_title(work.get("title"))
+    try:
+        year = int(work.get("publication_year") or work.get("year") or 0) or None
+    except (TypeError, ValueError):
+        year = None
+    return doi, title, year
+
+
+def _identity_components(signals: list[dict[str, set[str]]]) -> list[set[int]]:
+    remaining = set(range(len(signals)))
+    components: list[set[int]] = []
     while remaining:
         component = {remaining.pop()}
         frontier = list(component)
         while frontier:
             current = frontier.pop()
             linked = {
-                candidate for candidate in remaining
-                if any(
-                    signals[current][category] & signals[candidate][category]
-                    for category in signals[current]
+                candidate
+                for candidate in remaining
+                if (
+                    signals[current]["institutions"] & signals[candidate]["institutions"]
+                    or signals[current]["coauthors"] & signals[candidate]["coauthors"]
                 )
             }
             if linked:
@@ -376,26 +357,163 @@ def _filter_identity_outlier_works(works: list[dict], primary_author_id: str) ->
                 remaining.difference_update(linked)
                 frontier.extend(linked)
         components.append(component)
+    return components
 
-    small_component_limit = max(3, math.floor(len(works) * 0.05))
-    excluded_indices = set()
-    large_conflict_works = 0
-    for component in components:
-        if len(component) <= small_component_limit:
-            excluded_indices.update(component)
+
+def _cluster_summary(component: set[int], works: list[dict], signals: list[dict]) -> dict:
+    years = sorted({
+        int(works[index].get("publication_year"))
+        for index in component
+        if works[index].get("publication_year")
+    })
+    topic_counts = defaultdict(int)
+    for index in component:
+        for topic in works[index].get("topics") or []:
+            name = str(topic.get("display_name") or "").strip()
+            if name:
+                topic_counts[name] += 1
+    return {
+        "workCount": len(component),
+        "yearStart": years[0] if years else None,
+        "yearEnd": years[-1] if years else None,
+        "topTopics": [
+            name
+            for name, _count in sorted(
+                topic_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:3]
+        ],
+    }
+
+
+def _filter_identity_outlier_works(
+    works: list[dict],
+    primary_author_id: str,
+    *,
+    orcid_works: list[dict] | None = None,
+    target_institution_ids: set[str] | None = None,
+) -> tuple[list[dict], dict]:
+    """使用 ORCID、机构和合作者选择主论文簇；主题相似度不作为身份连接。"""
+    if not works:
+        return [], {
+            "resolutionMethod": "insufficient_evidence",
+            "collectedWorks": 0,
+            "orcidMatchedWorks": 0,
+            "excludedWorks": 0,
+            "excludedWorkIds": [],
+            "excludedClusters": [],
+            "largeConflictWorks": 0,
+            "possibleConflatedIdentity": False,
+        }
+    signals = [_work_identity_signals(work, primary_author_id) for work in works]
+    components = _identity_components(signals)
+    component_by_index = {
+        index: component
+        for component in components
+        for index in component
+    }
+    anchor_keys = {_identity_work_key(work) for work in (orcid_works or [])}
+    anchor_indices = {
+        index
+        for index, work in enumerate(works)
+        if (
+            _identity_work_key(work) in anchor_keys
+            or (
+                _identity_work_key(work)[0]
+                and any(_identity_work_key(work)[0] == key[0] for key in anchor_keys if key[0])
+            )
+        )
+    }
+    if anchor_indices:
+        kept_indices = set(anchor_indices)
+        for index in anchor_indices:
+            kept_indices.update(component_by_index[index])
+        resolution_method = "orcid_anchor"
+    else:
+        target_institutions = {
+            _normalized_title(value)
+            for value in (target_institution_ids or set())
+            if _normalized_title(value)
+        }
+        latest_year = max(
+            (int(work.get("publication_year") or 0) for work in works),
+            default=0,
+        )
+
+        def component_score(component: set[int]) -> tuple[int, int, int, int]:
+            institution_matches = sum(
+                bool(signals[index]["institutions"] & target_institutions)
+                for index in component
+            )
+            stable_collaboration = sum(
+                len(signals[index]["coauthors"])
+                for index in component
+            )
+            recent = sum(
+                int(works[index].get("publication_year") or 0) >= latest_year - 5
+                for index in component
+            )
+            return institution_matches, stable_collaboration, recent, len(component)
+
+        primary_component = max(components, key=component_score)
+        has_identity_evidence = bool(
+            target_institutions
+            or any(len(component) >= 3 for component in components)
+        )
+        if len(works) < 20 and not has_identity_evidence:
+            kept_indices = set(range(len(works)))
+            resolution_method = "insufficient_evidence"
         else:
-            large_conflict_works += len(component)
+            kept_indices = set(primary_component)
+            resolution_method = "institution_collaborator_cluster"
+
+    excluded_indices = set(range(len(works))) - kept_indices
     kept = [work for index, work in enumerate(works) if index not in excluded_indices]
     excluded_ids = [
         str(works[index].get("id") or works[index].get("doi") or f"work-{index}")
         for index in sorted(excluded_indices)
     ]
+    excluded_components = [
+        component & excluded_indices
+        for component in components
+        if component & excluded_indices
+    ]
+    excluded_summaries = sorted(
+        (
+            _cluster_summary(component, works, signals)
+            for component in excluded_components
+        ),
+        key=lambda item: -item["workCount"],
+    )
     return kept, {
+        "resolutionMethod": resolution_method,
         "collectedWorks": len(works),
+        "orcidMatchedWorks": len(anchor_indices),
         "excludedWorks": len(excluded_indices),
         "excludedWorkIds": excluded_ids[:50],
-        "largeConflictWorks": large_conflict_works,
-        "possibleConflatedIdentity": bool(excluded_indices or large_conflict_works),
+        "excludedClusters": excluded_summaries[:10],
+        "largeConflictWorks": sum(
+            item["workCount"]
+            for item in excluded_summaries
+            if item["workCount"] >= max(5, math.ceil(len(works) * 0.1))
+        ),
+        "possibleConflatedIdentity": bool(excluded_indices),
+    }
+
+
+def collect_orcid_identity(state: ScholarProfileState) -> dict:
+    """读取无需密钥的 ORCID 公共论文记录，失败时正常降级。"""
+    from orcid import get_public_works
+
+    profile = state.get("target_author_profile") or {}
+    works, audit = get_public_works(profile.get("orcid"))
+    warnings = []
+    if profile.get("orcid") and audit.get("status") != "available":
+        warnings.append("ORCID 公共论文记录暂时不可用，身份核验已降级为机构与合作者证据")
+    return {
+        "orcid_works": works,
+        "orcid_audit": audit,
+        "warnings": warnings,
     }
 
 def collect_works(state: ScholarProfileState) -> dict:
@@ -450,20 +568,9 @@ def collect_works(state: ScholarProfileState) -> dict:
         expected = state["target_author_profile"].get("works_count", 0)
         if len(works) < expected:
             warnings.append(f"预期 {expected} 篇，实际获取 {len(works)} 篇（OpenAlex 限制）")
-    works, outlier_audit = _filter_identity_outlier_works(works, primary_id)
-    identity_audit = {**(state.get("identity_audit") or {}), **outlier_audit}
-    if outlier_audit["excludedWorks"]:
-        warnings.append(
-            f"身份一致性审查排除 {outlier_audit['excludedWorks']} 篇与核心机构、合作者和主题均断开的论文"
-        )
-    if outlier_audit["largeConflictWorks"]:
-        warnings.append(
-            f"发现 {outlier_audit['largeConflictWorks']} 篇形成较大独立论文簇，已保留并标记身份风险"
-        )
     return {
         "raw_works": works,
         "source_works": {"openalex": works},
-        "identity_audit": identity_audit,
         "works_complete": works_complete,
         "warnings": warnings,
     }
@@ -643,6 +750,76 @@ def adjudicate_sources(state: ScholarProfileState) -> dict:
         "adjudicated_works": adjudicated,
         "deduped_works": adjudicated,
         "data_audit": data_audit,
+    }
+
+
+def resolve_work_identity(state: ScholarProfileState) -> dict:
+    """在来源裁决后执行准确优先的论文归属判断。"""
+    from orcid import normalize_orcid
+
+    works = state.get("adjudicated_works") or []
+    profile = state.get("target_author_profile") or {}
+    target_orcid = normalize_orcid(profile.get("orcid"))
+    orcid_works = list(state.get("orcid_works") or [])
+    for work in works:
+        crossref = work.get("crossref") or {}
+        authors = (crossref.get("raw") or {}).get("author") or []
+        if target_orcid and any(
+            normalize_orcid(author.get("ORCID")) == target_orcid
+            for author in authors
+        ):
+            orcid_works.append({
+                "doi": work.get("doi"),
+                "title": work.get("title"),
+                "year": work.get("publication_year"),
+            })
+    target_institution_ids = {
+        str(institution.get("id") or institution.get("display_name") or "")
+        for institution in profile.get("last_known_institutions") or []
+        if institution.get("id") or institution.get("display_name")
+    }
+    kept, audit = _filter_identity_outlier_works(
+        works,
+        str(state.get("target_author_id") or ""),
+        orcid_works=orcid_works,
+        target_institution_ids=target_institution_ids,
+    )
+    identity_audit = {
+        **(state.get("identity_audit") or {}),
+        **audit,
+        "orcidStatus": (state.get("orcid_audit") or {}).get("status", "unavailable"),
+    }
+    kept_with_doi = sum(bool(work.get("doi")) for work in kept)
+    kept_verified = sum(work.get("verification_status") == "verified" for work in kept)
+    audit_sources = list((state.get("data_audit") or {}).get("sources") or [])
+    if (state.get("orcid_audit") or {}).get("status") == "available" and "ORCID" not in audit_sources:
+        audit_sources.append("ORCID")
+    data_audit = {
+        **(state.get("data_audit") or {}),
+        "status": (
+            "attention"
+            if audit["excludedWorks"]
+            else (state.get("data_audit") or {}).get("status", "attention")
+        ),
+        "sources": audit_sources,
+        "collectedWorks": len(kept),
+        "worksWithDoi": kept_with_doi,
+        "crossrefVerified": kept_verified,
+        "unverifiedWorks": max(0, len(kept) - kept_verified),
+        "verifiedRatio": round(kept_verified / len(kept), 4) if kept else 0,
+        "identityExcludedWorks": audit["excludedWorks"],
+    }
+    warnings = []
+    if audit["excludedWorks"]:
+        warnings.append(
+            f"身份核验保守排除 {audit['excludedWorks']} 篇与主身份缺少 ORCID、机构或合作者连接的论文；画像可能不完整"
+        )
+    return {
+        "deduped_works": kept,
+        "adjudicated_works": kept,
+        "identity_audit": identity_audit,
+        "data_audit": data_audit,
+        "warnings": warnings,
     }
 
 
@@ -869,7 +1046,7 @@ def _fallback_topic_analysis(works: list) -> dict:
             if int(concept.get("level") or 0) >= 2:
                 add_candidate(name, index, 0.45 * float(concept.get("score") or 0.5), "concept")
 
-    minimum_phrase_documents = 1 if len(works) <= 5 else 2
+    minimum_phrase_documents = 3
     for phrase, indices in title_phrase_indices.items():
         if len(indices) < minimum_phrase_documents:
             continue
@@ -919,6 +1096,47 @@ def _fallback_topic_analysis(works: list) -> dict:
     }
 
 
+def _topic_title_similarity(topic: str, title: str) -> float:
+    topic_tokens = set(_topic_key(topic).split())
+    title_tokens = set(_topic_key(title).split())
+    if not topic_tokens or not title_tokens:
+        return 0.0
+    return len(topic_tokens & title_tokens) / max(1, min(len(topic_tokens), len(title_tokens)))
+
+
+def _validate_topic_agent_output(
+    output,
+    *,
+    candidate_names: set[str],
+    representative_titles: list[str],
+    minimum_directions: int,
+) -> list[str]:
+    issues = []
+    if not minimum_directions <= len(output.directions) <= 10:
+        issues.append("topic_count_out_of_range")
+    seen_names = set()
+    for direction in output.directions:
+        key = _topic_key(direction.name)
+        word_count = len(key.split())
+        if word_count < 2 or word_count > 8:
+            issues.append("topic_name_word_count")
+        if not _topic_is_specific(direction.name) or key in _MID_LEVEL_TOPIC_LABELS:
+            issues.append("broad_topic_label")
+        if any(_topic_title_similarity(direction.name, title) >= 0.75 for title in representative_titles):
+            issues.append("paper_title_as_topic")
+        if key in seen_names:
+            issues.append("duplicate_topic_label")
+        seen_names.add(key)
+        if not direction.source_topics or any(
+            source not in candidate_names
+            for source in direction.source_topics
+        ):
+            issues.append("untraceable_source_topic")
+        if len(direction.description_zh.strip()) < 8 or len(direction.description_en.strip()) < 12:
+            issues.append("topic_description_too_short")
+    return list(dict.fromkeys(issues))
+
+
 def agent_analyze_topics(state: ScholarProfileState) -> dict:
     """使用方向 Agent 重组可追溯候选主题，失败时保留确定性结果。"""
     from llm import TopicAgentOutput, run_structured_agent
@@ -947,24 +1165,20 @@ def agent_analyze_topics(state: ScholarProfileState) -> dict:
             ],
         })
 
+    representative_titles = [
+        title
+        for candidate in payload_candidates
+        for title in candidate["representative_titles"]
+    ]
+    minimum_directions = 1 if len(candidates) <= 2 else 2
+
     def validate(output: TopicAgentOutput) -> list[str]:
-        issues = []
-        minimum_directions = 1 if len(candidates) <= 2 else 2
-        if not minimum_directions <= len(output.directions) <= 10:
-            issues.append("topic_count_out_of_range")
-        seen_names = set()
-        for direction in output.directions:
-            key = _topic_key(direction.name)
-            if not _topic_is_specific(direction.name) or key in _MID_LEVEL_TOPIC_LABELS:
-                issues.append("broad_topic_label")
-            if key in seen_names:
-                issues.append("duplicate_topic_label")
-            seen_names.add(key)
-            if not direction.source_topics or any(source not in candidate_names for source in direction.source_topics):
-                issues.append("untraceable_source_topic")
-            if len(direction.description_zh.strip()) < 8 or len(direction.description_en.strip()) < 12:
-                issues.append("topic_description_too_short")
-        return list(dict.fromkeys(issues))
+        return _validate_topic_agent_output(
+            output,
+            candidate_names=candidate_names,
+            representative_titles=representative_titles,
+            minimum_directions=minimum_directions,
+        )
 
     planned_tier = (state.get("agent_plan") or {}).get("topic_tier", "fast")
     output, trace = run_structured_agent(
@@ -1059,8 +1273,65 @@ def analyze_interest_evolution(state: ScholarProfileState) -> dict:
     return {"interest_timeline": timeline}
 
 
+def _count_only_trajectory_text(value: str) -> bool:
+    text = str(value or "").casefold()
+    if not re.search(r"\d", text):
+        return False
+    content_markers = (
+        "研究问题", "方法", "应用", "场景", "技术路线", "关注",
+        "research problem", "method", "application", "context", "focus", "approach",
+    )
+    if any(marker in text for marker in content_markers):
+        return False
+    return bool(
+        re.search(r"从\s*\d+\s*篇.*(?:到|至|增加|下降)", text)
+        or re.search(r"from\s+\d+\s+(?:papers?|works?).*to\s+\d+", text)
+        or re.search(r"\d+\s*(?:→|->)\s*\d+", text)
+    )
+
+
+def _validate_trajectory_agent_output(
+    output,
+    *,
+    valid_topics: set[str],
+    valid_evidence_ids: set[str],
+    evidence_by_topic: dict[str, set[str]] | None = None,
+) -> list[str]:
+    listed = output.emerging + output.rising + output.steady + output.falling
+    issues = []
+    if any(topic not in valid_topics for topic in listed):
+        issues.append("unknown_trajectory_topic")
+    if len(listed) != len(set(listed)):
+        issues.append("duplicate_trajectory_classification")
+    if len(output.summary_zh.strip()) < 20 or len(output.summary_en.strip()) < 30:
+        issues.append("trajectory_summary_too_short")
+    if _count_only_trajectory_text(output.summary_zh) or _count_only_trajectory_text(output.summary_en):
+        issues.append("count_only_trajectory")
+    if len(output.insights) > 4:
+        issues.append("too_many_trajectory_insights")
+    for insight in output.insights:
+        if insight.direction not in valid_topics:
+            issues.append("unknown_trajectory_topic")
+        evidence_ids = set(insight.evidence_work_ids)
+        if not evidence_ids or not evidence_ids <= valid_evidence_ids:
+            issues.append("unknown_trajectory_evidence")
+        if evidence_by_topic is not None and not evidence_ids <= evidence_by_topic.get(insight.direction, set()):
+            issues.append("unrelated_trajectory_evidence")
+        if (
+            len(insight.interpretation_zh.strip()) < 12
+            or len(insight.interpretation_en.strip()) < 20
+        ):
+            issues.append("trajectory_insight_too_short")
+        if (
+            _count_only_trajectory_text(insight.interpretation_zh)
+            or _count_only_trajectory_text(insight.interpretation_en)
+        ):
+            issues.append("count_only_trajectory")
+    return list(dict.fromkeys(issues))
+
+
 def agent_analyze_trajectory(state: ScholarProfileState) -> dict:
-    """使用趋势 Agent 解读相邻三年窗口，确定性计数仍作为唯一事实基础。"""
+    """使用趋势 Agent 解读相邻三年窗口，并要求真实论文证据。"""
     from llm import TrajectoryAgentOutput, run_structured_agent
     from prompts import AGENT_ANALYZE_TRAJECTORY
 
@@ -1110,28 +1381,78 @@ def agent_analyze_trajectory(state: ScholarProfileState) -> dict:
             }],
         }
 
+    works = _analysis_works(state)
+    clusters_by_topic = {
+        str(cluster.get("topic") or ""): cluster
+        for cluster in state.get("topic_clusters") or []
+    }
+    evidence_by_topic: dict[str, set[str]] = {}
+    direction_payload = []
+    previous_total = sum(previous.values()) or 1
+    current_total = sum(current.values()) or 1
+    for topic in sorted(valid_topics):
+        cluster = clusters_by_topic.get(topic) or {}
+        representative = []
+        evidence_ids = set()
+        for index in cluster.get("paper_indices") or []:
+            if not isinstance(index, int) or not 0 <= index < len(works):
+                continue
+            work = works[index]
+            year = int(work.get("publication_year") or 0)
+            if not previous_start <= year <= latest:
+                continue
+            work_id = str(work.get("id") or work.get("doi") or "")
+            if not work_id:
+                continue
+            evidence_ids.add(work_id)
+            representative.append({
+                "id": work_id,
+                "title": work.get("title") or "",
+                "year": year,
+                "window": "current" if current_start <= year <= latest else "previous",
+            })
+        representative.sort(key=lambda item: (-item["year"], item["title"]))
+        evidence_by_topic[topic] = evidence_ids
+        direction_payload.append({
+            "direction": topic,
+            "description_zh": cluster.get("description") or "",
+            "description_en": cluster.get("description_en") or "",
+            "previous": {
+                "count": previous.get(topic, 0),
+                "share": round(previous.get(topic, 0) / previous_total, 4),
+            },
+            "current": {
+                "count": current.get(topic, 0),
+                "share": round(current.get(topic, 0) / current_total, 4),
+            },
+            "representative_papers": representative[:6],
+        })
+    valid_evidence_ids = {
+        work_id
+        for work_ids in evidence_by_topic.values()
+        for work_id in work_ids
+    }
+
     def validate(output: TrajectoryAgentOutput) -> list[str]:
-        listed = output.emerging + output.rising + output.steady + output.falling
-        issues = []
-        if any(topic not in valid_topics for topic in listed):
-            issues.append("unknown_trajectory_topic")
-        if len(listed) != len(set(listed)):
-            issues.append("duplicate_trajectory_classification")
-        if len(output.summary_zh.strip()) < 20 or len(output.summary_en.strip()) < 30:
-            issues.append("trajectory_summary_too_short")
-        return issues
+        return _validate_trajectory_agent_output(
+            output,
+            valid_topics=valid_topics,
+            valid_evidence_ids=valid_evidence_ids,
+            evidence_by_topic=evidence_by_topic,
+        )
 
     payload = {
         "previous_window": {
             "start": previous_start,
             "end": previous_end,
-            "topic_counts": dict(previous),
+            "paper_count": sum(previous.values()),
         },
         "current_window": {
             "start": current_start,
             "end": latest,
-            "topic_counts": dict(current),
+            "paper_count": sum(current.values()),
         },
+        "directions": direction_payload,
     }
     planned_tier = (state.get("agent_plan") or {}).get("trajectory_tier", "fast")
     output, trace = run_structured_agent(
@@ -1142,10 +1463,14 @@ def agent_analyze_trajectory(state: ScholarProfileState) -> dict:
         schema=TrajectoryAgentOutput,
         validate=validate,
         temperature=0.2,
-        max_tokens=1000,
+        max_tokens=1800,
     )
     if not output:
         return {"trajectory_analysis": {}, "agent_runs": [trace]}
+    works_by_id = {
+        str(work.get("id") or work.get("doi") or ""): work
+        for work in works
+    }
     return {
         "trajectory_analysis": {
             "summaryZh": output.summary_zh.strip(),
@@ -1154,6 +1479,19 @@ def agent_analyze_trajectory(state: ScholarProfileState) -> dict:
             "rising": output.rising,
             "steady": output.steady,
             "falling": output.falling,
+            "insights": [{
+                "direction": insight.direction,
+                "changeKind": insight.change_kind,
+                "interpretationZh": insight.interpretation_zh.strip(),
+                "interpretationEn": insight.interpretation_en.strip(),
+                "confidence": insight.confidence,
+                "evidencePapers": [{
+                    "id": work_id,
+                    "title": works_by_id[work_id].get("title") or "",
+                    "year": works_by_id[work_id].get("publication_year"),
+                    "url": works_by_id[work_id].get("id") or works_by_id[work_id].get("doi") or "",
+                } for work_id in insight.evidence_work_ids],
+            } for insight in output.insights],
             "confidence": output.confidence,
             "previousWindow": {"start": previous_start, "end": previous_end},
             "currentWindow": {"start": current_start, "end": latest},

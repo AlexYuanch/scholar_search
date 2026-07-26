@@ -755,7 +755,7 @@ def _upsert_work(conn, work: dict) -> str:
                     else metadata_sources
                 end,
                 confidence = greatest(confidence, :confidence),
-                raw_json = cast(:raw_json as jsonb),
+                raw_json = coalesce(raw_json, '{}'::jsonb) || cast(:raw_json as jsonb),
                 updated_at = now()
             where id = cast(:work_id as uuid)
         """), params)

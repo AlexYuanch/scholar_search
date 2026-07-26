@@ -50,6 +50,23 @@ def test_large_paper_drop_does_not_replace_latest_profile():
     assert "suspicious_paper_drop" in assessment.flags
 
 
+def test_documented_identity_exclusions_can_replace_conflated_profile():
+    state = _state(expected=30, fetched=12)
+    state["identity_audit"] = {
+        "collectedWorks": 30,
+        "excludedWorks": 18,
+        "resolutionMethod": "orcid_anchor",
+    }
+
+    assessment = assess_profile_quality(
+        state,
+        cached={"payload": {"totalPapers": 30}},
+    )
+
+    assert assessment.publishable
+    assert "identity_conservative_exclusion" in assessment.flags
+
+
 def test_identity_risk_is_recorded_without_automatic_merge_or_publish_block():
     state = _state()
     state["graph_nodes"] = [

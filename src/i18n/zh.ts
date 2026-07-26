@@ -1,6 +1,13 @@
 const zh: Record<string, string> = {
   "app.title": "ScholarSearch 学者情报",
   "app.subtitle": "核验学者身份，查看研究轨迹、学术成果、合作网络与持续追踪动态",
+  "landing.identity_title": "先核对学者身份",
+  "landing.identity_desc": "结合 ORCID、机构和稳定合作者区分重名学者，减少论文混入。",
+  "landing.research_title": "理解研究脉络",
+  "landing.research_desc": "从论文证据提炼细粒度方向、代表成果和近期研究变化。",
+  "landing.network_title": "发现合作关系",
+  "landing.network_desc": "查看合作网络与研究图谱，识别长期伙伴和方向连接。",
+  "landing.trust_note": "数据来自 OpenAlex、Crossref 与公开 ORCID 记录。每项分析保留来源和核验结果；登录后搜索，不会向匿名访问开放个人查询与历史数据。",
   "search.placeholder": "请输入学者姓名",
   "search.button": "搜索",
   "search.loading": "搜索中",
@@ -126,8 +133,9 @@ const zh: Record<string, string> = {
   "verification.limited": "本次最多核验 200 个 DOI，其余论文仍保留 OpenAlex 记录，未计入跨来源核验比例。",
   "verification.failed": "有 {count} 条 DOI 因 Crossref 暂时不可用而未完成核验，可稍后重新查询。",
   "verification.identity_merged": "本次画像已归并 {count} 个经多项证据判断属于同一学者的公开档案。",
-  "verification.identity_excluded": "身份一致性审查排除 {count} 篇与核心机构、合作者和研究主题均不一致的论文。",
-  "verification.identity_conflict": "另有 {count} 篇论文形成较大的独立身份簇，系统未自动删除，建议结合论文列表人工确认。",
+  "verification.identity_excluded": "身份核验已保守排除 {count} 篇与主身份缺少 ORCID、机构或稳定合作者连接的论文。为减少混入，当前画像可能不完整。",
+  "verification.identity_conflict": "已发现并排除较大的独立身份簇。",
+  "verification.identity_orcid": "其中 {count} 篇论文与该学者公开 ORCID 记录直接匹配。",
   "verification.updated_at": "最近更新时间",
   "verification.confidence": "分析置信度",
   "verification.confidence_high": "高：指标可复算，关键依据通过审查",
@@ -191,6 +199,7 @@ const zh: Record<string, string> = {
   "timeline.empty": "暂无可用的研究方向时间线。",
   "timeline.evidence": "依据：每年论文与细粒度主题、关键词和标题短语的关联数量；数量表示相关论文数，不代表研究质量。",
   "timeline.open_papers": "查看对应论文",
+  "timeline.updating": "正在按新的身份核验规则更新画像，完成后即可查看准确的方向论文。",
 
 
   "auth.title": "账号登录",

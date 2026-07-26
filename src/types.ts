@@ -169,6 +169,19 @@ export interface ScholarProfile {
       confidence?: "high" | "medium" | "low"
       previousWindow?: { start: number; end: number }
       currentWindow?: { start: number; end: number }
+      insights?: Array<{
+        direction: string
+        changeKind: "emerging" | "rising" | "steady" | "falling"
+        interpretationZh: string
+        interpretationEn: string
+        confidence: "high" | "medium" | "low"
+        evidencePapers: Array<{
+          id: string
+          title: string
+          year?: number
+          url: string
+        }>
+      }>
     }
     review?: {
       summarySupported?: boolean
@@ -190,7 +203,17 @@ export interface ScholarProfile {
     excludedWorkIds?: string[]
     largeConflictWorks?: number
     possibleConflatedIdentity?: boolean
+    resolutionMethod?: "orcid_anchor" | "institution_collaborator_cluster" | "insufficient_evidence"
+    orcidMatchedWorks?: number
+    orcidStatus?: "available" | "unavailable"
+    excludedClusters?: Array<{
+      workCount: number
+      yearStart?: number
+      yearEnd?: number
+      topTopics: string[]
+    }>
   }
+  analysisVersion?: number
 }
 
 export type ResearchGraphObjectType = "author" | "paper" | "institution" | "topic"

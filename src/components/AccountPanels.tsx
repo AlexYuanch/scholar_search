@@ -19,10 +19,11 @@ function updateTime(value: string | undefined, lang: Lang) {
   }).format(date)
 }
 
-export function AuthDialog({ open, required = false, onClose, t }: {
+export function AuthDialog({ open, required = false, onClose, onAuthenticated, t }: {
   open: boolean
   required?: boolean
   onClose: () => void
+  onAuthenticated?: () => void
   t: (key: string) => string
 }) {
   const { register, signIn } = useAuth()
@@ -53,6 +54,7 @@ export function AuthDialog({ open, required = false, onClose, t }: {
       else await signIn(username.trim(), password)
       setPassword("")
       setPasswordConfirmation("")
+      onAuthenticated?.()
       onClose()
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : t("auth.failed"))

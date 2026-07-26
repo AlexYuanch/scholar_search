@@ -1,4 +1,4 @@
-import { ArrowDownRight, ArrowUpRight, CircleMinus, Sparkles } from "lucide-react"
+import { ArrowDownRight, ArrowUpRight, CircleMinus, ExternalLink, Sparkles } from "lucide-react"
 import type { ScholarProfile } from "@/types"
 import type { Lang } from "@/i18n"
 import { Badge } from "@/components/ui/badge"
@@ -244,6 +244,7 @@ export default function ResearchChanges({ profile, t, lang }: Props) {
       ? profile.agentAnalysis?.trajectory?.summaryZh
       : profile.agentAnalysis?.trajectory?.summaryEn
   )?.trim()
+  const agentInsights = profile.agentAnalysis?.trajectory?.insights ?? []
 
   return (
     <Card>
@@ -284,6 +285,37 @@ export default function ResearchChanges({ profile, t, lang }: Props) {
               {t("agent.trajectory_insight")}
             </div>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{agentSummary}</p>
+            {agentInsights.length > 0 && (
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {agentInsights.map((insight) => (
+                  <div key={`${insight.direction}-${insight.changeKind}`} className="rounded-lg border bg-background/80 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{insight.direction}</span>
+                      <Badge variant="secondary">{t(`changes.${insight.changeKind}`)}</Badge>
+                    </div>
+                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                      {lang === "zh" ? insight.interpretationZh : insight.interpretationEn}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {insight.evidencePapers.map((paper) => (
+                        <a
+                          key={paper.id}
+                          href={paper.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex max-w-full items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs text-primary hover:bg-muted"
+                          title={paper.title}
+                        >
+                          <span className="max-w-64 truncate">{paper.title}</span>
+                          {paper.year ? <span className="text-muted-foreground">· {paper.year}</span> : null}
+                          <ExternalLink className="h-3 w-3 shrink-0" />
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

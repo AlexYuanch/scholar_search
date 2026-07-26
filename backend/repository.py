@@ -17,6 +17,9 @@ from sqlalchemy.exc import IntegrityError
 from affiliation_evidence import build_affiliation_evidence, select_primary_affiliation
 
 
+PROFILE_ANALYSIS_VERSION = 2
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -240,6 +243,7 @@ class InMemoryRepository:
                 "scholarId": scholar["id"],
                 "profileVersion": version,
                 "refreshStatus": "ready",
+                "analysisVersion": PROFILE_ANALYSIS_VERSION,
             })
             saved = {
                 "author_id": author_id,
@@ -269,6 +273,8 @@ class InMemoryRepository:
 
     @staticmethod
     def is_fresh(profile: dict, max_age_days: int = 7) -> bool:
+        if int((profile.get("payload") or {}).get("analysisVersion") or 0) < PROFILE_ANALYSIS_VERSION:
+            return False
         try:
             updated = datetime.fromisoformat(str(profile["updated_at"]).replace("Z", "+00:00"))
         except (KeyError, ValueError):
@@ -958,6 +964,16 @@ class PostgresRepository:
 
         with self.engine.begin() as conn:
             scholar_id = self._upsert_scholar(conn, profile, author_id)
+            conn.execute(text("""
+                update public.works w
+                set raw_json = coalesce(w.raw_json, '{}'::jsonb) - 'analysis_topics'
+                where exists (
+                    select 1
+                    from public.authorships a
+                    where a.work_id = w.id
+                      and a.scholar_id = :scholar_id
+                )
+            """), {"scholar_id": scholar_id})
             work_source_ids: list[str] = []
             analysis_topics = _analysis_topics_by_index(state)
             for work_index, work in enumerate(works):
@@ -1053,6 +1069,7 @@ class PostgresRepository:
                 "scholarId": scholar_id,
                 "profileVersion": version,
                 "refreshStatus": "ready",
+                "analysisVersion": PROFILE_ANALYSIS_VERSION,
             })
             conn.execute(text("""
                 insert into public.scholar_profiles (
@@ -1184,11 +1201,18 @@ class PostgresRepository:
         filters = [
             "s.source = 'openalex'",
             "s.source_author_id = :author_id",
+            """
+            (
+                coalesce((p.payload ->> 'analysisVersion')::integer, 0) < :analysis_version
+                or w.raw_json ? 'analysis_topics'
+            )
+            """,
         ]
         params: dict[str, Any] = {
             "author_id": author_id,
             "limit": limit,
             "offset": offset,
+            "analysis_version": PROFILE_ANALYSIS_VERSION,
         }
         if year is not None:
             filters.append("w.publication_year = :year")
@@ -1251,6 +1275,7 @@ class PostgresRepository:
                 select count(*) from public.works w
                 join public.authorships a on a.work_id = w.id
                 join public.scholars s on s.id = a.scholar_id
+                join public.scholar_profiles p on p.scholar_id = s.id
                 where {where_clause}
             """), params).scalar_one()
             rows = conn.execute(text(f"""
@@ -1267,6 +1292,7 @@ class PostgresRepository:
                 from public.works w
                 join public.authorships a on a.work_id = w.id
                 join public.scholars s on s.id = a.scholar_id
+                join public.scholar_profiles p on p.scholar_id = s.id
                 where {where_clause}
                 order by {order}
                 limit :limit offset :offset

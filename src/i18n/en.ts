@@ -1,6 +1,13 @@
 const en: Record<string, string> = {
   "app.title": "ScholarSearch Intelligence",
   "app.subtitle": "Confirm a scholar's identity, inspect research trajectories and evidence, and track new activity",
+  "landing.identity_title": "Confirm the Right Scholar",
+  "landing.identity_desc": "Use ORCID, affiliations, and stable coauthors to separate namesakes and reduce mixed publications.",
+  "landing.research_title": "Understand Research Paths",
+  "landing.research_desc": "Derive focused directions, representative work, and recent changes from paper evidence.",
+  "landing.network_title": "Explore Connections",
+  "landing.network_desc": "Inspect collaboration and research graphs to find long-term partners and direction links.",
+  "landing.trust_note": "Data comes from OpenAlex, Crossref, and public ORCID records. Analyses retain source and verification evidence; search requires sign-in, and anonymous visitors cannot access queries or history.",
   "search.placeholder": "Enter a scholar's name",
   "search.button": "Search",
   "search.loading": "Searching",
@@ -126,8 +133,9 @@ const en: Record<string, string> = {
   "verification.limited": "Up to 200 DOIs are verified per run. Remaining papers retain their OpenAlex records and are excluded from the cross-source verification rate.",
   "verification.failed": "Crossref was temporarily unavailable for {count} DOI records. Run the search again later to retry verification.",
   "verification.identity_merged": "This profile consolidates {count} public records supported by multiple identity signals.",
-  "verification.identity_excluded": "Identity review excluded {count} papers disconnected from the scholar's core affiliations, coauthors, and topics.",
-  "verification.identity_conflict": "Another {count} papers form a larger independent identity cluster. They were retained for manual review.",
+  "verification.identity_excluded": "Identity review conservatively excluded {count} papers without an ORCID, affiliation, or stable-coauthor link to the primary identity. The resulting profile may be incomplete.",
+  "verification.identity_conflict": "A larger independent identity cluster was detected and excluded.",
+  "verification.identity_orcid": "{count} papers directly match the scholar's public ORCID record.",
   "verification.updated_at": "Last updated",
   "verification.confidence": "Analysis confidence",
   "verification.confidence_high": "High: metrics are reproducible and key evidence passed review",
@@ -191,6 +199,7 @@ const en: Record<string, string> = {
   "timeline.empty": "No research direction timeline is available.",
   "timeline.evidence": "Evidence: yearly counts of papers associated with fine-grained topics, keywords, and title phrases; counts do not measure research quality.",
   "timeline.open_papers": "View matching papers",
+  "timeline.updating": "This profile is being updated with the latest identity checks. Direction-linked papers will be available when it finishes.",
 
 
   "auth.title": "Account sign in",

@@ -2,7 +2,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from repository import APIQuotaExceeded, InMemoryRepository, _normalize_database_url
+from repository import (
+    APIQuotaExceeded,
+    PROFILE_ANALYSIS_VERSION,
+    InMemoryRepository,
+    _normalize_database_url,
+)
 
 
 def _workflow_state(work_count=60):
@@ -55,6 +60,19 @@ def test_publish_profile_keeps_latest_payload_and_all_works():
     assert len(page["items"]) == 50
     assert page["total"] == 60
     assert page["items"][0]["citations"] == 59
+
+
+def test_profile_freshness_requires_current_analysis_version():
+    repository = InMemoryRepository()
+    saved = repository.publish_profile(_workflow_state(), query_name="Ada")
+
+    assert saved["payload"]["analysisVersion"] == PROFILE_ANALYSIS_VERSION
+    assert repository.is_fresh(saved) is True
+
+    legacy = {**saved, "payload": {**saved["payload"]}}
+    legacy["payload"].pop("analysisVersion")
+
+    assert repository.is_fresh(legacy) is False
 
 
 def test_refresh_queue_deduplicates_active_jobs_and_claims_once():

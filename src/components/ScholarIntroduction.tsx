@@ -18,12 +18,6 @@ function list(values: string[], lang: Lang) {
   return values.join(lang === "zh" ? "、" : ", ")
 }
 
-function formatYears(years: number[]) {
-  if (!years.length) return ""
-  if (years.length === 1) return String(years[0])
-  return `${Math.min(...years)}–${Math.max(...years)}`
-}
-
 function evidenceId(profile: ScholarProfile, type: ScholarProfile["profileEvidence"][number]["type"]) {
   return profile.profileEvidence.find((item) => item.type === type)?.id
 }
@@ -168,10 +162,6 @@ export default function ScholarIntroduction({
   const affiliationEvidence = profile.affiliationEvidence
   const employment = affiliationEvidence?.verifiedEmployment
   const education = affiliationEvidence?.verifiedEducation || []
-  const history = affiliationEvidence?.openAlexAffiliationHistory?.length
-    ? affiliationEvidence.openAlexAffiliationHistory
-    : (profile.institutions || []).map((name) => ({ name, years: [] }))
-  const statements = affiliationEvidence?.publicationAffiliationStatements || []
   const paragraphs = localizedIntroduction(profile, lang, t)
   const paperEvidenceIndexById = new Map(
     profile.profileEvidence
@@ -220,38 +210,6 @@ export default function ScholarIntroduction({
                 {education.map((item, index) => (
                   <li key={`${item.institution}-${index}`}>
                     {[item.degree, item.unit, item.institution].filter(Boolean).join(lang === "zh" ? "，" : ", ")}
-                  </li>
-                ))}
-              </ul>
-            </IdentityField>
-          )}
-          {history.length > 0 && (
-            <IdentityField label={t("identity.openalex_affiliation_history")}>
-              <ul className="space-y-1">
-                {history.map((item) => (
-                  <li key={item.name}>
-                    {item.name}
-                    {item.years.length > 0 && (
-                      <span className="ml-1 text-xs text-muted-foreground">
-                        ({formatYears(item.years)})
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </IdentityField>
-          )}
-          {statements.length > 0 && (
-            <IdentityField label={t("identity.publication_affiliation_statements")}>
-              <ul className="space-y-1">
-                {statements.slice(0, 5).map((item) => (
-                  <li key={item.text}>
-                    {item.text}
-                    {item.years.length > 0 && (
-                      <span className="ml-1 text-xs text-muted-foreground">
-                        ({formatYears(item.years)})
-                      </span>
-                    )}
                   </li>
                 ))}
               </ul>

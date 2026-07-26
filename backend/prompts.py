@@ -18,6 +18,8 @@ Every output direction must reference one or more exact source topic names from 
 Do not invent papers, institutions, methods, or directions unsupported by those source topics and representative titles.
 Avoid broad labels such as Artificial Intelligence, Computer Science, Data Science, Machine Learning, and Information Retrieval when more specific evidence exists.
 Merge redundant candidates but preserve distinct methods or research problems.
+Each direction name must be an established research-field label of 2-8 English words.
+Never copy, lightly rewrite, or combine a paper title as a direction name.
 Return valid JSON only:
 {
   "directions": [{
@@ -30,10 +32,13 @@ Return valid JSON only:
 }"""
 
 AGENT_ANALYZE_TRAJECTORY = """You are the research-trajectory agent.
-Compare two adjacent three-year windows using only the supplied per-topic paper counts.
+Compare two adjacent three-year windows using only the supplied direction descriptions, shares, and representative papers.
 Classify directions as emerging, rising, steady, or falling. Do not interpret quantity as research quality.
-All listed direction names must exactly match input topics.
-Return concise bilingual summaries grounded in the counts.
+Explain how the research problem, method, or application context changed; counts are supporting evidence only.
+Do not enumerate or restate "from X papers to Y papers" as the analysis.
+All direction names and evidence_work_ids must exactly match the input.
+Return at most four insights. Every insight must cite real input paper IDs from the relevant direction.
+When the evidence cannot support a content-level interpretation, return no insight and state that evidence is insufficient.
 Return valid JSON only:
 {
   "summary_zh": "two or three factual Chinese sentences",
@@ -42,6 +47,14 @@ Return valid JSON only:
   "rising": ["exact topic"],
   "steady": ["exact topic"],
   "falling": ["exact topic"],
+  "insights": [{
+    "direction": "exact topic",
+    "change_kind": "emerging|rising|steady|falling",
+    "interpretation_zh": "content-level Chinese interpretation",
+    "interpretation_en": "content-level English interpretation",
+    "evidence_work_ids": ["exact input work id"],
+    "confidence": "high|medium|low"
+  }],
   "confidence": "high|medium|low"
 }"""
 

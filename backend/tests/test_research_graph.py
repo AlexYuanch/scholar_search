@@ -12,6 +12,7 @@ from research_graph import (
     build_research_graph_batch,
     deduplicate_graph_works,
     reconstruct_openalex_abstract,
+    sync_scholar_research_graph,
     understand_abstract,
 )
 from research_graph_repository import (
@@ -458,6 +459,56 @@ def test_crossref_failure_does_not_replace_previous_verified_publication_fields(
     assert paper["title"] == "Crossref verified title"
     assert paper["venue"] == "Crossref Verified Journal"
     assert paper["source"] == ["openalex", "crossref"]
+
+
+def test_graph_sync_consumes_only_identity_adjudicated_profile_works(monkeypatch):
+    class Repository:
+        def get_profile(self, _author_id):
+            return {
+                "payload": {
+                    "analysisVersion": 2,
+                    "identityAudit": {"mergedAuthorIds": [AUTHOR_ID]},
+                },
+            }
+
+        def list_works(self, _author_id, limit, offset, sort):
+            assert limit == 1000
+            assert sort == "citations"
+            return {
+                "items": [{"id": "https://openalex.org/W-KEEP"}] if offset == 0 else [],
+                "total": 1,
+            }
+
+    kept = _work("https://openalex.org/W-KEEP", "10.1000/keep", 2024)
+    excluded = _work("https://openalex.org/W-EXCLUDED", "10.1000/excluded", 2024)
+    monkeypatch.setattr("research_graph.get_author", lambda *_args, **_kwargs: _author())
+    monkeypatch.setattr(
+        "research_graph.get_graph_works",
+        lambda *_args, **_kwargs: ([kept, excluded], [], True),
+    )
+    monkeypatch.setattr(
+        "research_graph.verify_dois",
+        lambda _dois: ({}, {"requested": 0, "verified": 0, "missing": 0, "failed": 0}),
+    )
+    captured = {}
+
+    def apply_batch(_repository, batch, **_kwargs):
+        captured["work_ids"] = [item["source_work_id"] for item in batch["works"]]
+        return {"status": "ready"}
+
+    monkeypatch.setattr("research_graph_repository.apply_research_graph_batch", apply_batch)
+    monkeypatch.setattr("research_graph_repository.get_research_graph_sync_state", lambda *_args: {})
+
+    result = sync_scholar_research_graph(
+        Repository(),
+        AUTHOR_ID,
+        api_key="test",
+        budget_provider="test",
+    )
+
+    assert captured["work_ids"] == ["https://openalex.org/W-KEEP"]
+    assert result["source_fetched_works"] == 2
+    assert result["fetched_works"] == 1
 
 
 def test_authenticated_graph_api_reads_queues_and_returns_object_details(monkeypatch):

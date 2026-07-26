@@ -32,9 +32,9 @@ export default function DataVerification({ profile, t, lang }: {
     "{count}",
     String(profile.identityAudit?.excludedWorks ?? 0),
   )
-  const identityConflictDetail = t("verification.identity_conflict").replace(
+  const identityOrcidDetail = t("verification.identity_orcid").replace(
     "{count}",
-    String(profile.identityAudit?.largeConflictWorks ?? 0),
+    String(profile.identityAudit?.orcidMatchedWorks ?? 0),
   )
   const updatedAt = profile.updatedAt || audit.retrievedAt
   const updatedLabel = updatedAt && !Number.isNaN(new Date(updatedAt).getTime())
@@ -122,8 +122,8 @@ export default function DataVerification({ profile, t, lang }: {
         {(profile.identityAudit?.excludedWorks ?? 0) > 0 && (
           <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">{identityExcludedDetail}</p>
         )}
-        {(profile.identityAudit?.largeConflictWorks ?? 0) > 0 && (
-          <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">{identityConflictDetail}</p>
+        {(profile.identityAudit?.orcidMatchedWorks ?? 0) > 0 && (
+          <p className="text-xs leading-relaxed text-primary">{identityOrcidDetail}</p>
         )}
 
         <p className="text-xs leading-relaxed text-muted-foreground">

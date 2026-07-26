@@ -13,6 +13,7 @@ flowchart LR
   SEARCH --> PG
   WF --> OA["OpenAlex"]
   WF --> CR["Crossref DOI metadata"]
+  WF --> ORCID["ORCID public works"]
   WF --> ROUTER["DeepSeek router agent"]
   ROUTER --> FLASH["DeepSeek V4 Flash"]
   ROUTER --> PRO["DeepSeek V4 Pro"]
@@ -35,15 +36,17 @@ flowchart LR
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
 | 公网入口 | Caddy + Nginx | 自动 HTTPS、静态资源、同源 API 代理和日志 |
 
+匿名前端先展示 Hero 搜索、三项核心能力和数据可信说明，不自动打开登录框。匿名搜索把姓名保存在组件状态并打开可关闭的认证弹窗；注册或登录成功后直接执行该姓名，关闭则取消本次动作但保留输入。后端查询路由没有开放匿名权限。
+
 前端将文章详情、查询历史和研究追踪作为同一类响应式侧栏：`lg` 及以上进入页面网格的独立列，主内容同步收缩；较窄视口改为带遮罩的抽屉，手机宽度占满屏幕。面板使用动态视口高度和内部滚动，长标题、机构名和论文信息允许换行，避免水平溢出。
 
 画像主内容按“概览 / 论文 / 合作网络”三栏组织。概览包含学者简介、当前主要研究方向、研究方向时间线、近期变化、核心指标和数据核验；论文栏包含代表论文与全部论文；合作网络栏包含核心合作者和关系图。时间线方向点击会切换到论文栏并应用对应筛选。切换学者时，前端通过 `AbortController` 和请求序号共同取消并忽略旧搜索/画像结果。
 
-`affiliation_evidence.py` 把 OpenAlex 作者 `affiliations` 和目标 author ID 的论文 `raw_affiliation_strings` 保留为独立的“论文关联证据”。`select_primary_affiliation` 依次按最近六年覆盖年份数、最近关联年份、全职业覆盖年份数排序：一篇最新论文不能替换持续多年的主要机构，旧的长期单位也不会永久压过稳定的近期单位；搜索候选和画像复用同一纯函数。该模块不解析或生成任职机构、院系、实验室、职称、学位或培养阶段，并在结构中将 `verifiedEmployment` 保持为空，直到接入独立任职来源。前端只用中性的“主要/其他关联机构、OpenAlex 机构记录、论文署名原文”展示已有数据；没有独立证据的身份字段直接不渲染，不向用户展示内部推断规则。`ScholarIntroduction` 按当前语言从结构化指标、方向、代表作和合作者重建简介与依据，因此旧缓存中的中文总结不会污染英文界面。PostgreSQL 读取旧画像时主动移除错误的 `professionalIdentity` 字段，并升级缺少 `primaryAffiliation` 的旧画像；旧版候选缓存缺少机构选择版本号时按过期数据处理并重新计算，避免给旧值换上新标签，无需修改历史 migration。
+`affiliation_evidence.py` 把 OpenAlex 作者 `affiliations` 和目标 author ID 的论文 `raw_affiliation_strings` 保留为内部身份核验证据。`select_primary_affiliation` 依次按最近六年覆盖年份数、最近关联年份、全职业覆盖年份数排序。该模块不解析或生成任职、院系、实验室、职称、学位或培养阶段；概览只展示独立来源核验的任职/教育、公共标识和分析依据，不再重复渲染 OpenAlex 机构历史与论文署名原文。底层 JSON 继续供身份裁决和审计使用。
 
 合作摘要保留 coauthor OpenAlex ID；网络上方姓名按钮和图节点只打开合作者详情侧栏，侧栏中的“查询画像”按钮才调用画像加载函数，避免浏览图谱时意外切换当前学者。主学者姓名打开 OpenAlex，合作边打开共同论文侧栏。画像主体由 `ProfileSection` 和 `ScholarIntroduction` 负责，语言组装、身份事实与页面编排分离。
 
-时间线方向标签把 `{year, topic}` 传给全部论文组件并滚动到论文区；`GET /api/authors/{author_id}/works` 使用可选 `year`、`topic` 参数在 PostgreSQL 中筛选。新发布画像将工作流 `topic_clusters.paper_indices` 写入每篇论文 `raw_json.analysis_topics`，确保方向与论文精确关联；旧画像兼容使用 OpenAlex topic、keyword、concept 和标题短语匹配。筛选仍使用原有游标分页、登录校验、错误重试和请求取消机制。
+时间线方向标签把 `{year, topic}` 传给论文栏；React 在栏内容挂载后再滚动，避免切换时引用尚不存在。`GET /api/authors/{author_id}/works` 使用可选 `year`、`topic` 参数精确筛选 `raw_json.analysis_topics`。研究图谱 upsert 以 JSONB 合并更新 `raw_json`，不得覆盖画像分析主题、来源裁决和核验元数据。代码内 `analysisVersion=2` 让旧画像在访问时返回可用内容并幂等排队后台重算，不批量消耗外部额度；更新期间方向按钮禁用并显示说明。
 
 学者对比由前端编排现有搜索与流式画像接口：当前画像作为基准，用户搜索并确认第二个 OpenAlex 实体后调用 `POST /api/profile/stream` 获取当次数据。比较指标完全从两份同结构画像派生，不新增独立缓存或统计口径；研究方向、时间线、代表作、论文与引用、影响力、合作者和近期变化模块逐项显示事实或计算口径。桌面端并排展示，窄屏端纵向排列并在弹层内部滚动。
 
@@ -53,9 +56,9 @@ flowchart LR
 
 搜索先规范化 Unicode、空白和大小写得到共享 `query_key`。Web 与 worker 优先读取服务器 `OPENALEX_API_KEY`，普通用户无需配置数据源密钥；历史个人 key 仅在服务端 key 缺失时兼容回退。新鲜 `openalex_search_cache` 直接返回；过期结果先返回旧值并把 `requested_by_user_id` 写入后台刷新，冷请求以 `openalex_search_jobs` 的活跃任务唯一索引合并，多 Web 实例只有一个请求或 worker 访问上游。OpenAlex 不可用、限流或平台剩余额度到达保留线时，Repository 可按学者名/别名从已发布的真实 PostgreSQL 学者数据构造保守候选；没有本地事实时才返回明确上游错误。`openalex_identity_cache` 让不同姓名查询复用昂贵的论文/合作者/主题指纹，但不改变既有归并阈值。
 
-多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责作者、论文、引用、topics、keywords 和署名发现，Crossref 只对 OpenAlex 论文中的 DOI 进行出版元数据核验。被验证为同一身份的多个作者档案并发取数，中心 authorship 统一为主 ID。随后建立机构、合作者和主题频率核心，只排除同时具有明确冲突机构、且与核心合作者/主题均断开的微小论文连通簇；无机构论文和较大冲突簇不会自动删除。过滤结果、排除 Work ID 和风险数量写入 `identityAudit`，再按 DOI/OpenAlex Work ID 去重。`adjudicate_sources` 以规范化 DOI 合并记录，Crossref 优先提供标题、年份和期刊，OpenAlex 继续提供引用、主题和 authorships；所有字段来源、原始记录、核验状态和冲突写入论文 `raw_json`。
+多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责发现，Crossref 按 DOI 核验出版元数据，`orcid.py` 从公共 ORCID works 端点读取 DOI/标题/年份且不需要密钥。来源裁决后，`resolve_work_identity` 以 ORCID 命中和 Crossref 作者 ORCID为强锚点，以稳定机构/合作者连接同一人的跨方向论文；主题相似只用于分析，不参与身份连边。无 ORCID 时按最近机构、稳定合作者、近期连续发表和簇规模选择主簇。所有无身份连接冲突簇无论大小均排除，并把裁决方式、ORCID 命中数、排除论文和簇摘要写入 `identityAudit`。
 
-研究方向先聚合 OpenAlex 四级 topics、与标题匹配或跨论文重复的 keywords，以及论文标题中的高频 2–4 元短语，形成保留论文索引的候选主题。`router_agent` 根据论文规模、活跃年份、身份风险和来源冲突规划后续层级；`topic_agent` 只能重组候选主题并引用原始候选名称，不能凭空创建方向；`trajectory_agent` 只消费两个相邻三年窗口的方向计数；`report_agent` 生成带证据 ID 的双语总结；`evidence_agent` 复核总结与证据。所有结构输出由 Pydantic 校验，Flash 校验失败时在预算允许范围内升级 Pro。
+研究方向优先聚合 OpenAlex topics 与重复 keywords；标题 2–4 元短语必须至少出现在 3 篇论文中才可辅助候选。`topic_agent` 输出 2–8 词规范方向名，标题复制、高相似标题、宽泛标签或不可追溯结果均被 Pydantic 后置校验拒绝。`trajectory_agent` 消费两个三年窗口的方向数量/占比、双语方向说明和代表论文 ID/标题/年份，最多输出四条内容级洞察；未知方向、虚构论文、纯数字复述和无证据推断不能发布。前端只渲染服务端用真实论文对象回填的 `evidencePapers`。
 
 模型输出不是事实来源。`review_evidence` 仍在载荷格式化前确定性检查指标可复算性、论文链接可追溯性和证据 ID；Agent 审查只能降低置信度或触发模板重建，不能批准确定性门禁拒绝的内容。`agentAnalysis` 只保存 Agent 名称、模型、层级、升级原因、状态、趋势结论和审查摘要，不保存 key、完整提示词或原始响应。`LLM_STRONG_DAILY_LIMIT` 为单进程 Pro 调用保护线；达到后自动降级 Flash。
 
@@ -102,8 +105,8 @@ flowchart LR
 1. `POST /api/profile/stream` 先读取最近成功画像：已有画像立即以 NDJSON `result` 返回，超过阈值时只幂等排队；仅首次画像同步运行 LangGraph 并输出四阶段进度。
 2. 对候选身份组再次验证；仅联合获取通过身份阈值的 OpenAlex 作者详情和论文，游标分页必须完整结束。
 3. 对有 DOI 的论文查询 Crossref，并记录已核验、未找到、失败和核验上限。
-4. 数据裁决节点按 DOI 合并来源，保留字段来源与冲突，产出统一论文集和 `dataAudit`。
-5. 引用、细粒度方向、演化和合作节点并行消费统一论文集；总结生成后执行证据审查。
+4. 数据裁决节点按 DOI 合并来源，保留字段来源与冲突；身份节点再以 ORCID、机构和合作者裁定准确优先的主论文集。
+5. 引用、细粒度方向、演化和合作节点只消费身份裁决后的论文集；总结生成后执行证据审查。
 6. 质量检查比较 `works_count`、本次数量、上一成功数量和证据审查结果。
 7. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
 8. `profile_status.version + 1` 并设为 `ready`；触发器发送轻量 PostgreSQL 通知。
@@ -125,10 +128,11 @@ flowchart LR
 2. worker 读取最近成功时间，普通更新使用向前重叠 30 天的 `from_publication_date`；该筛选和 `sort=publication_date` 可在 OpenAlex 免费计划运行，避免误用返回 `Plan upgrade required` 的 `from_updated_date`/`sort=updated_date`。首次和显式重建不带水位，但都只处理当前学者。
 3. OpenAlex 作者与论文分页必须完整结束。任何页失败时不进入图谱内容事务；Crossref 失败只产生 warning，已经成功保存的 Crossref 标题、年份、期刊和类型不被 OpenAlex 回退值覆盖。
 4. DOI 和 OpenAlex ID 先通过 `work_external_ids` 定位规范论文，再原子 upsert 署名、机构、主题、合作、引用、摘要理解和时间线。所有关系使用主键/唯一键去重。
-5. 摘要理解只抽取 OpenAlex 摘要原句；摘要缺失时 `based_on_abstract=false`，四个理解字段与证据数组为空。
-6. 读取接口只有在 `last_success_at` 存在时才投影内容，论文查询必须连接 `paper_insights` 图谱标记，避免把普通画像论文冒充为首次失败图谱；后续失败仍返回最近成功内容。
-7. 前端纯函数 view-model 按图谱批次中最多 1000 篇论文—主题关系计算最多五个研究阶段、相邻阶段方向迁移信号和主题强度矩阵；计算保持时间正序以保证“新进入/持续/退出”语义，展示层再统一按最新到最早排序。问题—方法—贡献只读取 `based_on_abstract=true` 的证据。方向、证据和对象详情拆分为独立组件，方向按钮统一提供 hover、键盘焦点、可访问名称和真实对象详情调用，避免页面组件继续膨胀。
-8. 对象详情 API 只接受作者、论文、机构和主题 UUID，读取、刷新和对象详情全部经过登录依赖；刷新任务只使用服务器 key 或任务请求用户自己的加密凭据。
+5. `analysisVersion=2` 后，图谱只消费当前已发布画像的身份裁决后 Work ID；未进入主论文集的 OpenAlex 论文不会重新混入图谱。图谱更新合并 `works.raw_json`，保留论文栏的 `analysis_topics` 和来源核验元数据。
+6. 摘要理解只抽取 OpenAlex 摘要原句；摘要缺失时 `based_on_abstract=false`，四个理解字段与证据数组为空。
+7. 读取接口只有在 `last_success_at` 存在时才投影内容，论文查询必须连接 `paper_insights` 图谱标记，避免把普通画像论文冒充为首次失败图谱；后续失败仍返回最近成功内容。
+8. 前端纯函数 view-model 按图谱批次中最多 1000 篇论文—主题关系计算最多五个研究阶段、相邻阶段方向迁移信号和主题强度矩阵；计算保持时间正序以保证“新进入/持续/退出”语义，展示层再统一按最新到最早排序。问题—方法—贡献只读取 `based_on_abstract=true` 的证据。方向、证据和对象详情拆分为独立组件，方向按钮统一提供 hover、键盘焦点、可访问名称和真实对象详情调用，避免页面组件继续膨胀。
+9. 对象详情 API 只接受作者、论文、机构和主题 UUID，读取、刷新和对象详情全部经过登录依赖；刷新任务只使用服务器 key 或任务请求用户自己的加密凭据。
 
 ### Worker
 

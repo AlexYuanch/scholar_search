@@ -16,6 +16,9 @@ def assess_profile_quality(state: dict, cached: dict | None = None) -> QualityAs
     profile = state.get("target_author_profile") or {}
     expected = int(profile.get("works_count") or 0)
     fetched = len(works)
+    identity_audit = state.get("identity_audit") or {}
+    identity_excluded = int(identity_audit.get("excludedWorks") or 0)
+    identity_collected = int(identity_audit.get("collectedWorks") or 0)
 
     if not state.get("works_complete", False):
         blocking_flags.append("partial_works_fetch")
@@ -27,13 +30,19 @@ def assess_profile_quality(state: dict, cached: dict | None = None) -> QualityAs
     if evidence_review and not evidence_review.get("publishable", False):
         blocking_flags.append("evidence_review_failed")
 
-    allowed_gap = max(5, int(expected * 0.2))
-    if expected and expected - fetched > allowed_gap:
+    adjusted_expected = max(
+        0,
+        min(expected, identity_collected or expected) - identity_excluded,
+    )
+    allowed_gap = max(5, int(adjusted_expected * 0.2))
+    if adjusted_expected and adjusted_expected - fetched > allowed_gap:
         blocking_flags.append("openalex_count_mismatch")
 
     previous_count = int(((cached or {}).get("payload") or {}).get("totalPapers") or 0)
-    if previous_count >= 10 and fetched < previous_count * 0.8:
+    if previous_count >= 10 and fetched < previous_count * 0.8 and not identity_excluded:
         blocking_flags.append("suspicious_paper_drop")
+    if identity_excluded:
+        flags.append("identity_conservative_exclusion")
 
     institutions = profile.get("last_known_institutions") or []
     countries = {item.get("country_code") for item in institutions if item.get("country_code")}

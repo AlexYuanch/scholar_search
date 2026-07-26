@@ -2,8 +2,12 @@
 
 DAG 结构（多来源裁决 + Agent 分析 + 证据审查）:
 
-  fetch_profile → collect_works → dedup_works → collect_crossref → adjudicate_sources
-                                                                ↓
+  fetch_profile → collect_orcid_identity → collect_works → dedup_works
+                                                    ↓
+                                collect_crossref → adjudicate_sources
+                                                    ↓
+                                           resolve_work_identity
+                                                    ↓
                                                         plan_agents
                                                                 ↓
                                           ┌──────────────────────┴──────────────────────┐
@@ -28,10 +32,12 @@ from langgraph.graph import StateGraph, END
 from state import ScholarProfileState, default_state
 from nodes import (
     fetch_author_profile,
+    collect_orcid_identity,
     collect_works,
     deduplicate_works,
     collect_crossref_records,
     adjudicate_sources,
+    resolve_work_identity,
     plan_agent_analysis,
     analyze_citations,
     agent_analyze_topics,
@@ -47,11 +53,13 @@ from nodes import (
 
 NODES = [
     ("fetch_profile", fetch_author_profile),
+    ("collect_orcid_identity", collect_orcid_identity),
     ("collect_works", collect_works),
 
     ("dedup_works", deduplicate_works),
     ("collect_crossref", collect_crossref_records),
     ("adjudicate_sources", adjudicate_sources),
+    ("resolve_work_identity", resolve_work_identity),
     ("plan_agents", plan_agent_analysis),
     ("analyze_citations", analyze_citations),
     ("agent_analyze_topics", agent_analyze_topics),
@@ -75,13 +83,15 @@ def build() -> StateGraph:
     builder.set_entry_point("fetch_profile")
 
     # 串行获取 → 去重 → 跨来源核验与裁决
-    builder.add_edge("fetch_profile", "collect_works")
+    builder.add_edge("fetch_profile", "collect_orcid_identity")
+    builder.add_edge("collect_orcid_identity", "collect_works")
     builder.add_edge("collect_works", "dedup_works")
     builder.add_edge("dedup_works", "collect_crossref")
     builder.add_edge("collect_crossref", "adjudicate_sources")
 
     # 并行分析
-    builder.add_edge("adjudicate_sources", "plan_agents")
+    builder.add_edge("adjudicate_sources", "resolve_work_identity")
+    builder.add_edge("resolve_work_identity", "plan_agents")
     builder.add_edge("plan_agents", "analyze_citations")
     builder.add_edge("plan_agents", "agent_analyze_topics")
 

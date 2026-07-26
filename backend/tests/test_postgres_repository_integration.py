@@ -618,6 +618,10 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             "target_author_id": author_id,
             "target_author_profile": author,
             "deduped_works": [first_work],
+            "topic_clusters": [{
+                "topic": "Dynamic Graph Analysis",
+                "paper_indices": [0],
+            }],
             "works_complete": True,
             "web_payload": {
                 "name": f"Graph Scholar {unique}",
@@ -627,6 +631,15 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             "warnings": [],
             "errors": [],
         })
+        before_graph_filter = repository.list_works(
+            author_id,
+            20,
+            0,
+            "citations",
+            year=2022,
+            topic="Dynamic Graph Analysis",
+        )
+        assert before_graph_filter["total"] == 1
         enqueue_research_graph_refresh(
             repository,
             author_id,
@@ -647,6 +660,15 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             force_rebuild=False,
             warnings=[],
         )
+        after_graph_filter = repository.list_works(
+            author_id,
+            20,
+            0,
+            "citations",
+            year=2022,
+            topic="Dynamic Graph Analysis",
+        )
+        assert after_graph_filter["total"] == 1
         apply_research_graph_batch(
             repository,
             first_batch,
@@ -672,6 +694,13 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             force_rebuild=False,
             warnings=[],
         )
+        profile_works_after_graph = repository.list_works(
+            author_id,
+            20,
+            0,
+            "citations",
+        )
+        assert profile_works_after_graph["total"] == 1
 
         graph = get_research_graph(repository, author_id)
 

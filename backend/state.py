@@ -11,6 +11,8 @@ class ScholarProfileState(TypedDict):
     target_author_ids: List[str]
     target_author_profile: Optional[Dict[str, Any]]
     identity_audit: Dict[str, Any]
+    orcid_works: List[Dict[str, Any]]
+    orcid_audit: Dict[str, Any]
 
     # ── 论文数据 ──
     raw_works: List[Dict[str, Any]]
@@ -64,6 +66,8 @@ def default_state() -> Dict[str, Any]:
         "target_author_ids": [],
         "target_author_profile": None,
         "identity_audit": {},
+        "orcid_works": [],
+        "orcid_audit": {},
         "raw_works": [],
         "deduped_works": [],
         "source_works": {},

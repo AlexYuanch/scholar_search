@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState, type ComponentType } from "react"
+import { lazy, Suspense, useEffect, useRef, useState, type ComponentType } from "react"
 import {
   ArrowLeftRight,
   BarChart3,
@@ -104,14 +104,21 @@ export default function ProfileSection({
   const [activeTab, setActiveTab] = useState<ProfileTab>("overview")
   const [paperFilter, setPaperFilter] = useState<TimelinePaperFilter | null>(null)
   const papersSectionRef = useRef<HTMLDivElement>(null)
+  const analysisUpdating = profile.refreshStatus === "queued" || profile.refreshStatus === "updating"
 
   const handleTimelineTopicClick = (filter: TimelinePaperFilter) => {
+    if (analysisUpdating) return
     setPaperFilter(filter)
     setActiveTab("papers")
-    requestAnimationFrame(() => {
+  }
+
+  useEffect(() => {
+    if (activeTab !== "papers" || !paperFilter) return
+    const frame = requestAnimationFrame(() => {
       papersSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     })
-  }
+    return () => cancelAnimationFrame(frame)
+  }, [activeTab, paperFilter])
 
   const collaboratorId = (name: string, institution?: string, id?: string) => {
     if (id) return id
@@ -206,7 +213,12 @@ export default function ProfileSection({
             </CardContent>
           </Card>
 
-          <ResearchTimeline profile={profile} onTopicClick={handleTimelineTopicClick} t={t} />
+          <ResearchTimeline
+            profile={profile}
+            onTopicClick={handleTimelineTopicClick}
+            updating={analysisUpdating}
+            t={t}
+          />
           <ResearchChanges profile={profile} t={t} lang={lang} />
 
           <div className="grid gap-4 sm:grid-cols-3">
@@ -333,7 +345,15 @@ export default function ProfileSection({
         </TabsContent>
 
         <TabsContent value="research-graph" className="space-y-4">
-          <DynamicResearchGraph profile={profile} t={t} />
+          {analysisUpdating ? (
+            <Card>
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                {t("timeline.updating")}
+              </CardContent>
+            </Card>
+          ) : (
+            <DynamicResearchGraph profile={profile} t={t} />
+          )}
         </TabsContent>
       </Tabs>
     </section>
