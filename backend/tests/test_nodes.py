@@ -568,6 +568,77 @@ def test_identity_filter_excludes_large_disconnected_conflict_cluster():
     assert audit["possibleConflatedIdentity"] is True
 
 
+def test_identity_filter_does_not_join_unrelated_clusters_by_institution_only():
+    core = [{
+        "id": f"CORE-{index}",
+        "doi": f"https://doi.org/10.1000/core-{index}",
+        "publication_year": 2022 + index,
+        "authorships": [
+            {"author": {"id": "A1"}, "institutions": [{"id": "I1"}]},
+            {"author": {"id": "C1"}},
+        ],
+        "topics": [{"id": "T1", "display_name": "Indoor Positioning"}],
+    } for index in range(2)]
+    conflict = [{
+        "id": f"CONFLICT-{index}",
+        "publication_year": 2022 + index,
+        "authorships": [
+            {"author": {"id": "A1"}, "institutions": [{"id": "I1"}]},
+            {"author": {"id": "C9"}},
+        ],
+        "topics": [{"id": "T9", "display_name": "Medical Imaging"}],
+    } for index in range(4)]
+
+    kept, audit = _filter_identity_outlier_works(
+        core + conflict,
+        "A1",
+        orcid_works=[{
+            "doi": "10.1000/core-0",
+            "title": "",
+            "year": 2022,
+        }],
+    )
+
+    assert {work["id"] for work in kept} == {"CORE-0", "CORE-1"}
+    assert audit["resolutionMethod"] == "orcid_anchor"
+    assert audit["excludedWorks"] == 4
+
+
+def test_identity_filter_keeps_stable_coauthor_across_institutions():
+    works = [
+        {
+            "id": "ANCHOR",
+            "doi": "https://doi.org/10.1000/anchor",
+            "publication_year": 2022,
+            "authorships": [
+                {"author": {"id": "A1"}, "institutions": [{"id": "I1"}]},
+                {"author": {"id": "C1"}},
+            ],
+        },
+        {
+            "id": "FOLLOW-UP",
+            "publication_year": 2025,
+            "authorships": [
+                {"author": {"id": "A1"}, "institutions": [{"id": "I2"}]},
+                {"author": {"id": "C1"}},
+            ],
+        },
+    ]
+
+    kept, audit = _filter_identity_outlier_works(
+        works,
+        "A1",
+        orcid_works=[{
+            "doi": "10.1000/anchor",
+            "title": "",
+            "year": 2022,
+        }],
+    )
+
+    assert {work["id"] for work in kept} == {"ANCHOR", "FOLLOW-UP"}
+    assert audit["excludedWorks"] == 0
+
+
 def test_title_phrases_require_three_repeated_papers():
     works = [{
         "id": f"W{index}",

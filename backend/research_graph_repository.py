@@ -95,6 +95,19 @@ def research_graph_needs_refresh(
         return True
     if updated.tzinfo is None:
         updated = updated.replace(tzinfo=timezone.utc)
+    profile = repository.get_profile(author_id)
+    if profile and profile.get("updated_at"):
+        try:
+            profile_updated = datetime.fromisoformat(
+                str(profile["updated_at"]).replace("Z", "+00:00")
+            )
+        except ValueError:
+            profile_updated = None
+        if profile_updated:
+            if profile_updated.tzinfo is None:
+                profile_updated = profile_updated.replace(tzinfo=timezone.utc)
+            if profile_updated > updated:
+                return True
     return _now() - updated > timedelta(days=max_age_days)
 
 

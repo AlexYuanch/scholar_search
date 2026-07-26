@@ -154,6 +154,18 @@ export async function getProfile(authorId: string, options: { signal?: AbortSign
   return data.data
 }
 
+export async function refreshProfile(authorId: string): Promise<{
+  status: ScholarProfile["refreshStatus"]
+  job_id: string
+  profile_version: number
+}> {
+  const response = await authenticatedFetch(
+    `/authors/${encodeURIComponent(authorId)}/profile/refresh`,
+    { method: 'POST' },
+  )
+  return response.json()
+}
+
 interface StreamOptions {
   signal?: AbortSignal
   authorIds?: string[]

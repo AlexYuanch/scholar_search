@@ -336,7 +336,30 @@ def _identity_work_key(work: dict) -> tuple[str, str, int | None]:
     return doi, title, year
 
 
-def _identity_components(signals: list[dict[str, set[str]]]) -> list[set[int]]:
+def _identity_components(
+    works: list[dict],
+    signals: list[dict[str, set[str]]],
+) -> list[set[int]]:
+    work_keys = [_identity_work_key(work) for work in works]
+
+    def strongly_linked(left: int, right: int) -> bool:
+        left_key = work_keys[left]
+        right_key = work_keys[right]
+        same_doi = bool(left_key[0] and left_key[0] == right_key[0])
+        same_title = bool(
+            left_key[1]
+            and left_key[1] == right_key[1]
+            and (
+                left_key[2] is None
+                or right_key[2] is None
+                or left_key[2] == right_key[2]
+            )
+        )
+        stable_coauthor = bool(
+            signals[left]["coauthors"] & signals[right]["coauthors"]
+        )
+        return same_doi or same_title or stable_coauthor
+
     remaining = set(range(len(signals)))
     components: list[set[int]] = []
     while remaining:
@@ -347,10 +370,7 @@ def _identity_components(signals: list[dict[str, set[str]]]) -> list[set[int]]:
             linked = {
                 candidate
                 for candidate in remaining
-                if (
-                    signals[current]["institutions"] & signals[candidate]["institutions"]
-                    or signals[current]["coauthors"] & signals[candidate]["coauthors"]
-                )
+                if strongly_linked(current, candidate)
             }
             if linked:
                 component.update(linked)
@@ -406,7 +426,7 @@ def _filter_identity_outlier_works(
             "possibleConflatedIdentity": False,
         }
     signals = [_work_identity_signals(work, primary_author_id) for work in works]
-    components = _identity_components(signals)
+    components = _identity_components(works, signals)
     component_by_index = {
         index: component
         for component in components

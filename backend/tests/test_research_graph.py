@@ -414,6 +414,39 @@ def test_graph_refresh_check_does_not_requeue_active_or_failed_jobs():
         assert not research_graph_needs_refresh(repository, AUTHOR_ID)
 
 
+def test_graph_becomes_stale_when_a_newer_profile_is_published():
+    repository = InMemoryRepository()
+    batch = build_research_graph_batch(
+        _author(),
+        [_work("https://openalex.org/W-PROFILE-STALE", "10.1000/profile-stale", 2024)],
+    )
+    apply_research_graph_batch(
+        repository,
+        batch,
+        force_rebuild=False,
+        warnings=[],
+    )
+    state = repository._research_graph_store["sync"][AUTHOR_ID]
+    state["last_success_at"] = (
+        datetime.now(timezone.utc) - timedelta(hours=1)
+    ).isoformat()
+    repository.publish_profile({
+        "target_author_id": AUTHOR_ID,
+        "target_author_profile": _author(),
+        "deduped_works": [],
+        "works_complete": True,
+        "web_payload": {
+            "name": "Dynamic Scholar",
+            "totalPapers": 0,
+            "profileEvidence": [],
+        },
+        "warnings": [],
+        "errors": [],
+    }, query_name="Dynamic Scholar")
+
+    assert research_graph_needs_refresh(repository, AUTHOR_ID)
+
+
 def test_crossref_failure_does_not_replace_previous_verified_publication_fields():
     repository = InMemoryRepository()
     source_work = _work(

@@ -35,18 +35,22 @@ import {
 
 function GraphStatusCard({
   graph,
+  profile,
   refreshing,
   error,
   graphIsEmpty,
+  successfulButEmpty,
   waitingForFirstVersion,
   firstVersionFailed,
   onRefresh,
   t,
 }: {
   graph: ResearchGraph
+  profile: ScholarProfile
   refreshing: boolean
   error: string
   graphIsEmpty: boolean
+  successfulButEmpty: boolean
   waitingForFirstVersion: boolean
   firstVersionFailed: boolean
   onRefresh: (forceRebuild: boolean) => void | Promise<void>
@@ -58,6 +62,23 @@ function GraphStatusCard({
       ? "destructive"
       : "secondary"
   const taskActive = ["queued", "updating"].includes(graph.status.status)
+  const years = graph.papers
+    .map((paper) => paper.year)
+    .filter((year): year is number => typeof year === "number")
+  const yearRange = years.length
+    ? `${Math.min(...years)}–${Math.max(...years)}`
+    : "—"
+  const abstractEvidenceCount = graph.papers.filter(
+    (paper) => paper.insight?.based_on_abstract,
+  ).length
+  const identityAudit = profile.identityAudit
+  const identityNeedsAttention = Boolean(
+    identityAudit?.possibleConflatedIdentity
+    || (identityAudit?.excludedWorks ?? 0) > 0,
+  )
+  const identityEvidenceLimited = (
+    identityAudit?.resolutionMethod === "insufficient_evidence"
+  )
 
   return (
     <Card>
@@ -88,19 +109,39 @@ function GraphStatusCard({
               }
               {t("research_graph.incremental_refresh")}
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={refreshing || taskActive || graph.status.status !== "failed"}
-              onClick={() => void onRefresh(true)}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              {t("research_graph.rebuild")}
-            </Button>
+            {graph.status.status === "failed" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={refreshing || taskActive}
+                onClick={() => void onRefresh(true)}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {t("research_graph.rebuild")}
+              </Button>
+            )}
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-lg bg-muted/60 p-3">
+            <p className="text-xs text-muted-foreground">{t("research_graph.coverage_papers")}</p>
+            <p className="mt-1 text-lg font-bold tabular-nums">{graph.papers.length}</p>
+          </div>
+          <div className="rounded-lg bg-muted/60 p-3">
+            <p className="text-xs text-muted-foreground">{t("research_graph.coverage_years")}</p>
+            <p className="mt-1 text-lg font-bold tabular-nums">{yearRange}</p>
+          </div>
+          <div className="rounded-lg bg-muted/60 p-3">
+            <p className="text-xs text-muted-foreground">{t("research_graph.coverage_abstracts")}</p>
+            <p className="mt-1 text-lg font-bold tabular-nums">{abstractEvidenceCount}</p>
+          </div>
+          <div className="rounded-lg bg-muted/60 p-3">
+            <p className="text-xs text-muted-foreground">{t("research_graph.coverage_citations")}</p>
+            <p className="mt-1 text-lg font-bold tabular-nums">{graph.citations.length}</p>
+          </div>
+        </div>
         {graph.status.last_success_at && (
           <p className="text-xs text-muted-foreground">
             {t("research_graph.last_updated")}{" "}
@@ -134,9 +175,26 @@ function GraphStatusCard({
           </p>
         ))}
         {error && <p className="text-sm text-destructive">{error}</p>}
+        {identityNeedsAttention && (
+          <p className="rounded-md border border-amber-300/70 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/30 dark:text-amber-300">
+            {t("research_graph.identity_attention")
+              .replace("{excluded}", String(identityAudit?.excludedWorks ?? 0))
+              .replace("{orcid}", String(identityAudit?.orcidMatchedWorks ?? 0))}
+          </p>
+        )}
+        {!identityNeedsAttention && identityEvidenceLimited && (
+          <p className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+            {t("research_graph.identity_limited")}
+          </p>
+        )}
         {graphIsEmpty && (
           <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
             {t("research_graph.empty")}
+          </p>
+        )}
+        {successfulButEmpty && (
+          <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+            {t("research_graph.success_empty")}
           </p>
         )}
         {waitingForFirstVersion && (
@@ -192,7 +250,7 @@ export default function DynamicResearchGraph({
       return load(false, controller.signal)
     })
     return () => controller.abort()
-  }, [load])
+  }, [load, profile.profileVersion])
 
   useEffect(() => {
     if (!graph || !["queued", "updating"].includes(graph.status.status)) return
@@ -274,14 +332,17 @@ export default function DynamicResearchGraph({
   const firstVersionFailed = (
     !hasSuccessfulVersion && graph.status.status === "failed"
   )
+  const successfulButEmpty = hasSuccessfulVersion && graph.papers.length === 0
 
   return (
     <div className="space-y-6">
       <GraphStatusCard
         graph={graph}
+        profile={profile}
         refreshing={refreshing}
         error={error}
         graphIsEmpty={graphIsEmpty}
+        successfulButEmpty={successfulButEmpty}
         waitingForFirstVersion={waitingForFirstVersion}
         firstVersionFailed={firstVersionFailed}
         onRefresh={requestRefresh}

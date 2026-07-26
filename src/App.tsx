@@ -17,6 +17,7 @@ import {
   getTracking,
   markTrackingSeen,
   profileEventsUrl,
+  refreshProfile,
   removeTracking,
   searchAuthors,
   streamProfile,
@@ -164,58 +165,60 @@ function CandidateList({ candidates, onSelect, loading, t }: {
       <p className="mb-4 rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
         {t("candidate.confirm_prompt")}
       </p>
-      <div className="mb-4 space-y-3 rounded-lg border bg-card p-3">
-        <div className="flex flex-wrap gap-2">
-          {(["all", "high", "medium", "review"] as const).map((key) => (
-            <Button
-              key={key}
-              size="sm"
-              variant={group === key ? "default" : "outline"}
-              onClick={() => setGroup(key)}
-            >
-              {t(`candidate.group_${key}`)}{key !== "all" ? ` (${groupCounts[key]})` : ` (${candidates.length})`}
-            </Button>
-          ))}
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <input
-            value={institutionQuery}
-            onChange={(event) => setInstitutionQuery(event.target.value)}
-            placeholder={t("candidate.filter_institution")}
-            className="h-9 rounded-md border bg-background px-3 text-sm"
-          />
-          {hasTopics && (
+      {candidates.length > 1 && (
+        <div className="mb-4 space-y-3 rounded-lg border bg-card p-3">
+          <div className="flex flex-wrap gap-2">
+            {(["all", "high", "medium", "review"] as const).map((key) => (
+              <Button
+                key={key}
+                size="sm"
+                variant={group === key ? "default" : "outline"}
+                onClick={() => setGroup(key)}
+              >
+                {t(`candidate.group_${key}`)}{key !== "all" ? ` (${groupCounts[key]})` : ` (${candidates.length})`}
+              </Button>
+            ))}
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
             <input
-              value={topicQuery}
-              onChange={(event) => setTopicQuery(event.target.value)}
-              placeholder={t("candidate.filter_topic")}
+              value={institutionQuery}
+              onChange={(event) => setInstitutionQuery(event.target.value)}
+              placeholder={t("candidate.filter_institution")}
               className="h-9 rounded-md border bg-background px-3 text-sm"
             />
-          )}
+            {hasTopics && (
+              <input
+                value={topicQuery}
+                onChange={(event) => setTopicQuery(event.target.value)}
+                placeholder={t("candidate.filter_topic")}
+                className="h-9 rounded-md border bg-background px-3 text-sm"
+              />
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <label className="flex items-center gap-2 text-muted-foreground">
+              <input type="checkbox" checked={onlyOrcid} onChange={(event) => setOnlyOrcid(event.target.checked)} />
+              {t("candidate.only_orcid")}
+            </label>
+            <label className="flex items-center gap-2 text-muted-foreground">
+              <span>{t("candidate.sort_label")}</span>
+              <select value={sortKey} onChange={(event) => setSortKey(event.target.value as CandidateSortKey)} className="h-9 rounded-md border bg-background px-2 text-sm text-foreground">
+                <option value="recommended">{t("candidate.sort_recommended")}</option>
+                <option value="papers">{t("candidate.sort_papers")}</option>
+                <option value="citations">{t("candidate.sort_citations")}</option>
+                <option value="hIndex">{t("candidate.sort_hindex")}</option>
+                <option value="latest">{t("candidate.sort_latest")}</option>
+              </select>
+            </label>
+            {(group !== "all" || institutionQuery || topicQuery || onlyOrcid || sortKey !== "recommended") && (
+              <Button variant="ghost" size="sm" onClick={clearFilters}>{t("candidate.clear_filters")}</Button>
+            )}
+            <span className="ml-auto text-xs text-muted-foreground">
+              {t("candidate.filtered_count").replace("{visible}", String(filteredCandidates.length)).replace("{total}", String(candidates.length))}
+            </span>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <label className="flex items-center gap-2 text-muted-foreground">
-            <input type="checkbox" checked={onlyOrcid} onChange={(event) => setOnlyOrcid(event.target.checked)} />
-            {t("candidate.only_orcid")}
-          </label>
-          <label className="flex items-center gap-2 text-muted-foreground">
-            <span>{t("candidate.sort_label")}</span>
-            <select value={sortKey} onChange={(event) => setSortKey(event.target.value as CandidateSortKey)} className="h-9 rounded-md border bg-background px-2 text-sm text-foreground">
-              <option value="recommended">{t("candidate.sort_recommended")}</option>
-              <option value="papers">{t("candidate.sort_papers")}</option>
-              <option value="citations">{t("candidate.sort_citations")}</option>
-              <option value="hIndex">{t("candidate.sort_hindex")}</option>
-              <option value="latest">{t("candidate.sort_latest")}</option>
-            </select>
-          </label>
-          {(group !== "all" || institutionQuery || topicQuery || onlyOrcid || sortKey !== "recommended") && (
-            <Button variant="ghost" size="sm" onClick={clearFilters}>{t("candidate.clear_filters")}</Button>
-          )}
-          <span className="ml-auto text-xs text-muted-foreground">
-            {t("candidate.filtered_count").replace("{visible}", String(filteredCandidates.length)).replace("{total}", String(candidates.length))}
-          </span>
-        </div>
-      </div>
+      )}
       {filteredCandidates.length === 0 && (
         <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
           <p>{t("candidate.no_filtered")}</p>
@@ -320,6 +323,7 @@ export default function App() {
   // 搜索状态
   const [query, setQuery] = useState("")
   const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [candidateRevision, setCandidateRevision] = useState(0)
   const [profile, setProfile] = useState<ScholarProfile | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -481,7 +485,21 @@ export default function App() {
     const onProfile = (event: MessageEvent) => {
       try {
         const next = JSON.parse(event.data) as { version?: number; status?: string }
-        if ((next.version ?? 0) <= currentVersion || next.status !== "ready") return
+        const nextVersion = next.version ?? 0
+        if (nextVersion < currentVersion) return
+        if (nextVersion === currentVersion) {
+          if (next.status && ["ready", "queued", "updating", "failed"].includes(next.status)) {
+            setProfile((current) => current?.scholarId === scholarId
+              ? {
+                  ...current,
+                  refreshStatus: next.status as ScholarProfile["refreshStatus"],
+                }
+              : current
+            )
+          }
+          return
+        }
+        if (next.status !== "ready") return
         void getProfile(profile.authorId, { signal: controller.signal }).then((latest) => {
           setProfile(latest)
           setLiveUpdateMessage(t("realtime.updated"))
@@ -500,6 +518,23 @@ export default function App() {
       eventSource.close()
     }
   }, [profile?.authorId, profile?.profileVersion, profile?.scholarId, reportError, t, user])
+
+  const handleRefreshProfile = useCallback(async () => {
+    if (!profile || !user) return
+    try {
+      const result = await refreshProfile(profile.authorId)
+      setProfile((current) => current?.authorId === profile.authorId
+        ? { ...current, refreshStatus: result.status }
+        : current
+      )
+    } catch (reason: unknown) {
+      if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
+      reportError(
+        reason instanceof Error ? reason.message : t("profile.refresh_failed"),
+        reason instanceof ApiError ? reason.kind : "worker",
+      )
+    }
+  }, [profile, refreshUser, reportError, t, user])
 
   const handleToggleFavorite = useCallback(async () => {
     if (!profile) return
@@ -545,6 +580,7 @@ export default function App() {
         setNoResults(true)
       } else {
         setCandidates(results)
+        setCandidateRevision((value) => value + 1)
       }
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === "AbortError") return
@@ -886,7 +922,13 @@ export default function App() {
 
       {/* 候选人 */}
       {candidates.length > 0 && (
-        <CandidateList candidates={candidates} onSelect={handleCandidateSelect} loading={loading} t={t} />
+        <CandidateList
+          key={candidateRevision}
+          candidates={candidates}
+          onSelect={handleCandidateSelect}
+          loading={loading}
+          t={t}
+        />
       )}
 
       {noResults && !loading && !error && (
@@ -905,6 +947,7 @@ export default function App() {
           favorite={Boolean(user) && favorite}
           onToggleFavorite={() => void handleToggleFavorite()}
           onCompare={() => setComparisonOpen(true)}
+          onRefresh={() => void handleRefreshProfile()}
           onEdgeClick={handleEdgeClick}
           onNodeClick={handleNodeClick}
           onFullscreenChange={setGraphFullscreen}

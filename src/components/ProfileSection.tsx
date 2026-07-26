@@ -7,6 +7,7 @@ import {
   Heart,
   Loader2,
   Quote,
+  RefreshCw,
 } from "lucide-react"
 import AllPapers from "@/components/AllPapers"
 import DataVerification from "@/components/DataVerification"
@@ -32,6 +33,7 @@ interface Props {
   favorite: boolean
   onToggleFavorite: () => void
   onCompare: () => void
+  onRefresh: () => void
   onEdgeClick?: (data: {
     sourceName: string
     targetName: string
@@ -95,6 +97,7 @@ export default function ProfileSection({
   favorite,
   onToggleFavorite,
   onCompare,
+  onRefresh,
   onEdgeClick,
   onNodeClick,
   onFullscreenChange,
@@ -176,6 +179,25 @@ export default function ProfileSection({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            disabled={analysisUpdating}
+            onClick={onRefresh}
+          >
+            {analysisUpdating
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <RefreshCw className="h-3.5 w-3.5" />
+            }
+            {t(
+              analysisUpdating
+                ? `profile.refresh_${profile.refreshStatus}`
+                : profile.refreshStatus === "failed"
+                  ? "profile.refresh_retry"
+                  : "profile.refresh_action",
+            )}
+          </Button>
           <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onCompare}>
             <ArrowLeftRight className="h-3.5 w-3.5" />
             {t("compare.action")}

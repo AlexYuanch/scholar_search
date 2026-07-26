@@ -331,6 +331,25 @@ def _decode_cursor(cursor: str | None) -> int:
         raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
 
+def _profile_status_event_key(event: dict) -> tuple[int, str, str]:
+    return (
+        int(event.get("version") or 0),
+        str(event.get("status") or ""),
+        str(event.get("updated_at") or ""),
+    )
+
+
+def _should_emit_profile_status(
+    event: dict,
+    requested_version: int,
+    last_event_key: tuple[int, str, str] | None,
+) -> bool:
+    event_key = _profile_status_event_key(event)
+    if event_key[0] < requested_version or event_key == last_event_key:
+        return False
+    return event_key[0] > requested_version or event_key[1] != "ready"
+
+
 def _run_graph_stream(state, ev_q, result):
     """Run graph.stream in a thread and push completed stage events."""
     seen = set()
@@ -756,6 +775,35 @@ def refresh_tracking(author_id: str, user: AuthUser = Depends(require_user)):
     }
 
 
+@app.post("/api/authors/{author_id:path}/profile/refresh")
+def refresh_profile(
+    author_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_user),
+):
+    """Queue a complete profile workflow while keeping the current profile available."""
+    cached = repository.get_profile(author_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="Scholar profile not found")
+    if cached.get("refresh_status") not in {"queued", "updating"}:
+        _consume_api_quota("profile", user, request)
+        _require_openalex_credential(user)
+    try:
+        job_id = repository.enqueue_refresh(
+            author_id,
+            reason="manual_profile",
+            requested_by_user_id=user.id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Scholar profile not found") from exc
+    latest = repository.get_profile(author_id) or cached
+    return {
+        "status": latest.get("refresh_status", "queued"),
+        "job_id": job_id,
+        "profile_version": int(cached.get("profile_version") or 0),
+    }
+
+
 @app.get("/api/authors/{author_id:path}/works")
 def author_works(
     author_id: str,
@@ -1088,13 +1136,14 @@ async def profile_events(
     scholar_key = str(scholar_id)
 
     async def generate():
-        latest_version = version
+        last_event_key: tuple[int, str, str] | None = None
         subscriber = broker.subscribe(scholar_key)
         try:
             current = await asyncio.to_thread(repository.get_profile_status, scholar_key)
-            if current and int(current["version"]) > latest_version:
-                latest_version = int(current["version"])
-                yield f"event: profile\ndata: {json.dumps(current, ensure_ascii=False)}\n\n"
+            if current:
+                last_event_key = _profile_status_event_key(current)
+                if _should_emit_profile_status(current, version, None):
+                    yield f"event: profile\ndata: {json.dumps(current, ensure_ascii=False)}\n\n"
 
             while not await request.is_disconnected():
                 try:
@@ -1102,10 +1151,9 @@ async def profile_events(
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
                     continue
-                event_version = int(event.get("version", 0))
-                if event_version <= latest_version:
+                if not _should_emit_profile_status(event, version, last_event_key):
                     continue
-                latest_version = event_version
+                last_event_key = _profile_status_event_key(event)
                 yield f"event: profile\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
             broker.unsubscribe(scholar_key, subscriber)

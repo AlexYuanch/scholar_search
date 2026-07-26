@@ -531,6 +531,80 @@ def test_tracking_refresh_deduplicates_active_jobs(monkeypatch, authenticated_cl
     assert len(repository.jobs) == 1
 
 
+def test_profile_refresh_requires_authentication():
+    response = TestClient(app).post("/api/authors/A1/profile/refresh")
+
+    assert response.status_code == 401
+
+
+def test_profile_refresh_requires_existing_profile(monkeypatch, authenticated_client):
+    import main
+
+    repository = InMemoryRepository()
+    _configure_openalex(repository)
+    monkeypatch.setattr(main, "repository", repository)
+
+    response = authenticated_client.post("/api/authors/A1/profile/refresh")
+
+    assert response.status_code == 404
+    assert repository.jobs == {}
+
+
+def test_profile_refresh_queues_complete_workflow_and_deduplicates(
+    monkeypatch,
+    authenticated_client,
+):
+    import main
+
+    author_id = "https://openalex.org/A1"
+    repository = InMemoryRepository()
+    _configure_openalex(repository)
+    saved = repository.publish_profile(
+        _state(author_id=author_id),
+        query_name="Ada Lovelace",
+    )
+    monkeypatch.setattr(main, "repository", repository)
+    encoded_author_id = quote(author_id, safe="")
+
+    first = authenticated_client.post(
+        f"/api/authors/{encoded_author_id}/profile/refresh",
+    )
+    second = authenticated_client.post(
+        f"/api/authors/{encoded_author_id}/profile/refresh",
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == {
+        "status": "queued",
+        "job_id": second.json()["job_id"],
+        "profile_version": saved["profile_version"],
+    }
+    assert len(repository.jobs) == 1
+    assert next(iter(repository.jobs.values()))["reason"] == "manual_profile"
+
+
+def test_profile_status_events_emit_same_version_task_changes():
+    import main
+
+    ready = {"version": 3, "status": "ready", "updated_at": "2026-07-27T10:00:00Z"}
+    queued = {"version": 3, "status": "queued", "updated_at": "2026-07-27T10:01:00Z"}
+    updating = {"version": 3, "status": "updating", "updated_at": "2026-07-27T10:02:00Z"}
+
+    assert main._should_emit_profile_status(ready, 3, None) is False
+    assert main._should_emit_profile_status(queued, 3, main._profile_status_event_key(ready)) is True
+    assert main._should_emit_profile_status(
+        updating,
+        3,
+        main._profile_status_event_key(queued),
+    ) is True
+    assert main._should_emit_profile_status(
+        updating,
+        3,
+        main._profile_status_event_key(updating),
+    ) is False
+
+
 def test_profile_stream_reports_workflow_error(monkeypatch, authenticated_client):
     import main
 
