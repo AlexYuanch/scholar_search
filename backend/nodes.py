@@ -1285,7 +1285,19 @@ def _count_only_trajectory_text(value: str) -> bool:
         return False
     return bool(
         re.search(r"从\s*\d+\s*篇.*(?:到|至|增加|下降)", text)
+        or re.search(
+            r"(?:论文|文章)?(?:数|数量|占比|份额)?(?:由|从)\s*"
+            r"\d+(?:\.\d+)?\s*(?:篇|%)?.{0,12}"
+            r"(?:到|至|增(?:长|加)?至|升至|降至|下降至)\s*"
+            r"\d+(?:\.\d+)?\s*(?:篇|%)?",
+            text,
+        )
         or re.search(r"from\s+\d+\s+(?:papers?|works?).*to\s+\d+", text)
+        or re.search(
+            r"(?:papers?|works?).{0,20}(?:increased|grew|rose|declined|fell)"
+            r"\s+from\s+\d+(?:\.\d+)?(?:%)?\s+to\s+\d+(?:\.\d+)?(?:%)?",
+            text,
+        )
         or re.search(r"\d+\s*(?:→|->)\s*\d+", text)
     )
 

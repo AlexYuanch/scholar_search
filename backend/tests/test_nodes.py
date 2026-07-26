@@ -644,6 +644,32 @@ def test_trajectory_validator_requires_real_evidence_and_rejects_count_restateme
     assert "count_only_trajectory" in issues
 
 
+def test_trajectory_validator_rejects_count_restatement_with_chinese_growth_wording():
+    from llm import TrajectoryAgentOutput
+
+    output = TrajectoryAgentOutput(
+        summary_zh=(
+            "关键词查询翻译与RDF语义搜索论文数由3篇增长至10篇，呈上升趋势；"
+            "医学视觉问答方向从6篇降至2篇。"
+        ),
+        summary_en=(
+            "Keyword translation papers increased from 3 to 10, while medical "
+            "visual question answering papers declined from 6 to 2."
+        ),
+        rising=["Semantic Search"],
+        falling=["Medical Visual Question Answering"],
+        confidence="medium",
+    )
+
+    issues = _validate_trajectory_agent_output(
+        output,
+        valid_topics={"Semantic Search", "Medical Visual Question Answering"},
+        valid_evidence_ids=set(),
+    )
+
+    assert "count_only_trajectory" in issues
+
+
 def test_trajectory_agent_publishes_content_insight_with_real_papers(monkeypatch):
     import llm
 
