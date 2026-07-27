@@ -927,6 +927,181 @@ def _recommendation(
     }
 
 
+def _recommendation_topic_text(row: dict, lang: str) -> str:
+    topics = row.get("shared_topics") or []
+    if not topics:
+        return "相近研究方向" if lang == "zh" else "related research topics"
+    if lang == "zh":
+        return "、".join(topics)
+    if len(topics) == 1:
+        return topics[0]
+    return " and ".join(topics)
+
+
+def _recommendation_identity(row: dict, lang: str) -> str:
+    name = row["scholar"].get("name") or row["author_id"]
+    institution = (_primary_affiliation(row["scholar"]) or {}).get("name")
+    if not institution:
+        return name
+    return (
+        f"{name}（{institution}）"
+        if lang == "zh"
+        else f"{name} at {institution}"
+    )
+
+
+def _recommendation_focus_name(row: dict, lang: str) -> str:
+    return (
+        row.get("focus_name")
+        or ("当前学者" if lang == "zh" else "the current scholar")
+    )
+
+
+def _reference_explanation(
+    row: dict,
+    continuity: float | None,
+    impact: float | None,
+    downstream: float,
+    recent_works: int,
+) -> dict:
+    identity_zh = _recommendation_identity(row, "zh")
+    identity_en = _recommendation_identity(row, "en")
+    focus_zh = _recommendation_focus_name(row, "zh")
+    focus_en = _recommendation_focus_name(row, "en")
+    topics_zh = _recommendation_topic_text(row, "zh")
+    topics_en = _recommendation_topic_text(row, "en")
+    if downstream >= 0.25:
+        detail_zh = "被后续研究接续的成果相对更多"
+        detail_en = "a larger share of the covered results has been taken up by later work"
+        use_zh = "适合用来追踪哪些成果正在带动后续研究"
+        use_en = "making this scholar useful for tracking which results are shaping follow-on work"
+    elif row["topic_overlap"] >= 0.25:
+        detail_zh = "双方的研究交集更集中"
+        detail_en = "their shared research focus is comparatively concentrated"
+        use_zh = "适合用来快速了解最接近的研究路径"
+        use_en = "making this scholar useful for quickly understanding the closest related research path"
+    elif continuity is not None and continuity >= 68:
+        detail_zh = "相关研究保持了较长时间的连续性"
+        detail_en = "the related work has remained consistent over a longer period"
+        use_zh = "适合用来观察这些方向如何逐步形成连续成果"
+        use_en = "making this scholar useful for seeing how those topics develop into a sustained line of work"
+    elif downstream >= 0.15:
+        detail_zh = "已有一部分成果被后续研究继续采用"
+        detail_en = "some covered results have been taken up by later work"
+        use_zh = "适合留意其后续研究如何展开"
+        use_en = "making this scholar useful for seeing how the follow-on work develops"
+    elif recent_works >= 300:
+        detail_zh = "近四年的公开论文活动尤其集中"
+        detail_en = "publication activity has been especially concentrated over the past four years"
+        use_zh = "适合及时查看这些方向上的新成果"
+        use_en = "making this scholar useful for keeping up with new results in these topics"
+    elif downstream >= 0.12:
+        detail_zh = "已有一部分成果被后续研究继续采用"
+        detail_en = "some covered results have been taken up by later work"
+        use_zh = "适合留意其后续研究如何展开"
+        use_en = "making this scholar useful for seeing how the follow-on work develops"
+    elif impact is not None and impact >= 70 and downstream >= 0.12:
+        detail_zh = "已有多项成果被后续研究接续"
+        detail_en = "several results have been taken up by later work"
+        use_zh = "适合用来追踪哪些成果正在带动后续研究"
+        use_en = "making this scholar useful for tracking which results are shaping follow-on work"
+    elif row["recent_overlap"] >= 0.25:
+        detail_zh = "近四年的研究重点也较接近"
+        detail_en = "their research focus has also been close over the past four years"
+        use_zh = "适合持续关注最新论文和方向变化"
+        use_en = "making this scholar worth following for new papers and shifts in direction"
+    else:
+        detail_zh = "研究主题存在明确交集"
+        detail_en = "there is a clear overlap in research topics"
+        use_zh = "可以作为了解相近研究路径的参照"
+        use_en = "making this scholar a useful reference for a related research path"
+    return _i18n(
+        f"{identity_zh} 和 {focus_zh} 都在关注 {topics_zh}。{detail_zh}，{use_zh}。",
+        f"{identity_en} and {focus_en} both work on {topics_en}. "
+        f"{detail_en.capitalize()}, {use_en}.",
+    )
+
+
+def _peer_explanation(row: dict) -> dict:
+    identity_zh = _recommendation_identity(row, "zh")
+    identity_en = _recommendation_identity(row, "en")
+    focus_zh = _recommendation_focus_name(row, "zh")
+    focus_en = _recommendation_focus_name(row, "en")
+    topics_zh = _recommendation_topic_text(row, "zh")
+    topics_en = _recommendation_topic_text(row, "en")
+    if row["recent_overlap"] >= 0.3:
+        detail_zh = "近期研究重点接近，值得留意对方接下来发表什么"
+        detail_en = "their recent focus is especially close, so upcoming papers are worth watching"
+    elif row["temporal"] >= 0.5:
+        detail_zh = "双方活跃时间高度重合，属于同一阶段持续推进相近问题的同行"
+        detail_en = "their active periods overlap strongly, placing them among peers advancing related questions at the same time"
+    else:
+        detail_zh = "研究方向和发表时间都有可确认的交集，适合持续跟踪"
+        detail_en = "their topics and publication periods overlap, making this scholar a relevant peer to follow"
+    return _i18n(
+        f"{identity_zh} 与 {focus_zh} 都在研究 {topics_zh}。{detail_zh}。",
+        f"{identity_en} and {focus_en} both study {topics_en}. {detail_en.capitalize()}.",
+    )
+
+
+def _collaborator_explanation(row: dict) -> dict:
+    identity_zh = _recommendation_identity(row, "zh")
+    identity_en = _recommendation_identity(row, "en")
+    focus_zh = _recommendation_focus_name(row, "zh")
+    focus_en = _recommendation_focus_name(row, "en")
+    topics_zh = _recommendation_topic_text(row, "zh")
+    topics_en = _recommendation_topic_text(row, "en")
+    shared_count = len(row["shared_collaborators"])
+    if row["direct_count"] == 0:
+        relation_zh = (
+            f"目前还没有共同论文，但通过 {shared_count} 位共同合作者可以找到联系路径"
+        )
+        relation_en = (
+            f"they have no shared paper yet, but {shared_count} mutual "
+            f"collaborator{'s' if shared_count != 1 else ''} provide a connection path"
+        )
+    else:
+        relation_zh = (
+            f"目前只有 1 篇共同论文，尚未形成稳定合作；另有 {shared_count} 位共同合作者"
+        )
+        relation_en = (
+            f"they have only one shared paper and no established collaboration yet; "
+            f"{shared_count} mutual collaborator{'s' if shared_count != 1 else ''} provide additional links"
+        )
+    return _i18n(
+        f"{identity_zh} 与 {focus_zh} 在 {topics_zh} 上有交集，研究能力侧重又有所不同。"
+        f"{relation_zh}，可以进一步判断是否值得合作。",
+        f"{identity_en} overlaps with {focus_en} on {topics_en}, while bringing a different "
+        f"capability mix. {relation_en.capitalize()}, providing a concrete lead to explore.",
+    )
+
+
+def _competitor_explanation(row: dict) -> dict:
+    identity_zh = _recommendation_identity(row, "zh")
+    identity_en = _recommendation_identity(row, "en")
+    focus_zh = _recommendation_focus_name(row, "zh")
+    focus_en = _recommendation_focus_name(row, "en")
+    topics_zh = _recommendation_topic_text(row, "zh")
+    topics_en = _recommendation_topic_text(row, "en")
+    relation_zh = (
+        "尚无直接合作"
+        if row["direct_count"] == 0
+        else "只有少量直接合作"
+    )
+    relation_en = (
+        "there is no direct collaboration"
+        if row["direct_count"] == 0
+        else "direct collaboration is limited"
+    )
+    return _i18n(
+        f"{identity_zh} 与 {focus_zh} 近期都在推进 {topics_zh}，研究问题、方法和发表时间均出现重合，且{relation_zh}。"
+        "建议留意项目边界；这只是潜在研究重合线索，不是竞争关系认定。",
+        f"{identity_en} and {focus_en} are both working on {topics_en}; the research questions, methods, and publication "
+        f"timing overlap, while {relation_en}. This is only a potential signal to watch project boundaries, "
+        "not a finding of actual competition.",
+    )
+
+
 def _recommendations(
     dataset: dict,
     context: dict,
@@ -948,9 +1123,10 @@ def _recommendations(
             continue
         if field_candidate_ids and author_id not in field_candidate_ids:
             continue
+        candidate_topic_profile = context["topic_profiles"].get(author_id, Counter())
         topic_overlap = _weighted_jaccard(
             focus_topics,
-            context["topic_profiles"].get(author_id, Counter()),
+            candidate_topic_profile,
         )
         recent_overlap = _weighted_jaccard(
             focus_recent,
@@ -974,9 +1150,21 @@ def _recommendations(
         candidate_categories = set(context["category_profiles"].get(author_id, Counter()))
         category_overlap = _jaccard(focus_categories, candidate_categories)
         complementarity = 1 - category_overlap if focus_categories and candidate_categories else 0
+        topic_display = {}
+        for work_id in scholar["work_ids"]:
+            for topic_name in _topic_names(dataset["works"].get(work_id) or {}):
+                topic_display.setdefault(_normalized_topic(topic_name), topic_name)
+        shared_topic_keys = sorted(
+            set(focus_topics) & set(candidate_topic_profile),
+            key=lambda topic: (
+                -min(focus_topics[topic], candidate_topic_profile[topic]),
+                topic,
+            ),
+        )[:2]
         candidates.append({
             "author_id": author_id,
             "scholar": scholar,
+            "focus_name": focus.get("name"),
             "analysis": analyses[author_id],
             "topic_overlap": topic_overlap,
             "recent_overlap": recent_overlap,
@@ -987,6 +1175,10 @@ def _recommendations(
             "method_similarity": method_similarity,
             "problem_similarity": problem_similarity,
             "complementarity": complementarity,
+            "shared_topics": [
+                topic_display.get(topic, topic)
+                for topic in shared_topic_keys
+            ],
             "institution_relationship": (
                 "same"
                 if focus_institution
@@ -1037,11 +1229,23 @@ def _recommendations(
                 row["scholar"],
                 score,
                 confidence,
-                _i18n(
-                    "在当前领域样本中，其持续贡献、代表作和后续扩散可作为研究参照，不表示“最好学者”。",
-                    "Within the current field sample, sustained contributions, representative works, and follow-on diffusion make this scholar a useful reference—not an absolute best scholar.",
+                _reference_explanation(
+                    row,
+                    continuity,
+                    impact,
+                    downstream,
+                    recent_works,
                 ),
                 [
+                    _evidence(
+                        "shared_topics",
+                        "共同研究方向",
+                        "Shared research topics",
+                        "、".join(row["shared_topics"]) or _i18n(
+                            "方向名称不足",
+                            "Topic names unavailable",
+                        ),
+                    ),
                     _evidence("field_overlap", "领域方向重合度", "Field-topic overlap", round(row["topic_overlap"], 3)),
                     _evidence("continuity", "研究延续性指数", "Continuity index", continuity),
                     _evidence("impact", "归一化影响力指数", "Normalized impact index", impact),
@@ -1067,11 +1271,17 @@ def _recommendations(
                 row["scholar"],
                 score,
                 confidence,
-                _i18n(
-                    "研究方向与发表时间窗口存在可核验重合，适合作为重点同行持续跟踪。",
-                    "Verifiable overlap in research topics and publication windows makes this scholar a relevant peer to monitor.",
-                ),
+                _peer_explanation(row),
                 [
+                    _evidence(
+                        "shared_topics",
+                        "共同研究方向",
+                        "Shared research topics",
+                        "、".join(row["shared_topics"]) or _i18n(
+                            "方向名称不足",
+                            "Topic names unavailable",
+                        ),
+                    ),
                     _evidence("topic_overlap", "研究方向重合度", "Research-topic overlap", round(row["topic_overlap"], 3)),
                     _evidence("temporal_overlap", "活跃年份重合度", "Active-year overlap", round(row["temporal"], 3)),
                     _evidence("recent_overlap", "近期论文方向重合度", "Recent-paper topic overlap", round(row["recent_overlap"], 3)),
@@ -1101,11 +1311,17 @@ def _recommendations(
                 row["scholar"],
                 score,
                 confidence,
-                _i18n(
-                    "尚未形成稳定直接合作，但主题交集、能力互补与共同合作者路径同时提供了可核验线索。",
-                    "No stable direct collaboration exists yet, while topic overlap, capability complementarity, and a shared-collaborator path provide verifiable signals.",
-                ),
+                _collaborator_explanation(row),
                 [
+                    _evidence(
+                        "shared_topics",
+                        "共同研究方向",
+                        "Shared research topics",
+                        "、".join(row["shared_topics"]) or _i18n(
+                            "方向名称不足",
+                            "Topic names unavailable",
+                        ),
+                    ),
                     _evidence("topic_overlap", "主题交集", "Topic overlap", round(row["topic_overlap"], 3)),
                     _evidence("capability_complementarity", "方法/系统/数据类型互补度", "Method/system/data type complementarity", round(row["complementarity"], 3)),
                     _evidence("direct_collaboration", "直接合作论文", "Directly coauthored papers", row["direct_count"]),
@@ -1113,8 +1329,8 @@ def _recommendations(
                     _evidence("temporal_overlap", "活跃时间重合度", "Active-period overlap", round(row["temporal"], 3)),
                 ],
                 [_i18n(
-                    "稳定合作者属于合作关系页；一次合作若缺少互补性或共同合作者路径，也不进入合作机会。",
-                    "Established collaborators belong in the collaboration view; one-off collaboration without complementarity or a shared-collaborator path is also excluded.",
+                    "稳定合作者属于合作关系页；一次合作若缺少互补性或共同合作者路径，也不作为新的合作线索。",
+                    "Established collaborators belong in the collaboration view; one-off collaboration without complementarity or a shared-collaborator path is not treated as a new collaboration lead.",
                 )],
             ))
 
@@ -1144,11 +1360,17 @@ def _recommendations(
             row["scholar"],
             score,
             row["analysis"]["confidence"],
-            _i18n(
-                "潜在项目竞争者：近期问题、方法路线与发表窗口存在重合，且直接合作较少；这不是竞争事实认定。",
-                "Potential project competitor: recent problems, method routes, and publication windows overlap while direct collaboration is limited; this is not a finding of actual competition.",
-            ),
+            _competitor_explanation(row),
             [
+                _evidence(
+                    "shared_topics",
+                    "共同研究方向",
+                    "Shared research topics",
+                    "、".join(row["shared_topics"]) or _i18n(
+                        "方向名称不足",
+                        "Topic names unavailable",
+                    ),
+                ),
                 _evidence("recent_topic_overlap", "近期研究问题方向重合度", "Recent research-problem topic overlap", round(row["recent_overlap"], 3)),
                 _evidence("problem_similarity", "摘要问题表述相似度", "Abstract-problem similarity", round(row["problem_similarity"], 3)),
                 _evidence("method_similarity", "摘要方法路线相似度", "Abstract-method similarity", round(row["method_similarity"], 3)),

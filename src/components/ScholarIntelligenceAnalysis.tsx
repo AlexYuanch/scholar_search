@@ -4,10 +4,10 @@ import {
   ArrowLeftRight,
   Building2,
   CheckCircle2,
+  Compass,
   Eye,
   Heart,
   Loader2,
-  Radar,
   RefreshCw,
   ThumbsDown,
   ThumbsUp,
@@ -38,7 +38,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator"
 
 type Translate = (key: string) => string
-type RadarFilter = "all" | IntelligenceRecommendation["category"]
+type DiscoveryFilter = "all" | IntelligenceRecommendation["category"]
 type InstitutionKind = "active" | "opportunity"
 
 interface Props {
@@ -58,44 +58,45 @@ const CATEGORY_ORDER: IntelligenceRecommendation["category"][] = [
 ]
 
 const CATEGORY_LABELS: Record<IntelligenceRecommendation["category"], LocalizedText> = {
-  north_star: { zh: "参考", en: "Reference" },
-  peer: { zh: "同行", en: "Peer" },
-  potential_collaborator: { zh: "合作机会", en: "Collaboration" },
-  potential_competitor: { zh: "潜在竞争", en: "Potential overlap" },
+  north_star: { zh: "长期关注", en: "Long-term watch" },
+  peer: { zh: "相近同行", en: "Related peer" },
+  potential_collaborator: { zh: "合作线索", en: "Collaboration lead" },
+  potential_competitor: { zh: "研究重合", en: "Research overlap" },
 }
 
-const FILTER_LABELS: Record<RadarFilter, LocalizedText> = {
-  all: { zh: "综合", en: "All" },
+const FILTER_LABELS: Record<DiscoveryFilter, LocalizedText> = {
+  all: { zh: "全部", en: "All" },
   ...CATEGORY_LABELS,
 }
 
 const FACT_CODES: Record<IntelligenceRecommendation["category"], string[]> = {
-  north_star: ["field_overlap", "recent_activity", "downstream"],
-  peer: ["topic_overlap", "temporal_overlap", "recent_overlap"],
+  north_star: ["shared_topics", "recent_activity", "downstream"],
+  peer: ["shared_topics", "temporal_overlap", "recent_overlap"],
   potential_collaborator: [
+    "shared_topics",
     "direct_collaboration",
     "shared_collaborators",
-    "capability_complementarity",
   ],
   potential_competitor: [
+    "shared_topics",
     "problem_similarity",
     "method_similarity",
-    "direct_collaboration",
   ],
 }
 
 const FACT_LABELS: Record<string, LocalizedText> = {
-  field_overlap: { zh: "方向重合", en: "Topic overlap" },
-  recent_activity: { zh: "近四年论文", en: "Recent works" },
-  downstream: { zh: "后续扩散", en: "Follow-on diffusion" },
-  topic_overlap: { zh: "方向重合", en: "Topic overlap" },
-  temporal_overlap: { zh: "活跃时间重合", en: "Active-period overlap" },
-  recent_overlap: { zh: "近期主题重合", en: "Recent-topic overlap" },
-  direct_collaboration: { zh: "直接合作", en: "Direct collaboration" },
+  shared_topics: { zh: "共同方向", en: "Shared topics" },
+  field_overlap: { zh: "研究交集", en: "Research overlap" },
+  recent_activity: { zh: "近四年收录", en: "Recent records" },
+  downstream: { zh: "有后续研究跟进", en: "Followed by later work" },
+  topic_overlap: { zh: "研究交集", en: "Research overlap" },
+  temporal_overlap: { zh: "活跃时期相近", en: "Similar active period" },
+  recent_overlap: { zh: "近期方向相近", en: "Similar recent focus" },
+  direct_collaboration: { zh: "合作论文", en: "Shared papers" },
   shared_collaborators: { zh: "共同合作者", en: "Shared collaborators" },
-  capability_complementarity: { zh: "能力互补", en: "Capability complementarity" },
-  problem_similarity: { zh: "问题重合", en: "Problem overlap" },
-  method_similarity: { zh: "方法重合", en: "Method overlap" },
+  capability_complementarity: { zh: "研究能力互补", en: "Complementary capabilities" },
+  problem_similarity: { zh: "研究问题相近", en: "Similar research questions" },
+  method_similarity: { zh: "方法路线相近", en: "Similar methods" },
 }
 
 function localize(text: LocalizedText | undefined, lang: Lang) {
@@ -125,13 +126,13 @@ function formatEvidence(value: IntelligenceEvidence["value"], lang: Lang) {
 
 function statusLabel(status: ScholarIntelligence["discovery"]["status"], lang: Lang) {
   const labels: Record<ScholarIntelligence["discovery"]["status"], LocalizedText> = {
-    never: { zh: "等待发现", en: "Not started" },
-    queued: { zh: "等待处理", en: "Queued" },
-    discovering: { zh: "发现候选中", en: "Discovering" },
-    enriching: { zh: "补全图谱中", en: "Enriching graphs" },
-    ready: { zh: "样本就绪", en: "Sample ready" },
-    partial: { zh: "部分完成", en: "Partially complete" },
-    failed: { zh: "发现失败", en: "Discovery failed" },
+    never: { zh: "尚未开始", en: "Not started" },
+    queued: { zh: "等待分析", en: "Waiting" },
+    discovering: { zh: "寻找相关学者", en: "Finding scholars" },
+    enriching: { zh: "补充资料中", en: "Adding evidence" },
+    ready: { zh: "分析完成", en: "Complete" },
+    partial: { zh: "已有部分结果", en: "Partial results" },
+    failed: { zh: "分析失败", en: "Analysis failed" },
   }
   return localize(labels[status], lang)
 }
@@ -142,7 +143,14 @@ function recommendationFacts(item: IntelligenceRecommendation, lang: Lang) {
     .map((code) => {
       const row = evidence.get(code)
       if (!row) return null
-      return `${localize(FACT_LABELS[code], lang)} ${formatEvidence(row.value, lang)}`
+      const value = (
+        code === "recent_activity"
+        && typeof row.value === "number"
+        && row.value >= 300
+      )
+        ? "≥300"
+        : formatEvidence(row.value, lang)
+      return `${localize(FACT_LABELS[code], lang)} ${value}`
     })
     .filter((row): row is string => Boolean(row))
     .slice(0, 3)
@@ -270,7 +278,7 @@ function ScholarCard({
   lang,
 }: {
   row: MergedRecommendation
-  filter: RadarFilter
+  filter: DiscoveryFilter
   tracked: boolean
   trackingBusy: boolean
   feedback: Record<string, "helpful" | "inaccurate">
@@ -360,7 +368,7 @@ function ScholarCard({
         </div>
         <details className="group border-t pt-3">
           <summary className="cursor-pointer list-none text-xs font-medium text-primary hover:underline">
-            {lang === "zh" ? "查看依据" : "View evidence"}
+            {lang === "zh" ? "为什么推荐" : "Why this suggestion"}
           </summary>
           <div className="mt-3 space-y-3">
             <EvidenceList evidence={selected.evidence} lang={lang} />
@@ -381,6 +389,39 @@ function ScholarCard({
       </CardContent>
     </Card>
   )
+}
+
+function institutionSummary(
+  institution: IntelligenceInstitution,
+  lang: Lang,
+) {
+  const topicNames = institution.topics.slice(0, 2).map((topic) => topic.name)
+  const topicText = topicNames.length
+    ? (lang === "zh" ? topicNames.join("、") : topicNames.join(" and "))
+    : (lang === "zh" ? "相关方向" : "related topics")
+  if (institution.is_focus_institution) {
+    return lang === "zh"
+      ? `${institution.name} 是当前学者的主要关联机构，下面的数据用于和其他机构核对研究方向与合作联系。`
+      : `${institution.name} is the current scholar's primary affiliation. The figures below provide a baseline for comparing topics and collaboration links.`
+  }
+  if (institution.analyzed_member_count === 0) {
+    return lang === "zh"
+      ? `${institution.name} 近四年在 ${topicText} 上有持续论文活动，但还没有补全到具体相关学者，先作为后续了解的线索。`
+      : `${institution.name} has recent publication activity in ${topicText}, but no relevant scholar has been fully analyzed yet. Treat it as a lead for further review.`
+  }
+  if (institution.current_collaboration_count === 0) {
+    return lang === "zh"
+      ? `${institution.name} 近四年在 ${topicText} 上较活跃，目前未发现与当前学者的合作论文；已找到 ${institution.analyzed_member_count} 位相关学者可进一步查看。`
+      : `${institution.name} has been active in ${topicText} over the past four years. No shared paper with the current scholar was found; ${institution.analyzed_member_count} relevant scholar${institution.analyzed_member_count === 1 ? "" : "s"} can be reviewed next.`
+  }
+  if (institution.current_collaboration_count === 1) {
+    return lang === "zh"
+      ? `${institution.name} 在 ${topicText} 上有近期活动，并已出现 1 篇合作论文；可以从这条已有联系继续了解相关学者。`
+      : `${institution.name} has recent activity in ${topicText} and one shared paper with the current scholar, providing an existing link for further exploration.`
+  }
+  return lang === "zh"
+    ? `${institution.name} 在 ${topicText} 上有近期活动，也已有 ${institution.current_collaboration_count} 篇合作论文，更适合从现有合作关系继续了解。`
+    : `${institution.name} has recent activity in ${topicText} and ${institution.current_collaboration_count} shared papers with the current scholar, so existing collaborations are the clearest starting point.`
 }
 
 function InstitutionCard({
@@ -424,27 +465,30 @@ function InstitutionCard({
             {kinds.map((kind) => (
               <Badge key={kind} variant="secondary" className="font-normal">
                 {kind === "active"
-                  ? (lang === "zh" ? "领域活跃" : "Active")
-                  : (lang === "zh" ? "合作机会" : "Collaboration")}
+                  ? (lang === "zh" ? "近期活跃" : "Recently active")
+                  : (lang === "zh" ? "合作线索" : "Collaboration lead")}
               </Badge>
             ))}
           </div>
         </div>
+        <p className="text-sm leading-relaxed">
+          {institutionSummary(institution, lang)}
+        </p>
         <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "历史论文" : "Historical"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "相关论文" : "Related works"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.historical_works}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "近四年" : "Recent"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "近四年收录" : "Recent records"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.recent_works}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "当前合作" : "Collaboration"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "合作论文" : "Shared papers"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.current_collaboration_count}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "已分析作者" : "Analyzed"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "已找到学者" : "Scholars found"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.analyzed_member_count}</p>
           </div>
         </div>
@@ -465,12 +509,12 @@ function InstitutionCard({
             {comparing
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
               : <ArrowLeftRight className="h-3.5 w-3.5" />}
-            {lang === "zh" ? "机构对比" : "Compare institutions"}
+            {lang === "zh" ? "与我的机构比较" : "Compare with current institution"}
           </Button>
         )}
         <details className="group border-t pt-3">
           <summary className="cursor-pointer list-none text-xs font-medium text-primary hover:underline">
-            {lang === "zh" ? "数据边界" : "Data boundary"}
+            {lang === "zh" ? "这条信息怎么来的" : "How this was derived"}
           </summary>
           <div className="mt-3 space-y-3">
             <p className="text-xs leading-relaxed text-muted-foreground">
@@ -559,7 +603,7 @@ export default function ScholarIntelligenceAnalysis({
   const [intelligence, setIntelligence] = useState<ScholarIntelligence | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
-  const [filter, setFilter] = useState<RadarFilter>("all")
+  const [filter, setFilter] = useState<DiscoveryFilter>("all")
   const [institutionFilter, setInstitutionFilter] = useState<"all" | InstitutionKind>("all")
   const [actionBusy, setActionBusy] = useState(false)
   const [tracked, setTracked] = useState<Set<string>>(new Set())
@@ -583,7 +627,7 @@ export default function ScholarIntelligenceAnalysis({
         setError(
           reason instanceof ApiError
             ? reason.message
-            : (lang === "zh" ? "领域雷达加载失败" : "Could not load field radar"),
+            : (lang === "zh" ? "学术发现加载失败" : "Could not load academic discovery"),
         )
       }
     } finally {
@@ -755,7 +799,7 @@ export default function ScholarIntelligenceAnalysis({
       <Card>
         <CardContent className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
-          {lang === "zh" ? "正在准备领域雷达…" : "Preparing field radar…"}
+          {lang === "zh" ? "正在整理值得关注的学者…" : "Preparing academic discovery…"}
         </CardContent>
       </Card>
     )
@@ -767,7 +811,7 @@ export default function ScholarIntelligenceAnalysis({
         <CardContent className="space-y-4 p-6 text-sm">
           <p className="flex items-start gap-2 text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            {error || (lang === "zh" ? "领域雷达暂不可用" : "Field radar is unavailable")}
+            {error || (lang === "zh" ? "学术发现暂不可用" : "Academic discovery is unavailable")}
           </p>
           <Button size="sm" variant="outline" onClick={() => void load()}>
             <RefreshCw className="h-3.5 w-3.5" />
@@ -801,8 +845,8 @@ export default function ScholarIntelligenceAnalysis({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
-                <Radar className="h-4 w-4 text-primary" />
-                {lang === "zh" ? "领域样本" : "Field sample"}
+                <Compass className="h-4 w-4 text-primary" />
+                {lang === "zh" ? "分析进度" : "Analysis progress"}
               </CardTitle>
               <CardDescription className="mt-1">
                 {lang === "zh"
@@ -867,15 +911,15 @@ export default function ScholarIntelligenceAnalysis({
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h3 className="font-semibold">{lang === "zh" ? "学者对象" : "Scholars"}</h3>
+            <h3 className="font-semibold">{lang === "zh" ? "关注学者" : "Scholars to watch"}</h3>
             <p className="mt-1 text-xs text-muted-foreground">
               {lang === "zh"
-                ? "同一学者只显示一次；标签说明其可能承担的不同参照角色。"
-                : "Each scholar appears once; labels show different possible reference roles."}
+                ? "根据研究方向、活跃时间和合作关系整理；一个人可能同时符合多个关注理由。"
+                : "Organized by research topics, active periods, and collaboration links. One scholar may have more than one reason to watch."}
             </p>
           </div>
           <div className="flex max-w-full flex-wrap gap-1 rounded-lg border bg-muted/30 p-1">
-            {(Object.keys(FILTER_LABELS) as RadarFilter[]).map((key) => (
+            {(Object.keys(FILTER_LABELS) as DiscoveryFilter[]).map((key) => (
               <Button
                 key={key}
                 size="sm"
@@ -937,19 +981,19 @@ export default function ScholarIntelligenceAnalysis({
           <div>
             <h3 className="flex items-center gap-2 font-semibold">
               <Building2 className="h-4 w-4 text-primary" />
-              {lang === "zh" ? "机构机会" : "Institutions"}
+              {lang === "zh" ? "关注机构" : "Institutions to watch"}
             </h3>
             <p className="mt-1 text-xs text-muted-foreground">
               {lang === "zh"
-                ? "同一机构只显示一次；只描述主题活动与合作线索，不生成质量排名。"
-                : "Each institution appears once; activity and collaboration signals are shown without quality ranking."}
+                ? "看看哪些机构近期在这些方向上活跃，以及当前学者与它们有没有合作联系。"
+                : "See which institutions are active in these topics and whether they already have collaboration links with the current scholar."}
             </p>
           </div>
           <div className="flex flex-wrap gap-1 rounded-lg border bg-muted/30 p-1">
             {([
-              ["all", lang === "zh" ? "综合" : "All"],
-              ["active", lang === "zh" ? "领域活跃" : "Active"],
-              ["opportunity", lang === "zh" ? "合作机会" : "Collaboration"],
+              ["all", lang === "zh" ? "全部" : "All"],
+              ["active", lang === "zh" ? "近期活跃" : "Recently active"],
+              ["opportunity", lang === "zh" ? "合作线索" : "Collaboration leads"],
             ] as const).map(([key, label]) => (
               <Button
                 key={key}
@@ -1009,7 +1053,7 @@ export default function ScholarIntelligenceAnalysis({
 
       <details className="group rounded-lg border bg-muted/30">
         <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium">
-          {lang === "zh" ? "数据说明" : "Data notes"}
+          {lang === "zh" ? "结果怎么来的" : "How results are produced"}
         </summary>
         <div className="space-y-3 border-t px-4 py-4 text-xs leading-relaxed text-muted-foreground">
           <p>{localize(intelligence.methodology.score_source, lang)}</p>

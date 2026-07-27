@@ -449,6 +449,34 @@ def test_field_references_exclude_highly_cited_cross_field_namesake():
     )
 
 
+def test_recommendation_explanations_are_scholar_specific_and_name_shared_topics():
+    result = build_scholar_intelligence(_rich_repository(), FOCUS, limit=20)
+    recommendations = [
+        item
+        for rows in result["recommendations"].values()
+        for item in rows
+    ]
+
+    assert recommendations
+    explanations = []
+    for item in recommendations:
+        shared_topics = next(
+            evidence
+            for evidence in item["evidence"]
+            if evidence["code"] == "shared_topics"
+        )
+        assert item["name"] in item["explanation"]["zh"]
+        assert result["subject"]["name"] in item["explanation"]["zh"]
+        assert shared_topics["value"] in item["explanation"]["zh"]
+        explanations.append(item["explanation"]["zh"])
+
+    assert len(explanations) == len(set(explanations))
+    assert all(
+        "在当前领域样本中" not in explanation
+        for explanation in explanations
+    )
+
+
 def test_paper_volume_and_raw_citations_do_not_replace_quality_or_relevance():
     result = build_scholar_intelligence(_rich_repository(), FOCUS, limit=20)
     north = build_scholar_intelligence(_rich_repository(), NORTH)
