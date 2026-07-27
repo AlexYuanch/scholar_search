@@ -9,7 +9,6 @@ import {
   HelpCircle,
   Loader2,
   RefreshCw,
-  ShieldCheck,
   ThumbsDown,
   ThumbsUp,
   Users,
@@ -23,10 +22,12 @@ import {
 } from "@/api"
 import type {
   IntelligenceComparison,
+  IntelligenceConfidence,
   IntelligenceDimension,
   IntelligenceEvidence,
   IntelligenceRecommendation,
   IntelligenceTeam,
+  IntelligenceWork,
   LocalizedText,
   ScholarIntelligence,
   ScholarProfile,
@@ -65,25 +66,161 @@ function formatValue(value: IntelligenceEvidence["value"], lang: Lang) {
   return value
 }
 
-function confidenceClass(level: string) {
+function evidenceClass(level: string) {
   if (level === "high") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
   if (level === "medium") return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
   if (level === "low") return "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300"
   return "border-muted-foreground/20 bg-muted text-muted-foreground"
 }
 
-function ConfidenceBadge({
+function evidenceLabel(confidence: IntelligenceConfidence, lang: Lang) {
+  const labels: Record<IntelligenceConfidence["level"], LocalizedText> = {
+    high: { zh: "依据充分", en: "Strong evidence" },
+    medium: { zh: "依据一般", en: "Moderate evidence" },
+    low: { zh: "依据有限", en: "Limited evidence" },
+    insufficient: { zh: "依据不足", en: "Insufficient evidence" },
+  }
+  return localize(labels[confidence.level], lang)
+}
+
+function EvidenceBadge({
   confidence,
   lang,
 }: {
-  confidence: IntelligenceDimension["confidence"]
+  confidence: IntelligenceConfidence
   lang: Lang
 }) {
   return (
-    <Badge variant="outline" className={confidenceClass(confidence.level)}>
-      {lang === "zh" ? "置信度" : "Confidence"}: {localize(confidence.label, lang)}
+    <Badge variant="outline" className={evidenceClass(confidence.level)}>
+      {evidenceLabel(confidence, lang)}
     </Badge>
   )
+}
+
+const compactEvidence: Record<string, {
+  label: LocalizedText
+  kind: "percent" | "count"
+  unit?: LocalizedText
+}> = {
+  field_overlap: {
+    label: { zh: "方向重合", en: "Topic overlap" },
+    kind: "percent",
+  },
+  recent_activity: {
+    label: { zh: "近四年论文", en: "Recent papers" },
+    kind: "count",
+    unit: { zh: "篇", en: "" },
+  },
+  downstream: {
+    label: { zh: "后续扩散", en: "Follow-on diffusion" },
+    kind: "percent",
+  },
+  topic_overlap: {
+    label: { zh: "方向重合", en: "Topic overlap" },
+    kind: "percent",
+  },
+  temporal_overlap: {
+    label: { zh: "活跃时间重合", en: "Active-period overlap" },
+    kind: "percent",
+  },
+  recent_overlap: {
+    label: { zh: "近期主题重合", en: "Recent-topic overlap" },
+    kind: "percent",
+  },
+  direct_collaboration: {
+    label: { zh: "直接合作", en: "Direct collaborations" },
+    kind: "count",
+    unit: { zh: "篇", en: "" },
+  },
+  shared_collaborators: {
+    label: { zh: "共同合作者", en: "Shared collaborators" },
+    kind: "count",
+    unit: { zh: "位", en: "" },
+  },
+  capability_complementarity: {
+    label: { zh: "能力互补", en: "Capability complementarity" },
+    kind: "percent",
+  },
+  problem_similarity: {
+    label: { zh: "问题重合", en: "Problem overlap" },
+    kind: "percent",
+  },
+  method_similarity: {
+    label: { zh: "方法重合", en: "Method overlap" },
+    kind: "percent",
+  },
+}
+
+const recommendationEvidenceCodes: Record<
+  IntelligenceRecommendation["category"],
+  string[]
+> = {
+  north_star: ["field_overlap", "recent_activity", "downstream"],
+  peer: ["topic_overlap", "temporal_overlap", "recent_overlap"],
+  potential_collaborator: [
+    "direct_collaboration",
+    "shared_collaborators",
+    "capability_complementarity",
+  ],
+  potential_competitor: [
+    "problem_similarity",
+    "method_similarity",
+    "direct_collaboration",
+  ],
+}
+
+function recommendationFacts(item: IntelligenceRecommendation, lang: Lang) {
+  const evidenceByCode = new Map(item.evidence.map((entry) => [entry.code, entry]))
+  return recommendationEvidenceCodes[item.category]
+    .map((code) => {
+      const definition = compactEvidence[code]
+      const entry = evidenceByCode.get(code)
+      if (!definition || !entry || typeof entry.value !== "number") return null
+      const value = definition.kind === "percent"
+        ? `${Math.round(entry.value * 100)}%`
+        : `${entry.value.toLocaleString()}${definition.unit?.[lang] ?? ""}`
+      return `${localize(definition.label, lang)} ${value}`
+    })
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 3)
+}
+
+function representativeReason(paper: IntelligenceWork, lang: Lang) {
+  const reasons: LocalizedText[] = []
+  if (paper.components.field_relevance >= 0.4) {
+    reasons.push({ zh: "与当前方向高度相关", en: "highly relevant to the current field" })
+  }
+  if (paper.components.contribution_role >= 0.9) {
+    reasons.push({ zh: "作者承担主要贡献角色", en: "the scholar holds a leading authorship role" })
+  }
+  if (paper.components.internal_follow_on > 0) {
+    reasons.push({ zh: "有后续工作继续引用", en: "later graph works continue to cite it" })
+  }
+  if (paper.components.topic_continuation > 0) {
+    reasons.push({ zh: "后续仍持续该方向", en: "later work continues the same direction" })
+  }
+  if (paper.components.field_time_normalized_impact >= 0.65) {
+    reasons.push({
+      zh: "在同方向相近年份成果中表现较高",
+      en: "it stands out among similar-field works from nearby years",
+    })
+  }
+  const selected = reasons.slice(0, 3).map((reason) => localize(reason, lang))
+  if (!selected.length) {
+    return lang === "zh"
+      ? "综合方向相关性、贡献角色和后续影响入选。"
+      : "Selected from its combined field relevance, contribution role, and follow-on influence."
+  }
+  return lang === "zh"
+    ? `${selected.join("；")}。`
+    : `${selected.join("; ")}.`
+}
+
+function qualitativeIndex(value: number | null, lang: Lang) {
+  if (value === null) return lang === "zh" ? "依据不足" : "Insufficient"
+  if (value >= 70) return lang === "zh" ? "较强" : "Stronger"
+  if (value >= 48) return lang === "zh" ? "一般" : "Moderate"
+  return lang === "zh" ? "有限" : "Limited"
 }
 
 function EvidenceList({
@@ -199,52 +336,59 @@ function DimensionCard({
   lang: Lang
 }) {
   const titles: Record<IntelligenceDimension["key"], LocalizedText> = {
-    academic_quality: { zh: "学术质量", en: "Academic quality" },
-    continuity: { zh: "研究延续性", en: "Research continuity" },
-    impact: { zh: "学术影响力", en: "Academic impact" },
-    topic_style: { zh: "科研选题风格", en: "Research topic style" },
+    academic_quality: { zh: "成果表现", en: "Research output" },
+    continuity: { zh: "方向延续", en: "Topic continuity" },
+    impact: { zh: "研究影响", en: "Research influence" },
+    topic_style: { zh: "选题特征", en: "Topic profile" },
   }
   return (
     <Card className="min-w-0">
       <CardHeader className="pb-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <CardTitle className="text-base">{localize(titles[dimension.key], lang)}</CardTitle>
-          <ConfidenceBadge confidence={dimension.confidence} lang={lang} />
+          <EvidenceBadge confidence={dimension.confidence} lang={lang} />
         </div>
-        {dimension.index !== null && (
-          <CardDescription>
-            {lang === "zh" ? "当前图谱相对指数" : "Current graph-relative index"}:{" "}
-            <span className="font-semibold text-foreground">{dimension.index.toFixed(1)}</span>/100
-          </CardDescription>
-        )}
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-3">
         <p className={`text-sm leading-relaxed ${dimension.status === "insufficient" ? "font-medium text-muted-foreground" : ""}`}>
           {localize(dimension.conclusion, lang)}
         </p>
-        {dimension.axes?.length ? (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {dimension.axes.map((axis) => (
-              <div key={axis.key} className="rounded-md border p-3">
-                <p className="text-xs text-muted-foreground">{localize(axis.label, lang)}</p>
-                <p className="mt-1 text-sm font-medium">{localize(axis.value, lang)}</p>
+        <details className="group border-t pt-3">
+          <summary className="cursor-pointer list-none text-xs font-medium text-primary hover:underline">
+            {lang === "zh" ? "查看依据" : "View evidence"}
+          </summary>
+          <div className="mt-3 space-y-4">
+            {dimension.index !== null && (
+              <p className="text-xs text-muted-foreground">
+                {lang === "zh" ? "当前图谱相对指数" : "Current graph-relative index"}:{" "}
+                <span className="font-semibold text-foreground">{dimension.index.toFixed(1)}</span>/100
+              </p>
+            )}
+            {dimension.axes?.length ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {dimension.axes.map((axis) => (
+                  <div key={axis.key} className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">{localize(axis.label, lang)}</p>
+                    <p className="mt-1 text-sm font-medium">{localize(axis.value, lang)}</p>
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : null}
+            <EvidenceList evidence={dimension.evidence} intelligence={intelligence} lang={lang} />
+            {dimension.limitations.length > 0 && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {localize(dimension.limitations[0], lang)}
+              </p>
+            )}
+            <FeedbackButtons
+              itemKey={dimension.key}
+              selected={feedback}
+              disabled={feedbackBusy}
+              onSelect={onFeedback}
+              lang={lang}
+            />
           </div>
-        ) : null}
-        <EvidenceList evidence={dimension.evidence} intelligence={intelligence} lang={lang} />
-        {dimension.limitations.length > 0 && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {localize(dimension.limitations[0], lang)}
-          </p>
-        )}
-        <FeedbackButtons
-          itemKey={dimension.key}
-          selected={feedback}
-          disabled={feedbackBusy}
-          onSelect={onFeedback}
-          lang={lang}
-        />
+        </details>
       </CardContent>
     </Card>
   )
@@ -270,32 +414,33 @@ function RecommendationCard({
   lang: Lang
 }) {
   const itemKey = `${item.category}|${item.author_id}`
+  const facts = recommendationFacts(item, lang)
   return (
     <Card className="min-w-0">
       <CardContent className="space-y-4 p-4 sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <a
-              href={item.author_id}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="break-words font-semibold text-primary hover:underline"
-            >
-              {item.name}
-            </a>
-            <p className="mt-1 break-words text-xs text-muted-foreground">
-              {item.institution || (lang === "zh" ? "暂无机构证据" : "No affiliation evidence")}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">
-              {lang === "zh" ? "相对指数" : "Relative index"} {item.index.toFixed(1)}
-            </Badge>
-            <ConfidenceBadge confidence={item.confidence} lang={lang} />
-          </div>
+        <div className="min-w-0">
+          <a
+            href={item.author_id}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="break-words font-semibold text-primary hover:underline"
+          >
+            {item.name}
+          </a>
+          <p className="mt-1 break-words text-xs text-muted-foreground">
+            {item.institution || (lang === "zh" ? "暂无机构依据" : "No affiliation evidence")}
+          </p>
         </div>
         <p className="text-sm leading-relaxed">{localize(item.explanation, lang)}</p>
-        <EvidenceList evidence={item.evidence} intelligence={intelligence} lang={lang} />
+        {facts.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {facts.map((fact) => (
+              <Badge key={fact} variant="secondary" className="font-normal">
+                {fact}
+              </Badge>
+            ))}
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
@@ -315,16 +460,30 @@ function RecommendationCard({
             onClick={() => onCompare(item.author_id, "team")}
           >
             <Building2 className="h-3 w-3" />
-            {lang === "zh" ? "团队比较" : "Compare teams"}
+            {lang === "zh" ? "团队对比" : "Compare teams"}
           </Button>
         </div>
-        <FeedbackButtons
-          itemKey={itemKey}
-          selected={feedback}
-          disabled={feedbackBusy}
-          onSelect={onFeedback}
-          lang={lang}
-        />
+        <details className="group border-t pt-3">
+          <summary className="cursor-pointer list-none text-xs font-medium text-primary hover:underline">
+            {lang === "zh" ? "查看依据" : "View evidence"}
+          </summary>
+          <div className="mt-3 space-y-4">
+            <EvidenceBadge confidence={item.confidence} lang={lang} />
+            <EvidenceList evidence={item.evidence} intelligence={intelligence} lang={lang} />
+            {item.limitations.length > 0 && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {localize(item.limitations[0], lang)}
+              </p>
+            )}
+            <FeedbackButtons
+              itemKey={itemKey}
+              selected={feedback}
+              disabled={feedbackBusy}
+              onSelect={onFeedback}
+              lang={lang}
+            />
+          </div>
+        </details>
       </CardContent>
     </Card>
   )
@@ -342,13 +501,25 @@ function ComparisonCard({
   const leftName = comparison.left?.name || (lang === "zh" ? "左侧" : "Left")
   const rightName = comparison.right?.name || (lang === "zh" ? "右侧" : "Right")
   const dimensionLabels: Record<string, LocalizedText> = {
-    academic_quality: { zh: "学术质量", en: "Academic quality" },
-    continuity: { zh: "研究延续性", en: "Research continuity" },
-    impact: { zh: "学术影响力", en: "Academic impact" },
-    covered_members: { zh: "本地图谱覆盖成员", en: "Locally covered members" },
-    covered_works: { zh: "去重后的图谱论文", en: "Distinct graph papers" },
-    active_years: { zh: "有论文的年份数", en: "Years with publications" },
-    field_overlap: { zh: "目标领域覆盖", en: "Target-field coverage" },
+    academic_quality: { zh: "成果表现", en: "Research output" },
+    continuity: { zh: "方向延续", en: "Topic continuity" },
+    impact: { zh: "研究影响", en: "Research influence" },
+    covered_members: { zh: "收录作者", en: "Covered scholars" },
+    covered_works: { zh: "收录论文", en: "Covered papers" },
+    active_years: { zh: "活跃年份", en: "Active years" },
+    field_overlap: { zh: "方向覆盖", en: "Field coverage" },
+  }
+  const displayComparisonValue = (
+    value: number | {
+      index: number | null
+      confidence: IntelligenceConfidence
+      evidence: IntelligenceEvidence[]
+    },
+    key: string,
+  ) => {
+    if (typeof value !== "number") return qualitativeIndex(value.index, lang)
+    if (key === "field_overlap") return `${Math.round(value * 100)}%`
+    return value.toLocaleString()
   }
   return (
     <Card className="border-primary/30 bg-primary/[0.025]">
@@ -358,8 +529,8 @@ function ComparisonCard({
             <CardTitle className="flex items-center gap-2 text-base">
               <GitCompareArrows className="h-4 w-4 text-primary" />
               {comparison.mode === "team"
-                ? (lang === "zh" ? "团队与机构比较" : "Team and institution comparison")
-                : (lang === "zh" ? "学者智能比较" : "Scholar intelligence comparison")}
+                ? (lang === "zh" ? "团队对比" : "Team comparison")
+                : (lang === "zh" ? "学者对比" : "Scholar comparison")}
             </CardTitle>
             <CardDescription className="mt-1">
               {leftName} ↔ {rightName}
@@ -380,26 +551,42 @@ function ComparisonCard({
           <>
             <div className="space-y-2">
               {comparison.dimensions?.map((dimension) => {
-                const left = typeof dimension.left === "number" ? dimension.left : dimension.left.index
-                const right = typeof dimension.right === "number" ? dimension.right : dimension.right.index
                 return (
                   <div key={dimension.key} className="grid gap-2 rounded-md border bg-background p-3 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
-                    <p className="font-semibold tabular-nums">{left ?? "—"}</p>
+                    <p className="font-semibold">
+                      {displayComparisonValue(dimension.left, dimension.key)}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {localize(dimension.label || dimensionLabels[dimension.key], lang)
                         || dimension.key.replaceAll("_", " ")}
                     </p>
-                    <p className="text-right font-semibold tabular-nums">{right ?? "—"}</p>
+                    <p className="text-right font-semibold">
+                      {displayComparisonValue(dimension.right, dimension.key)}
+                    </p>
                     {dimension.conclusion && (
                       <p className="text-xs text-muted-foreground sm:col-span-3">
-                        {localize(dimension.conclusion, lang)}
+                        {comparison.mode === "scholar"
+                          ? (
+                              lang === "zh"
+                                ? "差异只用于理解研究轨迹，不代表绝对优劣。"
+                                : "Differences describe research trajectories, not absolute superiority."
+                            )
+                          : localize(dimension.conclusion, lang)}
                       </p>
                     )}
                   </div>
                 )
               })}
             </div>
-            <p className="text-sm leading-relaxed">{localize(comparison.conclusion, lang)}</p>
+            <p className="text-sm leading-relaxed">
+              {comparison.mode === "scholar"
+                ? (
+                    lang === "zh"
+                      ? "对比使用同一数据口径，结果用于理解差异，不表示因果或绝对优劣。"
+                      : "Both sides use the same data scope; the comparison describes differences without implying causality or absolute superiority."
+                  )
+                : localize(comparison.conclusion, lang)}
+            </p>
           </>
         )}
         {comparison.limitations?.length ? (
@@ -416,16 +603,13 @@ function TeamCard({ team, lang }: { team: IntelligenceTeam; lang: Lang }) {
   return (
     <Card className="min-w-0">
       <CardContent className="space-y-3 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0">
-            <h4 className="break-words font-semibold">{team.name}</h4>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {lang === "zh"
-                ? `本地图谱覆盖 ${team.member_count} 位成员、${team.covered_work_count} 篇去重论文`
-                : `${team.member_count} locally covered members and ${team.covered_work_count} distinct papers`}
-            </p>
-          </div>
-          <ConfidenceBadge confidence={team.confidence} lang={lang} />
+        <div className="min-w-0">
+          <h4 className="break-words font-semibold">{team.name}</h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {lang === "zh"
+              ? `当前收录 ${team.member_count} 位相关作者、${team.covered_work_count} 篇论文`
+              : `${team.member_count} related scholars and ${team.covered_work_count} papers currently covered`}
+          </p>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {team.topics.slice(0, 5).map((topic) => (
@@ -435,7 +619,6 @@ function TeamCard({ team, lang }: { team: IntelligenceTeam; lang: Lang }) {
           ))}
         </div>
         <p className="text-xs text-muted-foreground">
-          {lang === "zh" ? "目标领域覆盖" : "Target-field coverage"}: {(team.field_overlap * 100).toFixed(1)}% ·{" "}
           {lang === "zh" ? "活跃年份" : "Active years"}: {team.active_years}
         </p>
       </CardContent>
@@ -462,7 +645,7 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
       setError(
         reason instanceof ApiError
           ? reason.message
-          : (lang === "zh" ? "智能分析加载失败" : "Could not load intelligence analysis"),
+          : (lang === "zh" ? "研究洞察加载失败" : "Could not load research insights"),
       )
     } finally {
       if (!signal?.aborted) setLoading(false)
@@ -481,7 +664,7 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
           setError(
             reason instanceof ApiError
               ? reason.message
-              : (lang === "zh" ? "智能分析加载失败" : "Could not load intelligence analysis"),
+              : (lang === "zh" ? "研究洞察加载失败" : "Could not load research insights"),
           )
         }
       })
@@ -571,7 +754,7 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
       <Card>
         <CardContent className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
-          {lang === "zh" ? "正在从动态研究图谱计算可解释分析…" : "Computing explainable analysis from the dynamic research graph…"}
+          {lang === "zh" ? "正在整理研究洞察…" : "Preparing research insights…"}
         </CardContent>
       </Card>
     )
@@ -583,7 +766,7 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
         <CardContent className="space-y-4 p-6 text-sm">
           <div className="flex items-start gap-2 text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{error || (lang === "zh" ? "智能分析暂不可用" : "Intelligence analysis is unavailable")}</span>
+            <span>{error || (lang === "zh" ? "研究洞察暂不可用" : "Research insights are unavailable")}</span>
           </div>
           <Button variant="outline" size="sm" onClick={() => void load()}>
             <RefreshCw className="h-3.5 w-3.5" />
@@ -607,23 +790,23 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
   }> = [
     {
       key: "north_stars",
-      title: { zh: "领域北极星参照学者", en: "Field north-star reference scholars" },
-      description: { zh: "综合领域相关度、代表作、持续贡献、归一化影响与近期活跃度；不是绝对“最好学者”排名。", en: "Combines field relevance, representative work, sustained contribution, normalized impact, and recent activity; not an absolute best-scholar ranking." },
+      title: { zh: "参考学者", en: "Reference scholars" },
+      description: { zh: "可作为当前领域的研究参照，不代表绝对排名。", en: "Useful references in the current field, not an absolute ranking." },
     },
     {
       key: "peers",
       title: { zh: "重点同行", en: "Priority peers" },
-      description: { zh: "方向、活跃年份与近期论文主题同时存在重合。", en: "Research directions, active years, and recent paper topics overlap." },
+      description: { zh: "研究方向和近期研究节奏接近。", en: "Their topics and recent research cadence are close." },
     },
     {
       key: "potential_collaborators",
-      title: { zh: "潜在合作者", en: "Potential collaborators" },
-      description: { zh: "要求主题交集，并有重复合作或共同合作者证据；单次合作不够。", en: "Requires topic overlap plus repeated collaboration or shared-collaborator evidence; one-off collaboration is insufficient." },
+      title: { zh: "合作线索", en: "Collaboration leads" },
+      description: { zh: "存在主题交集和可核验的合作基础。", en: "There is topic overlap and verifiable collaboration context." },
     },
     {
       key: "potential_competitors",
-      title: { zh: "潜在项目竞争者", en: "Potential project competitors" },
-      description: { zh: "必须同时满足近期问题、方法、时间重合和低合作门槛；仅表示潜在线索。", en: "Requires simultaneous recent problem, method, time, and low-collaboration thresholds; it is only a potential signal." },
+      title: { zh: "研究重合", en: "Research overlap" },
+      description: { zh: "近期问题和方法相近，仅表示潜在项目竞争线索。", en: "Recent problems and methods are close; this is only a potential project-competition signal." },
     },
   ]
   const componentLabels: Record<string, LocalizedText> = {
@@ -633,6 +816,44 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
     internal_follow_on: { zh: "图谱内后续带动", en: "Follow-on work in the graph" },
     topic_continuation: { zh: "同方向后续工作", en: "Later work in the same direction" },
   }
+  const coverage = intelligence.confidence.coverage
+  const coverageEnd = intelligence.field.as_of_year || null
+  const coverageStart = coverageEnd && coverage?.year_span
+    ? coverageEnd - coverage.year_span + 1
+    : null
+  const coverageSummary = coverage
+    ? (
+        lang === "zh"
+          ? `基于 ${coverage.works} 篇论文${coverageStart && coverageEnd ? `，覆盖 ${coverageStart}–${coverageEnd}` : ""}`
+          : `Based on ${coverage.works} papers${coverageStart && coverageEnd ? ` from ${coverageStart}–${coverageEnd}` : ""}`
+      )
+    : (
+        lang === "zh"
+          ? "当前缺少完整的论文覆盖信息"
+          : "Complete paper-coverage information is unavailable"
+      )
+  const overviewCounts = [
+    {
+      key: "north_stars",
+      label: { zh: "参考学者", en: "References" },
+      value: intelligence.recommendations.north_stars.length,
+    },
+    {
+      key: "peers",
+      label: { zh: "重点同行", en: "Peers" },
+      value: intelligence.recommendations.peers.length,
+    },
+    {
+      key: "potential_collaborators",
+      label: { zh: "合作线索", en: "Collaboration leads" },
+      value: intelligence.recommendations.potential_collaborators.length,
+    },
+    {
+      key: "potential_competitors",
+      label: { zh: "研究重合", en: "Research overlaps" },
+      value: intelligence.recommendations.potential_competitors.length,
+    },
+  ]
 
   return (
     <div className="space-y-6">
@@ -645,37 +866,34 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
 
       <Card className="border-primary/20">
         <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <ShieldCheck className="h-4 w-4 text-primary" />
-                {lang === "zh" ? "可解释分析口径" : "Explainable analysis scope"}
+              <CardTitle className="text-base">
+                {lang === "zh" ? "结果概览" : "Overview"}
               </CardTitle>
-              <CardDescription className="mt-1">
-                {localize(intelligence.methodology.score_source, lang)}
-              </CardDescription>
+              <CardDescription className="mt-1">{coverageSummary}</CardDescription>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <ConfidenceBadge confidence={intelligence.confidence} lang={lang} />
-              <Badge variant="outline">
-                {lang === "zh" ? "图谱版本" : "Graph version"} {intelligence.generated_from_graph_version}
-              </Badge>
-            </div>
+            <EvidenceBadge confidence={intelligence.confidence} lang={lang} />
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {overviewCounts.map((item) => (
+              <div key={item.key} className="rounded-lg border bg-background px-3 py-3">
+                <p className="text-xl font-semibold tabular-nums">{item.value}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {localize(item.label, lang)}
+                </p>
+              </div>
+            ))}
+          </div>
           <div className="flex flex-wrap gap-2">
-            {intelligence.field.topics.map((topic) => (
+            {intelligence.field.topics.slice(0, 5).map((topic) => (
               <Badge key={topic.name} variant="secondary">
-                {topic.name} · {topic.works_count}
+                {topic.name}
               </Badge>
             ))}
           </div>
-          <ul className="space-y-1 text-xs leading-relaxed text-muted-foreground">
-            {intelligence.methodology.principles.map((item) => (
-              <li key={item.zh}>• {localize(item, lang)}</li>
-            ))}
-          </ul>
           {intelligence.confidence.level === "insufficient" && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed p-3">
               <p className="text-sm font-medium">
@@ -693,75 +911,6 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
           )}
         </CardContent>
       </Card>
-
-      <section>
-        <div className="mb-3 flex items-center gap-2">
-          <BookOpen className="h-4 w-4 text-primary" />
-          <h3 className="font-semibold">{lang === "zh" ? "学者分析" : "Scholar analysis"}</h3>
-        </div>
-        <div className="grid gap-4 lg:grid-cols-2">
-          {dimensions.map((dimension) => (
-            <DimensionCard
-              key={dimension.key}
-              dimension={dimension}
-              intelligence={intelligence}
-              feedback={feedback[dimension.key]}
-              feedbackBusy={feedbackBusy === dimension.key}
-              onFeedback={handleFeedback}
-              lang={lang}
-            />
-          ))}
-        </div>
-      </section>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">{lang === "zh" ? "代表作" : "Representative works"}</CardTitle>
-          <CardDescription>
-            {lang === "zh"
-              ? "综合领域相关度、时间归一化影响、贡献角色、后续扩散与方向延续；不按引用数单排。"
-              : "Combines field relevance, time-normalized impact, contribution role, follow-on diffusion, and topic continuation; not citation-only sorting."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {intelligence.representative_works.map((paper) => (
-            <div key={paper.id} className="rounded-lg border p-4">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <a href={paper.source_id} target="_blank" rel="noopener noreferrer" className="min-w-0 break-words text-sm font-medium text-primary hover:underline">
-                  {paper.title}
-                </a>
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="secondary">{lang === "zh" ? "综合" : "Composite"} {paper.index.toFixed(1)}</Badge>
-                  <ConfidenceBadge confidence={paper.confidence} lang={lang} />
-                </div>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {paper.year || "—"} · {paper.venue || "—"} · {paper.citations.toLocaleString()}{" "}
-                {lang === "zh" ? "次当前引用" : "current citations"}
-              </p>
-              <div className="mt-3 grid gap-2 text-xs sm:grid-cols-5">
-                {Object.entries(paper.components).map(([key, value]) => (
-                  <div key={key} className="rounded bg-muted/50 px-2 py-1.5">
-                    <p className="break-words text-muted-foreground">
-                      {localize(componentLabels[key], lang) || key.replaceAll("_", " ")}
-                    </p>
-                    <p className="font-medium">{(value * 100).toFixed(0)}%</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-          {!intelligence.representative_works.length && (
-            <p className="text-sm text-muted-foreground">
-              {lang === "zh" ? "数据不足，无法可靠选择代表作。" : "Insufficient data to select representative works reliably."}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      {comparison && (
-        <ComparisonCard comparison={comparison} lang={lang} onClose={() => setComparison(null)} />
-      )}
 
       {recommendationGroups.map((group) => {
         const rows = intelligence.recommendations[group.key]
@@ -791,15 +940,98 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
                 })}
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 {lang === "zh"
-                  ? "当前图谱没有满足该类别全部门槛的对象，未强行给出推荐。"
-                  : "No scholar meets every threshold for this category; no recommendation is forced."}
-              </div>
+                  ? "暂无可靠结果。"
+                  : "No reliable result is available."}
+              </p>
             )}
           </section>
         )
       })}
+
+      {comparison && (
+        <ComparisonCard comparison={comparison} lang={lang} onClose={() => setComparison(null)} />
+      )}
+
+      <section>
+        <div className="mb-3 flex items-center gap-2">
+          <BookOpen className="h-4 w-4 text-primary" />
+          <h3 className="font-semibold">{lang === "zh" ? "核心结论" : "Key findings"}</h3>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          {dimensions.map((dimension) => (
+            <DimensionCard
+              key={dimension.key}
+              dimension={dimension}
+              intelligence={intelligence}
+              feedback={feedback[dimension.key]}
+              feedbackBusy={feedbackBusy === dimension.key}
+              onFeedback={handleFeedback}
+              lang={lang}
+            />
+          ))}
+        </div>
+      </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{lang === "zh" ? "代表作" : "Representative works"}</CardTitle>
+          <CardDescription>
+            {lang === "zh"
+              ? "综合方向相关性、贡献角色和后续影响选择，不按引用数单排。"
+              : "Selected from field relevance, contribution role, and follow-on influence—not citation count alone."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {intelligence.representative_works.map((paper) => (
+            <div key={paper.id} className="rounded-lg border p-4">
+              <a
+                href={paper.source_id}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="break-words text-sm font-medium text-primary hover:underline"
+              >
+                {paper.title}
+              </a>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {paper.year || "—"} · {paper.venue || "—"} · {paper.citations.toLocaleString()}{" "}
+                {lang === "zh" ? "次当前引用" : "current citations"}
+              </p>
+              <p className="mt-3 text-sm leading-relaxed">
+                <span className="font-medium">
+                  {lang === "zh" ? "入选原因：" : "Why selected: "}
+                </span>
+                {representativeReason(paper, lang)}
+              </p>
+              <details className="group mt-3 border-t pt-3">
+                <summary className="cursor-pointer list-none text-xs font-medium text-primary hover:underline">
+                  {lang === "zh" ? "为什么入选" : "Why this work"}
+                </summary>
+                <div className="mt-3 space-y-4">
+                  <EvidenceBadge confidence={paper.confidence} lang={lang} />
+                  <div className="grid gap-2 text-xs sm:grid-cols-5">
+                    {Object.entries(paper.components).map(([key, value]) => (
+                      <div key={key} className="rounded bg-muted/50 px-2 py-1.5">
+                        <p className="break-words text-muted-foreground">
+                          {localize(componentLabels[key], lang) || key.replaceAll("_", " ")}
+                        </p>
+                        <p className="font-medium">{(value * 100).toFixed(0)}%</p>
+                      </div>
+                    ))}
+                  </div>
+                  <EvidenceList evidence={paper.evidence} intelligence={intelligence} lang={lang} />
+                </div>
+              </details>
+            </div>
+          ))}
+          {!intelligence.representative_works.length && (
+            <p className="text-sm text-muted-foreground">
+              {lang === "zh" ? "数据不足，无法可靠选择代表作。" : "Insufficient data to select representative works reliably."}
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <Separator />
 
@@ -807,10 +1039,7 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
         <div className="mb-3 flex items-center gap-2">
           <Users className="h-4 w-4 text-primary" />
           <div>
-            <h3 className="font-semibold">{lang === "zh" ? "团队与机构视角" : "Team and institution view"}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {localize(intelligence.teams.limitations[0], lang)}
-            </p>
+            <h3 className="font-semibold">{lang === "zh" ? "团队视角" : "Team view"}</h3>
           </div>
         </div>
         {intelligence.teams.field_teams.length ? (
@@ -820,15 +1049,43 @@ export default function ScholarIntelligenceAnalysis({ profile, lang }: Props) {
             ))}
           </div>
         ) : (
-          <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {lang === "zh" ? "当前缺少可聚合的机构团队数据。" : "No institution-team data can be aggregated reliably."}
-          </div>
+          </p>
         )}
       </section>
 
-      <p className="rounded-lg bg-muted/60 p-4 text-xs leading-relaxed text-muted-foreground">
-        {localize(intelligence.limitations[0], lang)} {localize(intelligence.limitations[1], lang)}
-      </p>
+      <details className="group rounded-lg border bg-muted/30">
+        <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium">
+          {lang === "zh" ? "数据说明" : "Data and methodology"}
+        </summary>
+        <div className="space-y-4 border-t px-4 py-4 text-xs leading-relaxed text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2">
+            <EvidenceBadge confidence={intelligence.confidence} lang={lang} />
+            <span>
+              {lang === "zh" ? "图谱版本" : "Graph version"}{" "}
+              {intelligence.generated_from_graph_version}
+            </span>
+          </div>
+          <p>{localize(intelligence.methodology.score_source, lang)}</p>
+          <p>{localize(intelligence.methodology.ranking_scope, lang)}</p>
+          <ul className="space-y-1">
+            {intelligence.methodology.principles.map((item) => (
+              <li key={item.zh}>• {localize(item, lang)}</li>
+            ))}
+          </ul>
+          {coverage && (
+            <p>
+              {lang === "zh"
+                ? `主题覆盖 ${Math.round(coverage.topic_coverage * 100)}%，摘要覆盖 ${Math.round(coverage.abstract_coverage * 100)}%。`
+                : `Topic coverage ${Math.round(coverage.topic_coverage * 100)}%; abstract coverage ${Math.round(coverage.abstract_coverage * 100)}%.`}
+            </p>
+          )}
+          {intelligence.limitations.map((item) => (
+            <p key={item.zh}>{localize(item, lang)}</p>
+          ))}
+        </div>
+      </details>
     </div>
   )
 }

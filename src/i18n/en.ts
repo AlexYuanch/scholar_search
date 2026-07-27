@@ -79,7 +79,7 @@ const en: Record<string, string> = {
   "tab.papers": "Research Output",
   "tab.network": "Collaboration",
   "tab.research_graph": "Research Journey",
-  "tab.intelligence": "Intelligence",
+  "tab.intelligence": "Research Insights",
 
   "research_graph.title": "Research Journey",
   "research_graph.description": "Understand how research directions, core questions, and methods evolve over time",
