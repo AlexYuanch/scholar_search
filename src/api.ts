@@ -419,10 +419,28 @@ export async function getScholarIntelligence(
   return response.json()
 }
 
+export async function discoverScholarField(
+  authorId: string,
+  forceRefresh = false,
+): Promise<ScholarIntelligence["discovery"] & {
+  job_id?: string
+  graph_job_id?: string
+  graph_status: ScholarIntelligence["graph_status"]
+}> {
+  const response = await authenticatedFetch(
+    `/authors/${encodeURIComponent(authorId)}/intelligence/discover`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ force_refresh: forceRefresh }),
+    },
+  )
+  return response.json()
+}
+
 export async function compareScholarIntelligence(
   leftAuthorId: string,
   rightAuthorId: string,
-  mode: "scholar" | "team" = "scholar",
+  mode: "scholar" | "team" | "institution" = "scholar",
 ): Promise<IntelligenceComparison> {
   const response = await authenticatedFetch('/intelligence/compare', {
     method: 'POST',
@@ -432,6 +450,17 @@ export async function compareScholarIntelligence(
     }),
   })
   return response.json()
+}
+
+export async function compareInstitutions(
+  focusAuthorId: string,
+  institutionId: string,
+): Promise<IntelligenceComparison> {
+  return compareScholarIntelligence(
+    focusAuthorId,
+    institutionId,
+    "institution",
+  )
 }
 
 export async function submitIntelligenceFeedback(input: {

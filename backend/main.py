@@ -41,6 +41,12 @@ from credentials import (
     validate_credential_configuration,
 )
 from events import ProfileEventBroker
+from field_discovery import (
+    advance_field_discovery,
+    enqueue_field_discovery,
+    field_discovery_needs_refresh,
+    get_field_discovery_state,
+)
 from openalex import (
     OpenAlexError,
     configure_budget_control,
@@ -444,9 +450,13 @@ class ResearchGraphRefreshRequest(BaseModel):
     force_rebuild: bool = False
 
 
+class IntelligenceDiscoverRequest(BaseModel):
+    force_refresh: bool = False
+
+
 class IntelligenceCompareRequest(BaseModel):
     author_ids: list[str] = Field(min_length=2, max_length=2)
-    mode: str = Field(default="scholar", pattern="^(scholar|team)$")
+    mode: str = Field(default="scholar", pattern="^(scholar|team|institution)$")
 
 
 class IntelligenceFeedbackRequest(BaseModel):
@@ -911,10 +921,88 @@ def author_intelligence(
                 status_code=404,
                 detail="Scholar profile not found",
             ) from exc
+    latest_focus_state = get_research_graph_sync_state(repository, author_id) or {}
+    if (
+        latest_focus_state.get("status") == "ready"
+        and field_discovery_needs_refresh(repository, author_id)
+    ):
+        try:
+            _consume_api_quota("profile", user, request)
+            _require_openalex_credential(user)
+            enqueue_field_discovery(
+                repository,
+                author_id,
+                requested_by_user_id=user.id,
+                reason="field_radar_view",
+            )
+        except HTTPException:
+            # Field discovery is an enhancement; existing graph intelligence
+            # remains readable when quota or credentials are unavailable.
+            pass
     result = build_scholar_intelligence(repository, author_id, limit=limit)
+    if result["discovery"]["status"] in {"enriching", "partial", "ready"}:
+        result["discovery"] = advance_field_discovery(
+            repository,
+            author_id,
+            result_counts={
+                key: len(rows)
+                for key, rows in result["recommendations"].items()
+            },
+        )
     latest_state = get_research_graph_sync_state(repository, author_id) or {}
     result["graph_status"] = latest_state.get("status", "never")
     return result
+
+
+@app.post("/api/authors/{author_id:path}/intelligence/discover")
+def discover_author_field(
+    author_id: str,
+    req: IntelligenceDiscoverRequest,
+    request: Request,
+    user: AuthUser = Depends(require_user),
+):
+    """Idempotently request field discovery and progressive graph enrichment."""
+    _consume_api_quota("profile", user, request)
+    _require_openalex_credential(user)
+    graph_state = get_research_graph_sync_state(repository, author_id) or {}
+    if graph_state.get("status") != "ready":
+        try:
+            graph_job_id = enqueue_research_graph_refresh(
+                repository,
+                author_id,
+                requested_by_user_id=user.id,
+                reason="field_radar_prerequisite",
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Scholar profile not found",
+            ) from exc
+        return {
+            **get_field_discovery_state(repository, author_id),
+            "graph_status": (
+                get_research_graph_sync_state(repository, author_id) or {}
+            ).get("status", "queued"),
+            "graph_job_id": graph_job_id,
+        }
+    try:
+        job_id = enqueue_field_discovery(
+            repository,
+            author_id,
+            requested_by_user_id=user.id,
+            reason="manual_field_radar",
+            force_refresh=req.force_refresh,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Scholar profile not found",
+        ) from exc
+    return {
+        **get_field_discovery_state(repository, author_id),
+        "job_id": job_id,
+        "graph_status": graph_state.get("status", "ready"),
+    }
 
 
 @app.get("/api/intelligence/field")
@@ -943,7 +1031,7 @@ def intelligence_compare(
     if not left or not right or left == right:
         raise HTTPException(
             status_code=422,
-            detail="Two different scholar IDs are required",
+            detail="Two different comparison IDs are required",
         )
     return compare_scholar_intelligence(
         repository,

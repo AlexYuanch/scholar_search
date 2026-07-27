@@ -10,6 +10,13 @@ from credentials import (
     CredentialDecryptionError,
     decrypt_secret,
 )
+from field_discovery import (
+    advance_discoveries_for_candidate,
+    claim_field_discovery,
+    fail_field_discovery,
+    maintain_field_discovery_jobs,
+    process_claimed_field_discovery,
+)
 from openalex import configure_budget_control
 from quality import assess_profile_quality
 from research_graph import IncompleteGraphSync, sync_scholar_research_graph
@@ -126,6 +133,7 @@ def process_one_graph_job(repository, sync_fn=sync_scholar_research_graph) -> bo
             force_rebuild=bool(job.get("force_rebuild")),
         )
         complete_research_graph_refresh(repository, job_id)
+        advance_discoveries_for_candidate(repository, job["author_id"])
         return True
     except MissingJobCredential as exc:
         fail_research_graph_refresh(
@@ -153,7 +161,30 @@ def process_one_graph_job(repository, sync_fn=sync_scholar_research_graph) -> bo
             public_error,
             retry=int(job.get("attempts", 1)) < 3,
         )
+        advance_discoveries_for_candidate(repository, job["author_id"])
         return False
+
+
+def process_one_field_discovery_job(repository) -> bool:
+    job = claim_field_discovery(repository)
+    if not job:
+        return False
+    try:
+        api_key, budget_provider = _job_openalex_credential(repository, job)
+    except MissingJobCredential as exc:
+        fail_field_discovery(
+            repository,
+            str(job["id"]),
+            str(exc),
+            retry=False,
+        )
+        return False
+    return process_claimed_field_discovery(
+        repository,
+        job,
+        api_key=api_key,
+        budget_provider=budget_provider,
+    )
 
 
 def _job_openalex_credential(repository, job: dict) -> tuple[str, str]:
@@ -199,6 +230,8 @@ def run_forever() -> None:
                 logger.info("Worker maintenance completed: %s", result)
                 graph_result = maintain_research_graph_jobs(repository)
                 logger.info("Research graph maintenance completed: %s", graph_result)
+                discovery_result = maintain_field_discovery_jobs(repository)
+                logger.info("Field discovery maintenance completed: %s", discovery_result)
             except Exception:
                 logger.exception("Worker maintenance failed")
             next_maintenance = now + maintenance_seconds
@@ -206,8 +239,14 @@ def run_forever() -> None:
         try:
             search_processed = process_one_search_job(repository)
             graph_processed = process_one_graph_job(repository)
+            discovery_processed = process_one_field_discovery_job(repository)
             profile_processed = process_one_job(repository)
-            processed = search_processed or graph_processed or profile_processed
+            processed = (
+                search_processed
+                or graph_processed
+                or discovery_processed
+                or profile_processed
+            )
         except Exception:
             logger.exception("Worker queue poll failed")
             processed = False

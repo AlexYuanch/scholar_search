@@ -12,6 +12,11 @@ from statistics import median
 import re
 from typing import Any
 
+from field_discovery import (
+    build_field_institutions,
+    compare_field_institutions,
+    get_field_discovery_state,
+)
 from intelligence_repository import load_intelligence_dataset
 
 
@@ -936,9 +941,12 @@ def _recommendations(
     focus_recent = context["recent_topic_profiles"][focus_author_id]
     focus_categories = set(context["category_profiles"][focus_author_id])
     focus_institution = (_primary_affiliation(focus) or {}).get("name")
+    field_candidate_ids = set(dataset.get("field_candidate_ids") or [])
     candidates = []
     for author_id, scholar in dataset["scholars"].items():
         if author_id == focus_author_id or not scholar["work_ids"]:
+            continue
+        if field_candidate_ids and author_id not in field_candidate_ids:
             continue
         topic_overlap = _weighted_jaccard(
             focus_topics,
@@ -1072,18 +1080,12 @@ def _recommendations(
                 analysis["limitations"],
             ))
 
-        direct_span = (
-            (row["direct"].get("last_year") or 0)
-            - (row["direct"].get("first_year") or 0) + 1
-            if row["direct"].get("last_year") and row["direct"].get("first_year")
-            else 0
-        )
         collaboration_eligible = (
-            row["direct_count"] >= 2 and direct_span >= 2
-        ) or (
-            row["direct_count"] == 0
+            row["scholar"].get("graph_ready")
+            and row["direct_count"] <= 1
             and len(row["shared_collaborators"]) >= 1
             and row["topic_overlap"] >= 0.15
+            and row["complementarity"] >= 0.15
         )
         if collaboration_eligible:
             score = (
@@ -1100,8 +1102,8 @@ def _recommendations(
                 score,
                 confidence,
                 _i18n(
-                    "主题存在交集，并由重复合作或共同合作者提供关系证据；互补性仅指方法/系统/数据类型组合。",
-                    "Topics overlap and the relationship is supported by repeated collaboration or shared collaborators; complementarity refers only to method/system/data work types.",
+                    "尚未形成稳定直接合作，但主题交集、能力互补与共同合作者路径同时提供了可核验线索。",
+                    "No stable direct collaboration exists yet, while topic overlap, capability complementarity, and a shared-collaborator path provide verifiable signals.",
                 ),
                 [
                     _evidence("topic_overlap", "主题交集", "Topic overlap", round(row["topic_overlap"], 3)),
@@ -1111,8 +1113,8 @@ def _recommendations(
                     _evidence("temporal_overlap", "活跃时间重合度", "Active-period overlap", round(row["temporal"], 3)),
                 ],
                 [_i18n(
-                    "一次合作且没有共同合作者时，不进入长期合作推荐。",
-                    "A single collaboration without shared collaborators is not treated as a long-term collaboration signal.",
+                    "稳定合作者属于合作关系页；一次合作若缺少互补性或共同合作者路径，也不进入合作机会。",
+                    "Established collaborators belong in the collaboration view; one-off collaboration without complementarity or a shared-collaborator path is also excluded.",
                 )],
             ))
 
@@ -1350,6 +1352,24 @@ def build_scholar_intelligence(
     )
     subject_analysis = analyses[author_id]
     teams = _team_views(dataset, context, author_id, field_topic_names)
+    discovery = get_field_discovery_state(repository, author_id)
+    institution_topics = (
+        discovery.get("selected_topics")
+        or [
+            {
+                "name": row["name"],
+                "works_count": row["works_count"],
+                "active_years": row["active_years"],
+            }
+            for row in topics
+        ]
+    )
+    institutions = build_field_institutions(
+        repository,
+        author_id,
+        dataset,
+        institution_topics,
+    )
     return {
         "analysis_version": ANALYSIS_VERSION,
         "source": "dynamic_research_graph",
@@ -1401,7 +1421,13 @@ def build_scholar_intelligence(
             "items": recommendations["north_stars"],
         },
         "teams": teams,
-        "limitations": subject_analysis["limitations"] + teams["limitations"],
+        "discovery": discovery,
+        "institutions": institutions,
+        "limitations": (
+            subject_analysis["limitations"]
+            + teams["limitations"]
+            + institutions["limitations"]
+        ),
     }
 
 
@@ -1461,6 +1487,12 @@ def compare_scholar_intelligence(
     *,
     mode: str = "scholar",
 ) -> dict:
+    if mode == "institution":
+        return compare_field_institutions(
+            repository,
+            left_author_id,
+            right_author_id,
+        )
     dataset = load_intelligence_dataset(
         repository,
         left_author_id,

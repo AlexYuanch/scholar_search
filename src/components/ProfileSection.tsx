@@ -16,6 +16,7 @@ import ResearchChanges from "@/components/ResearchChanges"
 import ResearchTimeline, { type TimelinePaperFilter } from "@/components/ResearchTimeline"
 import ScholarIntelligenceAnalysis from "@/components/ScholarIntelligenceAnalysis"
 import ScholarIntroduction from "@/components/ScholarIntroduction"
+import { getScholarIntelligence } from "@/api"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -23,7 +24,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { Lang } from "@/i18n"
-import type { EdgePaper, ScholarProfile } from "@/types"
+import type { EdgePaper, IntelligenceWork, ScholarProfile } from "@/types"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
 
@@ -33,7 +34,9 @@ interface Props {
   profile: ScholarProfile
   favorite: boolean
   onToggleFavorite: () => void
-  onCompare: () => void
+  onCompare: (candidateAuthorId?: string) => void
+  onViewProfile: (authorId: string, scholarName: string) => void
+  onTrackingChange?: () => void
   onRefresh: () => void
   onEdgeClick?: (data: {
     sourceName: string
@@ -94,6 +97,8 @@ export default function ProfileSection({
   favorite,
   onToggleFavorite,
   onCompare,
+  onViewProfile,
+  onTrackingChange,
   onRefresh,
   onEdgeClick,
   onNodeClick,
@@ -103,6 +108,8 @@ export default function ProfileSection({
 }: Props) {
   const [activeTab, setActiveTab] = useState<ProfileTab>("overview")
   const [paperFilter, setPaperFilter] = useState<TimelinePaperFilter | null>(null)
+  const [representativeAnalysis, setRepresentativeAnalysis] = useState<IntelligenceWork[]>([])
+  const [representativeAnalysisLoaded, setRepresentativeAnalysisLoaded] = useState(false)
   const papersSectionRef = useRef<HTMLDivElement>(null)
   const analysisUpdating = profile.refreshStatus === "queued" || profile.refreshStatus === "updating"
 
@@ -119,6 +126,20 @@ export default function ProfileSection({
     })
     return () => cancelAnimationFrame(frame)
   }, [activeTab, paperFilter])
+
+  useEffect(() => {
+    if (activeTab !== "papers") return
+    const controller = new AbortController()
+    void getScholarIntelligence(profile.authorId, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) {
+          setRepresentativeAnalysis(result.representative_works.slice(0, 5))
+          setRepresentativeAnalysisLoaded(true)
+        }
+      })
+      .catch(() => undefined)
+    return () => controller.abort()
+  }, [activeTab, profile.authorId])
 
   const collaboratorId = (name: string, institution?: string, id?: string) => {
     if (id) return id
@@ -195,7 +216,7 @@ export default function ProfileSection({
                   : "profile.refresh_action",
             )}
           </Button>
-          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onCompare}>
+          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={() => onCompare()}>
             <ArrowLeftRight className="h-3.5 w-3.5" />
             {t("compare.action")}
           </Button>
@@ -261,9 +282,20 @@ export default function ProfileSection({
               <CardDescription>{t("section.repr_desc")}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {(profile.representativePapers.length
-                ? profile.representativePapers
-                : profile.topCitedPapers.slice(0, 5)
+              {(representativeAnalysisLoaded
+                ? representativeAnalysis.map((paper) => ({
+                    id: paper.source_id,
+                    title: paper.title,
+                    year: paper.year,
+                    journal: paper.venue,
+                    citations: paper.citations,
+                    intelligence: paper,
+                  }))
+                : (
+                    profile.representativePapers.length
+                      ? profile.representativePapers
+                      : profile.topCitedPapers.slice(0, 5)
+                  ).map((paper) => ({ ...paper, intelligence: undefined }))
               ).map((paper) => (
                 <div key={paper.id || `${paper.title}-${paper.year}`} className="rounded-lg border p-4">
                   {paper.id ? (
@@ -283,9 +315,70 @@ export default function ProfileSection({
                     {paper.year || "—"} · {paper.journal || "—"} ·{" "}
                     {paper.citations.toLocaleString()} {t("candidate.citations")}
                   </p>
+                  {paper.intelligence && (
+                    <details className="group mt-3 border-t pt-3">
+                      <summary className="cursor-pointer list-none text-xs font-medium text-primary hover:underline">
+                        {lang === "zh" ? "成果与影响依据" : "Output and impact evidence"}
+                      </summary>
+                      <div className="mt-3 space-y-2">
+                        {paper.intelligence.evidence
+                          .filter((row) => [
+                            "citations",
+                            "contribution_role",
+                            "internal_follow_on",
+                          ].includes(row.code))
+                          .slice(0, 5)
+                          .map((row) => (
+                            <div
+                              key={row.code}
+                              className="flex flex-wrap items-start justify-between gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs"
+                            >
+                              <span className="text-muted-foreground">
+                                {row.label[lang] || row.label.zh || row.label.en}
+                              </span>
+                              <span className="font-medium tabular-nums">
+                                {typeof row.value === "number"
+                                  ? (
+                                      !Number.isInteger(row.value) && row.value >= 0 && row.value <= 1
+                                        ? `${Math.round(row.value * 100)}%`
+                                        : row.value.toLocaleString()
+                                    )
+                                  : String(row.value ?? "—")}
+                              </span>
+                            </div>
+                          ))}
+                        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                          {([
+                            ["field_relevance", lang === "zh" ? "方向相关" : "Topic relevance"],
+                            ["field_time_normalized_impact", lang === "zh" ? "时间归一化影响" : "Time-normalized impact"],
+                            ["topic_continuation", lang === "zh" ? "后续方向延续" : "Topic continuation"],
+                          ] as const).map(([key, label]) => (
+                            <div key={key} className="rounded-md bg-muted/50 px-3 py-2">
+                              <p className="text-muted-foreground">{label}</p>
+                              <p className="mt-1 font-medium">
+                                {Math.round(paper.intelligence.components[key] * 100)}%
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          {lang === "zh"
+                            ? "代表作由方向相关度、时间归一化影响、作者贡献角色和后续工作共同确定，不按引用数单排。"
+                            : "Representative works combine topic relevance, time-normalized impact, authorship role, and follow-on work; they are not sorted by citations alone."}
+                        </p>
+                      </div>
+                    </details>
+                  )}
                 </div>
               ))}
-              {!profile.representativePapers.length && !profile.topCitedPapers.length && (
+              {representativeAnalysisLoaded && !representativeAnalysis.length && (
+                <p className="text-sm text-muted-foreground">
+                  {lang === "zh"
+                    ? "当前图谱证据不足，无法可靠选择代表作。"
+                    : "Current graph evidence is insufficient to select representative works reliably."}
+                </p>
+              )}
+              {!representativeAnalysisLoaded && !profile.representativePapers.length && !profile.topCitedPapers.length && (
                 <p className="text-sm text-muted-foreground">{t("compare.no_papers")}</p>
               )}
             </CardContent>
@@ -389,6 +482,9 @@ export default function ProfileSection({
               profile={profile}
               t={t}
               lang={lang}
+              onViewProfile={onViewProfile}
+              onCompare={(authorId) => onCompare(authorId)}
+              onTrackingChange={onTrackingChange}
             />
           )}
         </TabsContent>

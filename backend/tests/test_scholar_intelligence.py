@@ -4,8 +4,19 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from auth import generate_token, hash_password, hash_token
-from intelligence_repository import save_intelligence_feedback
+from intelligence_repository import _finalize_dataset, save_intelligence_feedback
+from field_discovery import (
+    advance_field_discovery,
+    claim_field_discovery,
+    discover_field_candidates,
+    enqueue_field_discovery,
+    get_field_candidate_author_ids,
+    get_field_discovery_state,
+    process_claimed_field_discovery,
+    save_field_discovery,
+)
 from main import app
+from openalex import OpenAlexError
 from repository import InMemoryRepository
 from research_graph import build_research_graph_batch
 from research_graph_repository import apply_research_graph_batch
@@ -23,6 +34,38 @@ SHIFT = "https://openalex.org/A-INTEL-SHIFT"
 COLLABORATOR = "https://openalex.org/A-INTEL-COLLABORATOR"
 ONE_OFF = "https://openalex.org/A-INTEL-ONE-OFF"
 COMPETITOR = "https://openalex.org/A-INTEL-COMPETITOR"
+OPPORTUNITY = "https://openalex.org/A-INTEL-OPPORTUNITY"
+
+
+def test_intelligence_projection_prefers_persistent_recent_affiliation():
+    dataset = _finalize_dataset({
+        "scholars": {
+            FOCUS: {
+                "work_ids": [],
+                "affiliations": [
+                    {
+                        "name": "Short Recent Institute",
+                        "years": [2026, 2025],
+                        "end_year": 2026,
+                        "is_current": True,
+                        "is_last_known": True,
+                    },
+                    {
+                        "name": "Sustained Institute",
+                        "years": list(range(2010, 2027)),
+                        "end_year": 2026,
+                        "is_current": True,
+                        "is_last_known": True,
+                    },
+                ],
+            },
+        },
+        "works": {},
+    }, FOCUS)
+
+    assert dataset["scholars"][FOCUS]["affiliations"][0]["name"] == (
+        "Sustained Institute"
+    )
 
 
 def _inverted(text: str) -> dict:
@@ -290,6 +333,28 @@ def _rich_repository() -> InMemoryRepository:
         collaborator_works,
     )
 
+    opportunity_works = [
+        _work(
+            OPPORTUNITY,
+            "Collaboration Opportunity",
+            40 + index,
+            year=2022 + index,
+            topic="Knowledge Graph Retrieval",
+            citations=5 + index,
+            coauthors=[(COLLABORATOR, "Alex Kim")],
+            problem="curating reliable graph retrieval resources",
+            method="benchmark dataset and annotated knowledge graph corpus",
+        )
+        for index in range(4)
+    ]
+    _apply(
+        repository,
+        OPPORTUNITY,
+        "Collaboration Opportunity",
+        "Opportunity Institute",
+        opportunity_works,
+    )
+
     one_off_works = [deepcopy(focus_works[4])] + [
         _work(
             ONE_OFF,
@@ -431,7 +496,7 @@ def test_short_term_topic_change_is_not_counted_as_long_term_continuity():
     assert sustained_evidence["value"] == 0
 
 
-def test_collaborators_and_potential_competitors_are_disjoint_and_one_off_is_rejected():
+def test_established_collaborators_are_not_mislabeled_as_opportunities():
     result = build_scholar_intelligence(_rich_repository(), FOCUS, limit=20)
     collaborators = {
         item["author_id"]
@@ -442,7 +507,8 @@ def test_collaborators_and_potential_competitors_are_disjoint_and_one_off_is_rej
         for item in result["recommendations"]["potential_competitors"]
     }
 
-    assert COLLABORATOR in collaborators
+    assert OPPORTUNITY in collaborators
+    assert COLLABORATOR not in collaborators
     assert COMPETITOR in competitors
     assert collaborators.isdisjoint(competitors)
     assert ONE_OFF not in collaborators
@@ -453,6 +519,250 @@ def test_collaborators_and_potential_competitors_are_disjoint_and_one_off_is_rej
         if item["author_id"] == COMPETITOR
     )
     assert "潜在" in competitor["explanation"]["zh"]
+
+
+def test_completed_field_discovery_limits_final_recommendations_to_candidates():
+    repository = _rich_repository()
+    job_id = enqueue_field_discovery(
+        repository,
+        FOCUS,
+        requested_by_user_id="user-a",
+        reason="test",
+    )
+    assert claim_field_discovery(repository)["id"] == job_id
+    save_field_discovery(repository, job_id, FOCUS, {
+        "topics": [{
+            "source_id": "https://openalex.org/T-KNOWLEDGE-GRAPH-RETRIEVAL",
+            "name": "Knowledge Graph Retrieval",
+            "works_count": 6,
+            "active_years": 6,
+            "recent_works": 4,
+            "long_term": True,
+            "recent": True,
+        }],
+        "candidates": [
+            {
+                "source_id": OPPORTUNITY,
+                "name": "Opportunity Scholar",
+                "historical_works": 9,
+                "recent_works": 4,
+                "rank": 1,
+                "score": 17,
+            },
+            {
+                "source_id": COMPETITOR,
+                "name": "Competing Scholar",
+                "historical_works": 8,
+                "recent_works": 4,
+                "rank": 2,
+                "score": 16,
+            },
+        ],
+        "institutions": [],
+    })
+
+    result = build_scholar_intelligence(repository, FOCUS, limit=20)
+    recommended_ids = {
+        item["author_id"]
+        for rows in result["recommendations"].values()
+        for item in rows
+    }
+
+    assert recommended_ids
+    assert recommended_ids <= {OPPORTUNITY, COMPETITOR}
+
+
+def test_field_discovery_enqueues_graphs_in_progressive_batches():
+    repository = _rich_repository()
+    job_id = enqueue_field_discovery(
+        repository,
+        FOCUS,
+        requested_by_user_id="user-a",
+        reason="test",
+    )
+    claimed = claim_field_discovery(repository)
+    assert claimed and claimed["id"] == job_id
+    candidates = [
+        {
+            "source_id": f"https://openalex.org/A-DISCOVERED-{index:02d}",
+            "name": f"Discovered Scholar {index}",
+            "historical_works": 20 - index,
+            "recent_works": max(0, 8 - index),
+            "rank": index + 1,
+            "score": 36 - index,
+        }
+        for index in range(12)
+    ]
+    save_field_discovery(repository, job_id, FOCUS, {
+        "topics": [{
+            "source_id": "https://openalex.org/T-KNOWLEDGE-GRAPH-RETRIEVAL",
+            "name": "Knowledge Graph Retrieval",
+            "works_count": 6,
+            "active_years": 6,
+            "recent_works": 4,
+            "long_term": True,
+            "recent": True,
+        }],
+        "candidates": candidates,
+        "institutions": [],
+    })
+
+    first = advance_field_discovery(repository, FOCUS)
+    assert first["queued_count"] == 8
+    graph_store = repository._research_graph_store
+    for candidate in candidates[:8]:
+        graph_store["sync"][candidate["source_id"]].update(
+            status="ready",
+            last_success_at=datetime.now(timezone.utc).isoformat(),
+            version=1,
+        )
+    second = advance_field_discovery(repository, FOCUS)
+
+    assert second["analyzed_count"] == 8
+    assert second["queued_count"] == 4
+    assert len(graph_store["jobs"]) == 12
+
+
+def test_field_discovery_groupings_only_choose_candidates(monkeypatch):
+    repository = _rich_repository()
+    calls = []
+    count_calls = []
+
+    def grouped(**kwargs):
+        calls.append((kwargs["group_by"], kwargs["published_since"]))
+        if kwargs["group_by"] == "authorships.author.id":
+            return [
+                {
+                    "key": "https://openalex.org/A-GROUP-1",
+                    "name": "Grouped One",
+                    "count": 10 if kwargs["published_since"] is None else 1,
+                },
+                {
+                    "key": "https://openalex.org/A-GROUP-2",
+                    "name": "Grouped Two",
+                    "count": 4 if kwargs["published_since"] is None else 5,
+                },
+                {
+                    "key": "https://openalex.org/A-SUSPICIOUSLY-LARGE",
+                    "name": "Suspiciously Large",
+                    "count": 601 if kwargs["published_since"] is None else 100,
+                },
+            ]
+        return [{
+            "key": "https://openalex.org/I-GROUP-1",
+            "name": "Grouped Institute",
+            "count": 12 if kwargs["published_since"] is None else 6,
+        }]
+
+    monkeypatch.setattr("field_discovery.group_works", grouped)
+    monkeypatch.setattr(
+        "field_discovery.count_works",
+        lambda **kwargs: (
+            count_calls.append((
+                kwargs["institution_id"],
+                kwargs["published_since"],
+            ))
+            or (9 if kwargs["published_since"] is None else 3)
+        ),
+    )
+    result = discover_field_candidates(
+        repository,
+        FOCUS,
+        api_key="test-key",
+        budget_provider="test",
+    )
+
+    assert [row["source_id"] for row in result["candidates"]] == [
+        "https://openalex.org/A-GROUP-2",
+        "https://openalex.org/A-GROUP-1",
+    ]
+    assert result["institutions"][0]["source_id"] == "https://openalex.org/I-GROUP-1"
+    assert result["institutions"][-1] == {
+        "source_id": "https://openalex.org/I-GRAPH-UNIVERSITY",
+        "name": "Graph University",
+        "country_code": "CN",
+        "historical_works": 9,
+        "recent_works": 3,
+        "rank": 2,
+        "score": 15,
+    }
+    assert count_calls == [
+        ("https://openalex.org/I-GRAPH-UNIVERSITY", None),
+        ("https://openalex.org/I-GRAPH-UNIVERSITY", "2022-01-01"),
+    ]
+    assert calls == [
+        ("authorships.author.id", None),
+        ("authorships.author.id", "2022-01-01"),
+        ("authorships.institutions.id", None),
+        ("authorships.institutions.id", "2022-01-01"),
+    ]
+    assert not set(get_field_candidate_author_ids(repository, FOCUS)) & {
+        "https://openalex.org/A-GROUP-1",
+        "https://openalex.org/A-GROUP-2",
+    }
+
+
+def test_field_discovery_failure_keeps_last_success_and_retry_time(monkeypatch):
+    repository = _rich_repository()
+    first_job = enqueue_field_discovery(
+        repository,
+        FOCUS,
+        requested_by_user_id="user-a",
+        reason="initial",
+    )
+    assert claim_field_discovery(repository)["id"] == first_job
+    saved_candidate = {
+        "source_id": "https://openalex.org/A-LAST-SUCCESS",
+        "name": "Last Success",
+        "historical_works": 8,
+        "recent_works": 3,
+        "rank": 1,
+        "score": 14,
+    }
+    save_field_discovery(repository, first_job, FOCUS, {
+        "topics": [{
+            "source_id": "https://openalex.org/T-KNOWLEDGE-GRAPH-RETRIEVAL",
+            "name": "Knowledge Graph Retrieval",
+            "works_count": 6,
+            "active_years": 6,
+            "recent_works": 4,
+            "long_term": True,
+            "recent": True,
+        }],
+        "candidates": [saved_candidate],
+        "institutions": [],
+    })
+    retry_job = enqueue_field_discovery(
+        repository,
+        FOCUS,
+        requested_by_user_id="user-a",
+        reason="retry",
+        force_refresh=True,
+    )
+    claimed = claim_field_discovery(repository)
+
+    def unavailable(**_kwargs):
+        raise OpenAlexError(
+            "rate limited",
+            status_code=429,
+            retry_after="120",
+        )
+
+    monkeypatch.setattr("field_discovery.group_works", unavailable)
+    assert process_claimed_field_discovery(
+        repository,
+        claimed,
+        api_key="test-key",
+        budget_provider="test",
+    ) is False
+
+    state = get_field_discovery_state(repository, FOCUS)
+    assert state["status"] == "queued"
+    assert state["retry_after_at"]
+    assert get_field_candidate_author_ids(repository, FOCUS) == [
+        saved_candidate["source_id"]
+    ]
+    assert repository._field_discovery_store["jobs"][retry_job]["status"] == "pending"
 
 
 def test_ranking_is_stable_for_the_same_graph_snapshot():
@@ -568,6 +878,15 @@ def test_authenticated_intelligence_routes_and_feedback(monkeypatch):
             "verdict": "helpful",
         },
     )
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-test-key")
+    discovery_first = client.post(
+        f"/api/authors/{FOCUS}/intelligence/discover",
+        json={"force_refresh": False},
+    )
+    discovery_second = client.post(
+        f"/api/authors/{FOCUS}/intelligence/discover",
+        json={"force_refresh": False},
+    )
 
     assert analysis.status_code == 200
     assert analysis.json()["source"] == "dynamic_research_graph"
@@ -577,3 +896,6 @@ def test_authenticated_intelligence_routes_and_feedback(monkeypatch):
     assert comparison.json()["status"] == "available"
     assert feedback.status_code == 200
     assert feedback.json()["verdict"] == "helpful"
+    assert discovery_first.status_code == 200
+    assert discovery_first.json()["status"] == "queued"
+    assert discovery_second.json()["job_id"] == discovery_first.json()["job_id"]

@@ -442,6 +442,46 @@ export interface IntelligenceTeam {
   evidence: IntelligenceEvidence[]
 }
 
+export interface FieldDiscoveryStatus {
+  status: "never" | "queued" | "discovering" | "enriching" | "ready" | "partial" | "failed"
+  selected_topics: Array<{
+    source_id: string
+    name: string
+    works_count: number
+    active_years: number
+    recent_works: number
+    long_term: boolean
+    recent: boolean
+  }>
+  discovered_count: number
+  analyzed_count: number
+  attempted_count: number
+  target_count: number
+  queued_count: number
+  failed_count: number
+  last_success_at?: string | null
+  next_refresh_at?: string | null
+  retry_after_at?: string | null
+  last_error?: string | null
+  version: number
+}
+
+export interface IntelligenceInstitution {
+  institution_id: string
+  name: string
+  country_code?: string | null
+  historical_works: number
+  recent_works: number
+  current_collaboration_count: number
+  analyzed_member_count: number
+  topics: Array<{ name: string }>
+  is_focus_institution: boolean
+  coverage: {
+    source: "openalex_grouping"
+    analyzed_members: number
+  }
+}
+
 export interface ScholarIntelligence {
   analysis_version: string
   source: "dynamic_research_graph"
@@ -484,15 +524,22 @@ export interface ScholarIntelligence {
     field_teams: IntelligenceTeam[]
     limitations: LocalizedText[]
   }
+  discovery: FieldDiscoveryStatus
+  institutions: {
+    active: IntelligenceInstitution[]
+    opportunities: IntelligenceInstitution[]
+    focus_institution_id?: string | null
+    limitations: LocalizedText[]
+  }
   limitations: LocalizedText[]
 }
 
 export interface IntelligenceComparison {
   analysis_version: string
-  mode: "scholar" | "team"
+  mode: "scholar" | "team" | "institution"
   status: "available" | "insufficient"
-  left?: IntelligenceScholar | IntelligenceTeam | null
-  right?: IntelligenceScholar | IntelligenceTeam | null
+  left?: IntelligenceScholar | IntelligenceTeam | IntelligenceInstitution | null
+  right?: IntelligenceScholar | IntelligenceTeam | IntelligenceInstitution | null
   dimensions?: Array<{
     key: string
     status?: "available" | "insufficient"

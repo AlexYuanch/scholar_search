@@ -79,7 +79,7 @@ const zh: Record<string, string> = {
   "tab.papers": "学术成果",
   "tab.network": "合作关系",
   "tab.research_graph": "研究脉络",
-  "tab.intelligence": "研究洞察",
+  "tab.intelligence": "领域雷达",
 
   "research_graph.title": "研究脉络",
   "research_graph.description": "按时间理解研究方向、核心问题与方法如何演变",
@@ -207,7 +207,7 @@ const zh: Record<string, string> = {
   "section.research_directions": "当前主要研究方向",
   "section.research_desc": "从公开论文中归纳长期关注和近期活跃的研究方向",
   "section.repr_papers": "代表论文",
-  "section.repr_desc": "高被引及近期发表",
+  "section.repr_desc": "综合方向相关、作者角色与后续影响选择",
   "section.top_cited": "高被引论文",
   "section.top_cited_desc": "按引用数排序",
   "section.all_papers": "全部论文",

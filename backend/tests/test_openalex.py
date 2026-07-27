@@ -232,6 +232,36 @@ def test_graph_works_uses_free_plan_publication_incremental_filter(monkeypatch):
     assert params["sort"] != "updated_date:asc"
 
 
+def test_count_works_scopes_topics_institution_and_recent_window(monkeypatch):
+    import openalex
+
+    session = FakeSession([FakeResponse(200, {
+        "results": [{"id": "https://openalex.org/W1"}],
+        "meta": {"count": 37},
+    })])
+    monkeypatch.setattr(openalex, "_SESSION", session)
+
+    count = openalex.count_works(
+        topic_ids=[
+            "https://openalex.org/T1",
+            "https://openalex.org/T2",
+        ],
+        institution_id="https://openalex.org/I1",
+        published_since="2023-01-01",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
+
+    params = session.requests[0][1]["params"]
+    assert count == 37
+    assert params["filter"] == (
+        "topics.id:T1|T2,institutions.id:I1,"
+        "from_publication_date:2023-01-01"
+    )
+    assert params["per_page"] == 1
+    assert params["select"] == "id"
+
+
 def test_chinese_name_query_adds_both_pinyin_orders():
     import openalex
 

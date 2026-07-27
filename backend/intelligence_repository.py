@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
+from affiliation_evidence import select_primary_affiliation
+
 
 MAX_FIELD_CANDIDATES = 160
 MAX_WORKS_PER_SCHOLAR = 300
@@ -59,11 +61,15 @@ def _finalize_dataset(dataset: dict, focus_author_id: str) -> dict:
     dataset["focus_author_id"] = focus_author_id
     for scholar in dataset["scholars"].values():
         scholar["work_ids"] = sorted(set(scholar["work_ids"]))
+        primary_affiliation = select_primary_affiliation(
+            scholar["affiliations"]
+        )
         scholar["affiliations"].sort(
             key=lambda item: (
+                (item.get("name") or "") == primary_affiliation,
                 bool(item.get("is_current") or item.get("is_last_known")),
                 item.get("end_year") or 0,
-                item.get("start_year") or 0,
+                len(item.get("years") or []),
                 item.get("name") or "",
             ),
             reverse=True,
@@ -120,6 +126,7 @@ def _memory_dataset(repository, focus_author_id: str) -> dict:
             topic = store.get("topics", {}).get(topic_id) or {}
             topics.append({
                 "id": topic_id,
+                "source_id": topic.get("source_topic_id") or topic_id,
                 "name": topic.get("display_name") or topic_id,
                 "is_primary": bool(
                     store["work_topics"][(related_work_id, topic_id)].get("is_primary")
@@ -201,10 +208,20 @@ def _memory_dataset(repository, focus_author_id: str) -> dict:
                 "cited_work_id": cited_work_id,
             })
 
+    field_candidates = getattr(
+        repository,
+        "_field_discovery_store",
+        {},
+    ).get("candidates", {})
     return _finalize_dataset({
         "scholars": scholars,
         "works": works,
         "citations": citations,
+        "field_candidate_ids": [
+            candidate_id
+            for (related_focus_id, candidate_id) in field_candidates
+            if related_focus_id == focus_author_id
+        ],
         "source": "dynamic_research_graph",
     }, focus_author_id)
 
@@ -266,6 +283,26 @@ def _postgres_dataset(
             ]
 
         candidate_ids = set(required_ids)
+        discovery_rows = conn.execute(text("""
+            select fdc.candidate_scholar_id, candidate.source_author_id
+            from public.field_discovery_candidates fdc
+            join public.scholars candidate
+                on candidate.id = fdc.candidate_scholar_id
+            where fdc.focus_scholar_id = cast(:focus_id as uuid)
+            order by fdc.discovery_rank
+            limit :limit
+        """), {
+            "focus_id": focus_id,
+            "limit": MAX_FIELD_CANDIDATES,
+        }).mappings().all()
+        candidate_ids.update(
+            str(row["candidate_scholar_id"])
+            for row in discovery_rows
+        )
+        field_candidate_ids = [
+            str(row["source_author_id"])
+            for row in discovery_rows
+        ]
         if topic_ids:
             rows = conn.execute(text("""
                 select a.scholar_id, count(distinct a.work_id) as matched_works
@@ -396,7 +433,7 @@ def _postgres_dataset(
         work_ids = sorted(works)
         if work_ids:
             topic_rows = conn.execute(text("""
-                select wt.work_id, t.id, t.display_name, wt.is_primary,
+                select wt.work_id, t.id, t.source_topic_id, t.display_name, wt.is_primary,
                        wt.confidence
                 from public.work_topics wt
                 join public.research_topics t on t.id = wt.topic_id
@@ -407,6 +444,7 @@ def _postgres_dataset(
             for row in topic_rows:
                 works[str(row["work_id"])]["topics"].append({
                     "id": str(row["id"]),
+                    "source_id": row["source_topic_id"],
                     "name": row["display_name"],
                     "is_primary": bool(row["is_primary"]),
                     "confidence": float(row["confidence"] or 0),
@@ -483,6 +521,7 @@ def _postgres_dataset(
         "scholars": scholars,
         "works": works,
         "citations": citations,
+        "field_candidate_ids": field_candidate_ids,
         "source": "dynamic_research_graph",
     }, focus_author_id)
 

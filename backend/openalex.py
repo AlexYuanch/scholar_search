@@ -232,6 +232,96 @@ def get_author(author_id: str, *, api_key: str, budget_provider: str) -> dict:
     )
 
 
+def group_works(
+    *,
+    topic_ids: list[str],
+    group_by: str,
+    published_since: str | None,
+    api_key: str,
+    budget_provider: str,
+    per_page: int = 200,
+) -> list[dict]:
+    """Group works for a bounded topic set without persisting scholarly facts.
+
+    The grouping response is used only to choose which existing stage-2 graph
+    entities should be enriched next. Recommendations never use these counts
+    directly.
+    """
+    normalized_topic_ids = list(dict.fromkeys(
+        _entity_id(value)
+        for value in topic_ids
+        if _entity_id(value)
+    ))
+    if not normalized_topic_ids:
+        return []
+    filters = [f"topics.id:{'|'.join(normalized_topic_ids)}"]
+    if published_since:
+        filters.append(f"from_publication_date:{published_since}")
+    data = _get(
+        "/works",
+        api_key=api_key,
+        budget_provider=budget_provider,
+        filter=",".join(filters),
+        group_by=group_by,
+        per_page=min(max(1, per_page), 200),
+    )
+    rows = data.get("group_by") or data.get("groups") or []
+    return [
+        {
+            "key": str(row.get("key") or ""),
+            "name": str(
+                row.get("key_display_name")
+                or row.get("display_name")
+                or row.get("key")
+                or ""
+            ),
+            "count": max(0, int(row.get("count") or 0)),
+        }
+        for row in rows
+        if row.get("key")
+    ]
+
+
+def count_works(
+    *,
+    topic_ids: list[str],
+    institution_id: str,
+    published_since: str | None,
+    api_key: str,
+    budget_provider: str,
+) -> int:
+    """Count topic-matching works for one institution.
+
+    Field discovery normally gets institution counts from a bounded grouping.
+    This focused query fills the current scholar's primary institution when it
+    falls outside that grouping, so institution comparison always has two
+    evidence-bearing sides.
+    """
+    normalized_topic_ids = list(dict.fromkeys(
+        _entity_id(value)
+        for value in topic_ids
+        if _entity_id(value)
+    ))
+    normalized_institution_id = _entity_id(institution_id)
+    if not normalized_topic_ids or not normalized_institution_id:
+        return 0
+    filters = [
+        f"topics.id:{'|'.join(normalized_topic_ids)}",
+        f"institutions.id:{normalized_institution_id}",
+    ]
+    if published_since:
+        filters.append(f"from_publication_date:{published_since}")
+    data = _get(
+        "/works",
+        api_key=api_key,
+        budget_provider=budget_provider,
+        filter=",".join(filters),
+        per_page=1,
+        select="id",
+    )
+    return int((data.get("meta") or {}).get("count") or 0)
+
+
 def get_author_identity_fingerprint(
     author_id: str,
     per_page: int = IDENTITY_FINGERPRINT_WORKS,

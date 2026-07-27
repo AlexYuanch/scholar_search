@@ -18,6 +18,10 @@ EXPECTED_TABLES = {
     "auth_registration_attempts",
     "authorships",
     "favorites",
+    "field_discovery_candidates",
+    "field_discovery_institutions",
+    "field_discovery_jobs",
+    "field_discovery_state",
     "institutions",
     "openalex_identity_cache",
     "openalex_search_cache",
@@ -202,6 +206,40 @@ def test_scholar_intelligence_feedback_is_user_owned_and_versioned():
     assert columns["analysis_key"] == "NO"
     assert columns["verdict"] == "NO"
     assert columns["analysis_version"] == "NO"
+
+
+def test_field_discovery_relations_reuse_graph_entities_and_user_owned_jobs():
+    with psycopg.connect(DATABASE_URL) as connection:
+        candidate_foreign_keys = {
+            row[0].rsplit(".", 1)[-1]
+            for row in connection.execute("""
+                select confrelid::regclass::text
+                from pg_constraint
+                where conrelid = 'public.field_discovery_candidates'::regclass
+                  and contype = 'f'
+            """)
+        }
+        state_columns = {
+            row[0]
+            for row in connection.execute("""
+                select column_name
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'field_discovery_state'
+            """)
+        }
+
+    assert candidate_foreign_keys == {"scholars"}
+    assert {
+        "focus_scholar_id",
+        "requested_by_user_id",
+        "selected_topics",
+        "discovered_count",
+        "analyzed_count",
+        "target_count",
+        "last_success_at",
+        "retry_after_at",
+    } <= state_columns
 
 
 def test_profile_status_emits_postgres_notification():

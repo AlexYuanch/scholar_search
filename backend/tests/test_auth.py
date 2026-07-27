@@ -225,6 +225,10 @@ def test_all_scholar_query_routes_require_authentication():
         client.get("/api/authors/A1/research-graph"),
         client.get("/api/authors/A1/intelligence"),
         client.post(
+            "/api/authors/A1/intelligence/discover",
+            json={"force_refresh": False},
+        ),
+        client.post(
             "/api/authors/A1/research-graph/refresh",
             json={"force_rebuild": False},
         ),
@@ -245,7 +249,7 @@ def test_all_scholar_query_routes_require_authentication():
     ]
 
     assert [response.status_code for response in requests] == [
-        401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401,
+        401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401,
     ]
 
 

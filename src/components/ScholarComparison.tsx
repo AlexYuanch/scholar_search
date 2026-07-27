@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Activity, ArrowLeftRight, BookOpen, CalendarRange, ChevronRight, Loader2, Search, Users, X } from "lucide-react"
 import { ApiError, searchAuthors, streamProfile } from "@/api"
 import type { Candidate, ScholarProfile } from "@/types"
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface Props {
   profile: ScholarProfile
+  preselectedAuthorId?: string | null
   onClose: () => void
   t: (key: string) => string
 }
@@ -348,7 +349,7 @@ function ComparisonResult({ left, right, t }: { left: ScholarProfile; right: Sch
   )
 }
 
-export default function ScholarComparison({ profile, onClose, t }: Props) {
+export default function ScholarComparison({ profile, preselectedAuthorId, onClose, t }: Props) {
   const [query, setQuery] = useState("")
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [comparedProfile, setComparedProfile] = useState<ScholarProfile | null>(null)
@@ -366,8 +367,8 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
     return () => window.removeEventListener("keydown", closeOnEscape)
   }, [onClose])
 
-  const loadCandidate = async (candidate: Candidate) => {
-    if (candidate.id === profile.authorId) {
+  const loadAuthor = useCallback(async (authorId: string, mergedIds?: string[]) => {
+    if (authorId === profile.authorId) {
       setError(t("compare.same_scholar"))
       return
     }
@@ -379,7 +380,7 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
     setError("")
     setLoading("profile")
     setProgress(1)
-    await streamProfile(candidate.id, {
+    await streamProfile(authorId, {
       onInit: () => undefined,
       onStage: () => undefined,
       onProgress: (value) => setProgress((current) => Math.max(current, value)),
@@ -392,8 +393,20 @@ export default function ScholarComparison({ profile, onClose, t }: Props) {
         setError(t(`error.detail.${kind ?? "worker"}`))
         setLoading(null)
       },
-    }, { signal: controller.signal, authorIds: candidate.merged_ids })
+    }, { signal: controller.signal, authorIds: mergedIds })
+  }, [profile.authorId, t])
+
+  const loadCandidate = async (candidate: Candidate) => {
+    await loadAuthor(candidate.id, candidate.merged_ids)
   }
+
+  useEffect(() => {
+    if (!preselectedAuthorId) return
+    const timer = window.setTimeout(() => {
+      void loadAuthor(preselectedAuthorId)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [loadAuthor, preselectedAuthorId])
 
   const search = async () => {
     const name = query.trim()
