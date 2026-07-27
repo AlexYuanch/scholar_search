@@ -70,6 +70,12 @@ from search_service import (
     build_live_candidate_payload,
     search_with_cache,
 )
+from intelligence_repository import save_intelligence_feedback
+from scholar_intelligence import (
+    ANALYSIS_VERSION,
+    build_scholar_intelligence,
+    compare_scholar_intelligence,
+)
 from state import default_state
 from workflow import graph
 
@@ -436,6 +442,24 @@ class OpenAlexCredentialRequest(BaseModel):
 
 class ResearchGraphRefreshRequest(BaseModel):
     force_rebuild: bool = False
+
+
+class IntelligenceCompareRequest(BaseModel):
+    author_ids: list[str] = Field(min_length=2, max_length=2)
+    mode: str = Field(default="scholar", pattern="^(scholar|team)$")
+
+
+class IntelligenceFeedbackRequest(BaseModel):
+    target_author_id: str = Field(min_length=1, max_length=300)
+    candidate_author_id: str | None = Field(default=None, max_length=300)
+    analysis_key: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[a-z0-9_.:-]+$",
+    )
+    verdict: str = Field(pattern="^(helpful|inaccurate)$")
+    analysis_version: str = Field(default=ANALYSIS_VERSION, max_length=80)
+    context: dict = Field(default_factory=dict)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -858,6 +882,104 @@ def author_research_graph(
                 detail="Scholar profile not found",
             ) from exc
     return get_research_graph(repository, author_id)
+
+
+@app.get("/api/authors/{author_id:path}/intelligence")
+def author_intelligence(
+    author_id: str,
+    request: Request,
+    limit: int = Query(8, ge=1, le=20),
+    user: AuthUser = Depends(require_user),
+):
+    """Compute explainable intelligence directly from the dynamic graph."""
+    state = get_research_graph_sync_state(repository, author_id) or {}
+    if state.get("status") != "failed" and research_graph_needs_refresh(
+        repository,
+        author_id,
+    ):
+        _consume_api_quota("profile", user, request)
+        _require_openalex_credential(user)
+        try:
+            enqueue_research_graph_refresh(
+                repository,
+                author_id,
+                requested_by_user_id=user.id,
+                reason="intelligence_view",
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Scholar profile not found",
+            ) from exc
+    result = build_scholar_intelligence(repository, author_id, limit=limit)
+    latest_state = get_research_graph_sync_state(repository, author_id) or {}
+    result["graph_status"] = latest_state.get("status", "never")
+    return result
+
+
+@app.get("/api/intelligence/field")
+def field_scholar_references(
+    author_id: str = Query(min_length=1, max_length=300),
+    limit: int = Query(10, ge=1, le=20),
+    _user: AuthUser = Depends(require_user),
+):
+    """Return the same non-absolute field reference list used by the page."""
+    result = build_scholar_intelligence(repository, author_id, limit=limit)
+    return {
+        "analysis_version": result["analysis_version"],
+        "source": result["source"],
+        "field": result["field"],
+        "field_reference_list": result["field_reference_list"],
+        "limitations": result["limitations"],
+    }
+
+
+@app.post("/api/intelligence/compare")
+def intelligence_compare(
+    req: IntelligenceCompareRequest,
+    _user: AuthUser = Depends(require_user),
+):
+    left, right = [value.strip() for value in req.author_ids]
+    if not left or not right or left == right:
+        raise HTTPException(
+            status_code=422,
+            detail="Two different scholar IDs are required",
+        )
+    return compare_scholar_intelligence(
+        repository,
+        left,
+        right,
+        mode=req.mode,
+    )
+
+
+@app.post("/api/intelligence/feedback")
+def intelligence_feedback(
+    req: IntelligenceFeedbackRequest,
+    user: AuthUser = Depends(require_user),
+):
+    if req.analysis_version != ANALYSIS_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail="Analysis version is no longer current",
+        )
+    if len(json.dumps(req.context, ensure_ascii=False)) > 4000:
+        raise HTTPException(status_code=422, detail="Feedback context is too large")
+    saved = save_intelligence_feedback(
+        repository,
+        user_id=user.id,
+        target_author_id=req.target_author_id,
+        candidate_author_id=req.candidate_author_id,
+        analysis_key=req.analysis_key,
+        verdict=req.verdict,
+        analysis_version=req.analysis_version,
+        context=req.context,
+    )
+    return {
+        "id": saved["id"],
+        "verdict": saved["verdict"],
+        "updated_at": saved["updated_at"],
+    }
 
 
 @app.post("/api/authors/{author_id:path}/research-graph/refresh")

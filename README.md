@@ -28,8 +28,9 @@
 - 学者简介和依据由结构化画像事实按当前界面语言生成，不再复用后端固定语言文本。OpenAlex `affiliations` 和论文 `raw_affiliation_strings` 继续作为内部消歧与核验证据，但概览不再重复展示机构历史和署名原文。任职与教育字段只有在独立来源明确支持时才展示。
 - 画像按“研究画像 → 研究方向与核心指标 → 近期研究变化 → 研究方向时间线 → 学术成果 → 合作关系 → 研究脉络 → 数据说明”组织，优先回答学术用户关心的问题。
 - 研究方向时间线标签可点击；切换到论文栏完成挂载后再滚动到全部论文，并按该年份和精确方向筛选。研究图谱同步以 JSON 合并方式保留 `analysis_topics`，不会再把筛选依据覆盖为 0 篇。
-- 画像保留“学者概览 / 学术成果 / 合作关系 / 研究脉络”四栏切换；标题链接到当前学者的 OpenAlex 主页，合作姓名和图节点先打开详情侧栏，只有用户点击“查询画像”才切换学者，合作连线用于查看共同论文。
+- 画像保留“学者概览 / 学术成果 / 合作关系 / 研究脉络 / 学者智能”五栏切换；标题链接到当前学者的 OpenAlex 主页，合作姓名和图节点先打开详情侧栏，只有用户点击“查询画像”才切换学者，合作连线用于查看共同论文。
 - 支持选择第二位学者进行证据化对比，覆盖研究方向、时间线、代表作、论文与引用、影响力、合作者和近期变化；每项均展示统计依据。
+- “学者智能”直接投影动态研究图谱，确定性计算领域参考学者、重点同行、潜在合作者、潜在项目竞争者、学术质量、研究延续性、代表作、影响力和选题风格；每项展示证据、置信度与数据局限，支持学者/团队比较及用户反馈。LLM 不参与评分。
 - 画像总览按最近发表年份比较连续两个三年阶段，展示论文数量变化、近期开始活跃及研究比重升降，并用六年矩阵呈现方向演化。
 - 动态研究图谱以单个学者为范围，增量保存规范论文、作者/机构/主题、合作、引用与时间线关系；每条关系带来源、更新时间和置信度，数据库唯一键阻止重复关系。
 - “研究图谱”栏不重复论文栏或合作网络，而是提供研究阶段、相邻阶段方向迁移信号、主题—阶段强度矩阵、基于摘要的问题—方法—贡献演进和学者本人论文间的内部引用主线；阶段、迁移、矩阵和摘要证据统一按最新到最早展示。方向标签具有明确的点击、键盘焦点和可访问名称，并读取真实主题详情 API。
@@ -245,7 +246,7 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 - 图谱同步：`research_graph_sync_state`、`research_graph_refresh_jobs`
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
 - 上游搜索缓存与保护：`openalex_search_cache`、`openalex_identity_cache`、`openalex_search_jobs`、`upstream_rate_limits`
-- 用户与会话：`app_users`、`user_api_credentials`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`
+- 用户与会话：`app_users`、`user_api_credentials`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`、`scholar_intelligence_feedback`
 
 数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
 
@@ -262,6 +263,10 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | `GET /api/authors/{author_id}/research-graph` | 必须登录 | 单学者研究阶段、方向迁移、主题矩阵、摘要演进与引用脉络 |
 | `POST /api/authors/{author_id}/research-graph/refresh` | 必须登录、限速 | 仅在缺失、过期或失败时幂等排队；`force_rebuild=true` 只用于失败后的单学者重建 |
 | `GET /api/research-graph/objects/{type}/{id}` | 必须登录 | 返回作者、论文、机构或主题详情 |
+| `GET /api/authors/{author_id}/intelligence` | 必须登录 | 基于动态研究图谱返回可解释的学者分析、四类推荐和团队视角；图谱缺失或过期时只复用既有刷新队列 |
+| `GET /api/intelligence/field` | 必须登录 | 按目标学者所在图谱领域返回参考学者与团队列表 |
+| `POST /api/intelligence/compare` | 必须登录 | 按同一确定性口径比较两位学者或两个团队 |
+| `POST /api/intelligence/feedback` | 必须登录 | 按用户记录“有帮助/不准确”，不改变评分或学术事实 |
 | `POST /api/auth/register` | 公开、限速 | 创建本地账号并自动登录 |
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
 | `GET /api/auth/me` | 可匿名 | 查询当前会话 |
@@ -286,7 +291,7 @@ npm run build
 npm run test:db
 ```
 
-`npm test` 使用受控工作流与 in-memory Repository 做快速回归，并覆盖 ORCID 身份锚定、无 ORCID 降级、大型冲突簇排除、标题式方向拒绝、Trajectory 论文证据门禁、接口越权和 worker 行为。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、论文筛选在研究图谱同步前后保持一致、会话、跨用户追踪、搜索缓存和图谱持久性。外部 OpenAlex/Crossref/ORCID/DeepSeek 全链路另以真实数据验收。
+`npm test` 使用受控工作流与 in-memory Repository 做快速回归，并覆盖 ORCID 身份锚定、无 ORCID 降级、大型冲突簇排除、标题式方向拒绝、Trajectory 论文证据门禁、接口越权、worker 行为，以及智能分析的数据不足、新学者、跨领域高引用、同名、弱贡献角色、短期方向变化、合作/竞争区分和排名稳定性。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、论文筛选在研究图谱同步前后保持一致、会话、跨用户追踪、搜索缓存、图谱持久性和智能分析的图谱复用。外部 OpenAlex/Crossref/ORCID/DeepSeek 全链路另以真实数据验收。
 
 ## 备份
 

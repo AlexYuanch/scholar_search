@@ -8,6 +8,8 @@ flowchart LR
   CADDY --> NGINX["React static + Nginx"]
   NGINX -->|"/api 同源代理"| API["FastAPI Web"]
   API -->|"SQLAlchemy + psycopg"| PG["PostgreSQL 17"]
+  API -->|"只读图谱投影"| INTEL["Deterministic intelligence"]
+  INTEL --> PG
   API -->|"服务端 OpenAlex key + 首次画像"| WF["LangGraph"]
   API -->|"搜索缓存/合并任务"| SEARCH["openalex_search_cache / jobs"]
   SEARCH --> PG
@@ -28,8 +30,8 @@ flowchart LR
 
 | 层 | 技术 | 责任 |
 |----|------|------|
-| 前端 | Vite + React + TypeScript | 身份确认、三栏画像、证据化对比、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
-| API | FastAPI | 密码登录、Cookie 会话、受保护查询、NDJSON 与 SSE |
+| 前端 | Vite + React + TypeScript | 身份确认、五栏画像、证据化分析/比较、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
+| API | FastAPI | 密码登录、Cookie 会话、受保护查询、确定性智能投影、NDJSON 与 SSE |
 | 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、模型路由、多个学术分析 Agent、确定性证据审查和载荷格式化 |
 | Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、加密用户凭据、持久搜索缓存、按用户额度状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
@@ -40,7 +42,7 @@ flowchart LR
 
 前端将文章详情、查询历史和研究追踪作为同一类响应式侧栏：`lg` 及以上进入页面网格的独立列，主内容同步收缩；较窄视口改为带遮罩的抽屉，手机宽度占满屏幕。面板使用动态视口高度和内部滚动，长标题、机构名和论文信息允许换行，避免水平溢出。
 
-画像主内容按“学者概览 / 学术成果 / 合作关系 / 研究脉络”四栏组织。概览先展示研究画像，再把研究方向与核心指标合并呈现，随后展示近期变化、时间线和折叠的数据说明；学术成果包含代表论文与全部论文；合作关系包含核心合作者和关系图；研究脉络包含阶段、方向变化、方向活跃度和摘要演进。时间线方向点击会切换到学术成果并应用对应筛选。
+画像主内容按“学者概览 / 学术成果 / 合作关系 / 研究脉络 / 学者智能”五栏组织。概览先展示研究画像，再把研究方向与核心指标合并呈现，随后展示近期变化、时间线和折叠的数据说明；学术成果包含代表论文与全部论文；合作关系包含核心合作者和关系图；研究脉络包含阶段、方向变化、方向活跃度和摘要演进；学者智能包含确定性分析、推荐、学者/团队比较与反馈。时间线方向点击会切换到学术成果并应用对应筛选。
 
 候选选择页不渲染后端身份聚类的内部术语、分组分数、档案指纹或重复证据框，只使用机构、ORCID、研究方向、论文、引用、h-index 和最近发表年份帮助用户选择。后台仍保留完整 `identity_evidence`、`match_reasons` 与身份分组用于排序、审计和工作流校验。
 
@@ -84,6 +86,7 @@ flowchart LR
 | `timeline_events` | 论文、主题、合作和机构事件；`unique(scholar_id, event_key)` |
 | `research_graph_sync_state` | 最近尝试/成功、水位、指纹、版本、warning 和错误 |
 | `research_graph_refresh_jobs` | 单学者增量/重建任务；每个学者只允许一个活跃任务 |
+| `scholar_intelligence_feedback` | 用户对指定分析结论的“有帮助/不准确”反馈；不保存或改写学术事实 |
 | `scholar_profiles` | 每位学者一份最新成功 JSONB、warnings、工作流版本和数据指纹 |
 | `profile_status` | 轻量状态、版本和更新时间 |
 | `refresh_jobs` | 任务状态、次数、退避、原因、错误和请求用户 |
@@ -139,6 +142,17 @@ flowchart LR
 7. 读取接口只有在 `last_success_at` 存在时才投影内容，论文查询必须连接 `paper_insights` 图谱标记，避免把普通画像论文冒充为首次失败图谱；后续失败仍返回最近成功内容。
 8. 前端纯函数 view-model 按图谱批次中最多 1000 篇论文—主题关系计算最多五个研究阶段、相邻阶段方向迁移信号和主题强度矩阵；首屏先汇总论文数、年份范围、摘要证据、内部引用和画像身份风险，成功但无有效论文时给出明确空态。计算保持时间正序以保证“新进入/持续/退出”语义，展示层再统一按最新到最早排序。
 9. 对象详情 API 只接受作者、论文、机构和主题 UUID，读取、刷新和对象详情全部经过登录依赖；刷新任务只使用服务器 key 或任务请求用户自己的加密凭据。
+
+### 学者与团队智能分析 V1
+
+1. `intelligence_repository.py` 只读投影阶段 2 的 `scholars`、`authorships`、`works`、`paper_insights`、`work_topics`、`research_topics`、`scholar_institutions`、`institutions`、`collaborations` 和 `work_citations`。它不创建第二套论文、主题、关系或向量数据；in-memory 测试也读取同一 `_research_graph_store`。
+2. `scholar_intelligence.py` 先在当前领域样本内计算可复算特征：主题 Jaccard、研究时间同步、近期论文问题/方法重合、署名贡献角色、按主题和年份归一化的引用信号、内部后续引用、跨年份主题延续、共同合作者与合作强度。LLM 不参与打分或排序。
+3. 代表作综合领域相关度、时间/领域归一化影响、第一/末位/通讯作者角色、后续工作扩散和主题延续；学术质量综合代表作、贡献角色、标准化影响和扩散；影响力不使用论文数量。所有组件在 API 中保留具体数值与证据对象。
+4. 领域参考学者要求图谱已成功同步，并同时满足领域重合、持续贡献、代表作/扩散、影响力和近期活跃门槛；产品不输出绝对“最好学者”。重点同行要求方向重合与时间同步；潜在合作者还要求多次合作或共同合作者及能力互补；潜在项目竞争者要求问题、方法、发表时间和方向同时接近、且直接合作较少。
+5. 研究延续性只计算跨至少两个年份的主题；单年偶然论文不构成长线方向。选题风格只从论文题名、摘要问题/方法、work type 和合作事实归纳基础/应用、方法/系统/数据/应用倾向及长期深耕/转向，不输出人格标签。
+6. 图谱从未成功时接口返回 `status=insufficient` 和“无法可靠判断”。论文数量、年份跨度、摘要、主题或引用覆盖不足会降低维度置信度并显示局限；未完整建图的外围作者不进入参考学者、同行或潜在竞争者列表。
+7. `GET /api/authors/{author_id}/intelligence` 在图谱缺失或过期时复用 `research_graph_refresh_jobs` 幂等队列，同时返回当前可用投影；`GET /api/intelligence/field` 提供领域列表，`POST /api/intelligence/compare` 复用同一特征口径比较学者或团队。
+8. `POST /api/intelligence/feedback` 只写 `scholar_intelligence_feedback`，以用户、分析对象、候选、分析键和版本唯一；反馈不回写得分，也不影响其他用户。排名以得分、证据强度和稳定 ID 作确定性次级排序。
 
 ### Worker
 

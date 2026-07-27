@@ -79,6 +79,7 @@ const zh: Record<string, string> = {
   "tab.papers": "学术成果",
   "tab.network": "合作关系",
   "tab.research_graph": "研究脉络",
+  "tab.intelligence": "智能分析",
 
   "research_graph.title": "研究脉络",
   "research_graph.description": "按时间理解研究方向、核心问题与方法如何演变",

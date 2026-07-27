@@ -14,6 +14,7 @@ import DataVerification from "@/components/DataVerification"
 import DynamicResearchGraph from "@/components/DynamicResearchGraph"
 import ResearchChanges from "@/components/ResearchChanges"
 import ResearchTimeline, { type TimelinePaperFilter } from "@/components/ResearchTimeline"
+import ScholarIntelligenceAnalysis from "@/components/ScholarIntelligenceAnalysis"
 import ScholarIntroduction from "@/components/ScholarIntroduction"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -52,7 +53,7 @@ interface Props {
   lang: Lang
 }
 
-type ProfileTab = "overview" | "papers" | "network" | "research-graph"
+type ProfileTab = "overview" | "papers" | "network" | "research-graph" | "intelligence"
 
 function MetricItem({
   icon: Icon,
@@ -211,11 +212,12 @@ export default function ProfileSection({
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as ProfileTab)}
       >
-        <TabsList className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:inline-flex sm:w-auto sm:flex-wrap">
           <TabsTrigger value="overview">{t("tab.overview")}</TabsTrigger>
           <TabsTrigger value="papers">{t("tab.papers")}</TabsTrigger>
           <TabsTrigger value="network">{t("tab.network")}</TabsTrigger>
           <TabsTrigger value="research-graph">{t("tab.research_graph")}</TabsTrigger>
+          <TabsTrigger value="intelligence">{t("tab.intelligence")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
@@ -371,6 +373,23 @@ export default function ProfileSection({
             </Card>
           ) : (
             <DynamicResearchGraph profile={profile} t={t} />
+          )}
+        </TabsContent>
+
+        <TabsContent value="intelligence" className="space-y-4">
+          {analysisUpdating ? (
+            <Card>
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                {t("timeline.updating")}
+              </CardContent>
+            </Card>
+          ) : (
+            <ScholarIntelligenceAnalysis
+              key={profile.authorId}
+              profile={profile}
+              t={t}
+              lang={lang}
+            />
           )}
         </TabsContent>
       </Tabs>

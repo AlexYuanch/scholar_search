@@ -1,8 +1,10 @@
 import type {
   Candidate,
+  IntelligenceComparison,
   ResearchGraph,
   ResearchGraphObject,
   ResearchGraphObjectType,
+  ScholarIntelligence,
   ScholarProfile,
 } from './types'
 
@@ -403,5 +405,53 @@ export async function getResearchGraphObject(
   const response = await authenticatedFetch(
     `/research-graph/objects/${objectType}/${encodeURIComponent(objectId)}`,
   )
+  return response.json()
+}
+
+export async function getScholarIntelligence(
+  authorId: string,
+  signal?: AbortSignal,
+): Promise<ScholarIntelligence> {
+  const response = await authenticatedFetch(
+    `/authors/${encodeURIComponent(authorId)}/intelligence`,
+    { signal },
+  )
+  return response.json()
+}
+
+export async function compareScholarIntelligence(
+  leftAuthorId: string,
+  rightAuthorId: string,
+  mode: "scholar" | "team" = "scholar",
+): Promise<IntelligenceComparison> {
+  const response = await authenticatedFetch('/intelligence/compare', {
+    method: 'POST',
+    body: JSON.stringify({
+      author_ids: [leftAuthorId, rightAuthorId],
+      mode,
+    }),
+  })
+  return response.json()
+}
+
+export async function submitIntelligenceFeedback(input: {
+  targetAuthorId: string
+  candidateAuthorId?: string
+  analysisKey: string
+  verdict: "helpful" | "inaccurate"
+  analysisVersion: string
+  context?: Record<string, unknown>
+}): Promise<{ id: string; verdict: "helpful" | "inaccurate"; updated_at: string }> {
+  const response = await authenticatedFetch('/intelligence/feedback', {
+    method: 'POST',
+    body: JSON.stringify({
+      target_author_id: input.targetAuthorId,
+      candidate_author_id: input.candidateAuthorId,
+      analysis_key: input.analysisKey,
+      verdict: input.verdict,
+      analysis_version: input.analysisVersion,
+      context: input.context ?? {},
+    }),
+  })
   return response.json()
 }

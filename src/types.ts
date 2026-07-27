@@ -349,3 +349,171 @@ export interface ResearchGraph {
     }>
   }
 }
+
+export interface LocalizedText {
+  zh: string
+  en: string
+}
+
+export interface IntelligenceConfidence {
+  level: "high" | "medium" | "low" | "insufficient"
+  score: number
+  label: LocalizedText
+  coverage?: {
+    works: number
+    year_span: number
+    topic_coverage: number
+    abstract_coverage: number
+    graph_ready: boolean
+  }
+}
+
+export interface IntelligenceEvidence {
+  code: string
+  label: LocalizedText
+  value: string | number | boolean | null | Record<string, number | string>
+  paper_ids: string[]
+}
+
+export interface IntelligenceScholar {
+  author_id: string
+  scholar_id: string
+  name: string
+  orcid?: string | null
+  institution?: string | null
+  graph_ready: boolean
+  graph_version: number
+}
+
+export interface IntelligenceDimension {
+  key: "academic_quality" | "continuity" | "impact" | "topic_style"
+  status: "available" | "insufficient"
+  index: number | null
+  confidence: IntelligenceConfidence
+  conclusion: LocalizedText
+  evidence: IntelligenceEvidence[]
+  limitations: LocalizedText[]
+  axes?: Array<{
+    key: string
+    label: LocalizedText
+    value: LocalizedText
+  }>
+}
+
+export interface IntelligenceWork {
+  id: string
+  source_id: string
+  title: string
+  year?: number | null
+  citations: number
+  venue?: string | null
+  topics: string[]
+  index: number
+  confidence: IntelligenceConfidence
+  components: {
+    field_relevance: number
+    field_time_normalized_impact: number
+    contribution_role: number
+    internal_follow_on: number
+    topic_continuation: number
+  }
+  evidence: IntelligenceEvidence[]
+}
+
+export interface IntelligenceRecommendation extends IntelligenceScholar {
+  category: "north_star" | "peer" | "potential_collaborator" | "potential_competitor"
+  index: number
+  confidence: IntelligenceConfidence
+  explanation: LocalizedText
+  evidence: IntelligenceEvidence[]
+  limitations: LocalizedText[]
+}
+
+export interface IntelligenceTeam {
+  institution_id?: string | null
+  name: string
+  member_count: number
+  covered_work_count: number
+  active_years: number
+  field_overlap: number
+  topics: Array<{ name: string; works_count: number }>
+  confidence: IntelligenceConfidence
+  representative_members: IntelligenceScholar[]
+  evidence: IntelligenceEvidence[]
+}
+
+export interface ScholarIntelligence {
+  analysis_version: string
+  source: "dynamic_research_graph"
+  generated_from_graph_version: number
+  graph_status: "never" | "queued" | "updating" | "ready" | "failed"
+  explanation_mode: "deterministic_templates"
+  subject: IntelligenceScholar
+  field: {
+    topics: Array<{ name: string; works_count: number; active_years: number }>
+    as_of_year?: number | null
+    candidate_count: number
+    scope: LocalizedText
+  }
+  methodology: {
+    score_source: LocalizedText
+    ranking_scope: LocalizedText
+    principles: LocalizedText[]
+  }
+  confidence: IntelligenceConfidence
+  dimensions: {
+    academic_quality: IntelligenceDimension
+    continuity: IntelligenceDimension
+    impact: IntelligenceDimension
+    topic_style: IntelligenceDimension
+  }
+  representative_works: IntelligenceWork[]
+  recommendations: {
+    north_stars: IntelligenceRecommendation[]
+    peers: IntelligenceRecommendation[]
+    potential_collaborators: IntelligenceRecommendation[]
+    potential_competitors: IntelligenceRecommendation[]
+  }
+  field_reference_list: {
+    label: LocalizedText
+    is_absolute_ranking: false
+    items: IntelligenceRecommendation[]
+  }
+  teams: {
+    focus_team?: IntelligenceTeam | null
+    field_teams: IntelligenceTeam[]
+    limitations: LocalizedText[]
+  }
+  limitations: LocalizedText[]
+}
+
+export interface IntelligenceComparison {
+  analysis_version: string
+  mode: "scholar" | "team"
+  status: "available" | "insufficient"
+  left?: IntelligenceScholar | IntelligenceTeam | null
+  right?: IntelligenceScholar | IntelligenceTeam | null
+  dimensions?: Array<{
+    key: string
+    status?: "available" | "insufficient"
+    label?: LocalizedText
+    left: number | {
+      index: number | null
+      confidence: IntelligenceConfidence
+      evidence: IntelligenceEvidence[]
+    }
+    right: number | {
+      index: number | null
+      confidence: IntelligenceConfidence
+      evidence: IntelligenceEvidence[]
+    }
+    conclusion?: LocalizedText
+  }>
+  topic_overlap?: number
+  representative_works?: {
+    left: IntelligenceWork[]
+    right: IntelligenceWork[]
+  }
+  conclusion: LocalizedText
+  limitations?: LocalizedText[]
+}

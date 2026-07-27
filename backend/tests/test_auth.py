@@ -223,15 +223,29 @@ def test_all_scholar_query_routes_require_authentication():
         client.get(f"/api/profiles/{scholar_id}/events"),
         client.post("/api/tracking/A1/refresh"),
         client.get("/api/authors/A1/research-graph"),
+        client.get("/api/authors/A1/intelligence"),
         client.post(
             "/api/authors/A1/research-graph/refresh",
             json={"force_rebuild": False},
         ),
         client.get(f"/api/research-graph/objects/paper/{scholar_id}"),
+        client.get("/api/intelligence/field?author_id=A1"),
+        client.post(
+            "/api/intelligence/compare",
+            json={"author_ids": ["A1", "A2"], "mode": "scholar"},
+        ),
+        client.post(
+            "/api/intelligence/feedback",
+            json={
+                "target_author_id": "A1",
+                "analysis_key": "academic_quality",
+                "verdict": "helpful",
+            },
+        ),
     ]
 
     assert [response.status_code for response in requests] == [
-        401, 401, 401, 401, 401, 401, 401, 401, 401,
+        401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401,
     ]
 
 

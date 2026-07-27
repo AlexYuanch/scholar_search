@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "scholar_aliases",
     "scholar_institutions",
     "scholar_profiles",
+    "scholar_intelligence_feedback",
     "scholar_topics",
     "scholars",
     "collaborations",
@@ -181,6 +182,26 @@ def test_dynamic_research_graph_columns_and_relation_sources_are_present():
         "work_citations",
         "timeline_events",
     }
+
+
+def test_scholar_intelligence_feedback_is_user_owned_and_versioned():
+    with psycopg.connect(DATABASE_URL) as connection:
+        columns = {
+            row[0]: row[1]
+            for row in connection.execute("""
+                select column_name, is_nullable
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'scholar_intelligence_feedback'
+            """)
+        }
+
+    assert columns["user_id"] == "NO"
+    assert columns["target_author_id"] == "NO"
+    assert columns["candidate_author_id"] == "NO"
+    assert columns["analysis_key"] == "NO"
+    assert columns["verdict"] == "NO"
+    assert columns["analysis_version"] == "NO"
 
 
 def test_profile_status_emits_postgres_notification():
