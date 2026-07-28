@@ -6,7 +6,10 @@ from sqlalchemy import text
 
 from auth import hash_password, verify_password
 from credentials import decrypt_secret, encrypt_secret
-from intelligence_repository import save_intelligence_feedback
+from intelligence_repository import (
+    intelligence_snapshot_token,
+    save_intelligence_feedback,
+)
 from repository import APIQuotaExceeded, PostgresRepository
 from research_graph import build_research_graph_batch
 from research_graph_repository import (
@@ -700,6 +703,7 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             force_rebuild=False,
             warnings=[],
         )
+        first_snapshot = intelligence_snapshot_token(repository, [author_id])
         second_work = work(
             2,
             2024,
@@ -719,6 +723,8 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             force_rebuild=False,
             warnings=[],
         )
+        second_snapshot = intelligence_snapshot_token(repository, [author_id])
+        assert second_snapshot != first_snapshot
         profile_works_after_graph = repository.list_works(
             author_id,
             20,

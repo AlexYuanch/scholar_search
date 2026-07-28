@@ -910,6 +910,8 @@ def _update_progress_state(repository, author_id: str, values: dict) -> None:
         state = _memory_store(repository)["states"].setdefault(
             author_id, _default_state(author_id)
         )
+        if all(state.get(key) == value for key, value in values.items()):
+            return
         state.update(deepcopy(values), updated_at=_iso())
         return
     allowed = {
@@ -920,6 +922,10 @@ def _update_progress_state(repository, author_id: str, values: dict) -> None:
     if not updates:
         return
     assignments = ", ".join(f"{key} = :{key}" for key in updates)
+    changed = " or ".join(
+        f"fds.{key} is distinct from :{key}"
+        for key in updates
+    )
     with repository.engine.begin() as conn:
         conn.execute(text(f"""
             update public.field_discovery_state fds
@@ -928,6 +934,7 @@ def _update_progress_state(repository, author_id: str, values: dict) -> None:
             where fds.focus_scholar_id = s.id
               and s.source = 'openalex'
               and s.source_author_id = :author_id
+              and ({changed})
         """), {**updates, "author_id": author_id})
 
 

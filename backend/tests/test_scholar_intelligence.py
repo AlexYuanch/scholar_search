@@ -21,6 +21,8 @@ from repository import InMemoryRepository
 from research_graph import build_research_graph_batch
 from research_graph_repository import apply_research_graph_batch
 from scholar_intelligence import (
+    _later_same_topic_counts,
+    _percentile,
     build_scholar_intelligence,
     compare_scholar_intelligence,
 )
@@ -35,6 +37,33 @@ COLLABORATOR = "https://openalex.org/A-INTEL-COLLABORATOR"
 ONE_OFF = "https://openalex.org/A-INTEL-ONE-OFF"
 COMPETITOR = "https://openalex.org/A-INTEL-COMPETITOR"
 OPPORTUNITY = "https://openalex.org/A-INTEL-OPPORTUNITY"
+
+
+def test_percentile_preserves_midpoint_tie_semantics():
+    values = sorted([1.0, 2.0, 2.0, 4.0])
+
+    assert _percentile(0.0, values) == 0.0
+    assert _percentile(2.0, values) == 0.5
+    assert _percentile(5.0, values) == 1.0
+    assert _percentile(2.0, []) == 0.0
+
+
+def test_later_same_topic_counts_each_later_work_once():
+    ordered = [
+        {"id": "W1", "topics": [{"name": "Graph"}, {"name": "Retrieval"}]},
+        {"id": "W2", "topics": [{"name": "Graph"}, {"name": "Retrieval"}]},
+        {"id": "W3", "topics": [{"name": "Retrieval"}]},
+        {"id": "W4", "topics": [{"name": "Vision"}]},
+    ]
+
+    counts = _later_same_topic_counts(ordered)
+
+    assert counts == {
+        "W1": 2,
+        "W2": 1,
+        "W3": 0,
+        "W4": 0,
+    }
 
 
 def test_intelligence_projection_prefers_persistent_recent_affiliation():
@@ -671,6 +700,25 @@ def test_field_discovery_enqueues_graphs_in_progressive_batches():
     assert second["analyzed_count"] == 8
     assert second["queued_count"] == 4
     assert len(graph_store["jobs"]) == 12
+
+    for candidate in candidates:
+        graph_store["sync"][candidate["source_id"]].update(
+            status="ready",
+            last_success_at=datetime.now(timezone.utc).isoformat(),
+            version=1,
+        )
+    completed = advance_field_discovery(repository, FOCUS)
+    saved_updated_at = repository._field_discovery_store["states"][FOCUS][
+        "updated_at"
+    ]
+    repeated = advance_field_discovery(repository, FOCUS)
+
+    assert completed["status"] == "ready"
+    assert repeated["status"] == "ready"
+    assert (
+        repository._field_discovery_store["states"][FOCUS]["updated_at"]
+        == saved_updated_at
+    )
 
 
 def test_field_discovery_groupings_only_choose_candidates(monkeypatch):

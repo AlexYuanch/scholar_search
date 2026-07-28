@@ -518,13 +518,6 @@ function InstitutionCard({
             <p className="mt-1 font-semibold tabular-nums">{institution.analyzed_member_count}</p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {institution.topics.slice(0, 4).map((topic) => (
-            <Badge key={topic.name} variant="secondary" className="font-normal">
-              {topic.name}
-            </Badge>
-          ))}
-        </div>
         {!institution.is_focus_institution && (
           <Button
             size="sm"
@@ -785,11 +778,21 @@ export default function ScholarIntelligenceAnalysis({
       : [],
     [intelligence],
   )
+  const availableFilters = useMemo(
+    () => ([
+      "all",
+      ...CATEGORY_ORDER.filter((category) => (
+        merged.some((row) => row.categories.includes(category))
+      )),
+    ] as DiscoveryFilter[]),
+    [merged],
+  )
+  const effectiveFilter = availableFilters.includes(filter) ? filter : "all"
   const visible = useMemo(
-    () => filter === "all"
+    () => effectiveFilter === "all"
       ? merged
-      : merged.filter((row) => row.categories.includes(filter)),
-    [filter, merged],
+      : merged.filter((row) => row.categories.includes(effectiveFilter)),
+    [effectiveFilter, merged],
   )
   const mergedInstitutions = useMemo(() => {
     if (!intelligence) return []
@@ -804,7 +807,13 @@ export default function ScholarIntelligenceAnalysis({
         }
       }
     }
-    return [...rows.values()]
+    return [...rows.values()].sort((left, right) => (
+      Number(right.is_focus_institution) - Number(left.is_focus_institution)
+      || right.analyzed_member_count - left.analyzed_member_count
+      || right.current_collaboration_count - left.current_collaboration_count
+      || right.recent_works - left.recent_works
+      || left.name.localeCompare(right.name)
+    ))
   }, [intelligence])
 
   if (loading) {
@@ -926,15 +935,15 @@ export default function ScholarIntelligenceAnalysis({
           <div>
             <h3 className="font-semibold">{lang === "zh" ? "相关学者" : "Relevant scholars"}</h3>
             <p className="mt-1 text-xs text-muted-foreground">
-              {localize(FILTER_DESCRIPTIONS[filter], lang)}
+              {localize(FILTER_DESCRIPTIONS[effectiveFilter], lang)}
             </p>
           </div>
           <div className="flex max-w-full flex-wrap gap-1 rounded-lg border bg-muted/30 p-1">
-            {(Object.keys(FILTER_LABELS) as DiscoveryFilter[]).map((key) => (
+            {availableFilters.map((key) => (
               <Button
                 key={key}
                 size="sm"
-                variant={filter === key ? "default" : "ghost"}
+                variant={effectiveFilter === key ? "default" : "ghost"}
                 className="h-7 px-2.5 text-xs"
                 onClick={() => setFilter(key)}
               >
@@ -949,7 +958,7 @@ export default function ScholarIntelligenceAnalysis({
               <ScholarCard
                 key={row.author_id}
                 row={row}
-                filter={filter}
+                filter={effectiveFilter}
                 tracked={tracked.has(row.author_id)}
                 trackingBusy={trackingBusy === row.author_id}
                 feedback={feedback}
@@ -970,7 +979,7 @@ export default function ScholarIntelligenceAnalysis({
                     ? `候选图谱仍在补全（${discovery.analyzed_count}/${discovery.target_count}），可靠结果会逐步出现。`
                     : `Candidate graphs are still being enriched (${discovery.analyzed_count}/${discovery.target_count}); reliable results will appear progressively.`
                 )
-              : filter === "all" && !anyRecommendations
+              : effectiveFilter === "all" && !anyRecommendations
                 ? (
                     lang === "zh"
                       ? "当前样本未同时满足方向、时间、贡献与关系证据门槛，暂无可靠学者建议。"

@@ -77,11 +77,8 @@ from search_service import (
     search_with_cache,
 )
 from intelligence_repository import save_intelligence_feedback
-from scholar_intelligence import (
-    ANALYSIS_VERSION,
-    build_scholar_intelligence,
-    compare_scholar_intelligence,
-)
+from intelligence_service import ScholarIntelligenceService
+from scholar_intelligence import ANALYSIS_VERSION
 from state import default_state
 from workflow import graph
 
@@ -185,6 +182,7 @@ PROGRESS_MESSAGES = {
 
 repository = create_repository()
 event_broker = ProfileEventBroker(os.getenv("DATABASE_URL"))
+intelligence_service = ScholarIntelligenceService()
 CACHE_MAX_AGE_DAYS = 7
 DUMMY_PASSWORD_HASH = hash_password("invalid-login-password")
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "600"))
@@ -939,7 +937,11 @@ def author_intelligence(
             # Field discovery is an enhancement; existing graph intelligence
             # remains readable when quota or credentials are unavailable.
             pass
-    result = build_scholar_intelligence(repository, author_id, limit=limit)
+    result = intelligence_service.analyze(
+        repository,
+        author_id,
+        limit=limit,
+    )
     if result["discovery"]["status"] in {"enriching", "partial", "ready"}:
         result["discovery"] = advance_field_discovery(
             repository,
@@ -1012,7 +1014,11 @@ def field_scholar_references(
     _user: AuthUser = Depends(require_user),
 ):
     """Return the same non-absolute field reference list used by the page."""
-    result = build_scholar_intelligence(repository, author_id, limit=limit)
+    result = intelligence_service.analyze(
+        repository,
+        author_id,
+        limit=limit,
+    )
     return {
         "analysis_version": result["analysis_version"],
         "source": result["source"],
@@ -1033,7 +1039,7 @@ def intelligence_compare(
             status_code=422,
             detail="Two different comparison IDs are required",
         )
-    return compare_scholar_intelligence(
+    return intelligence_service.compare(
         repository,
         left,
         right,

@@ -28,6 +28,115 @@ def _iso(value: Any = None) -> str:
     return (value or datetime.now(timezone.utc)).isoformat()
 
 
+def _revision_value(value: Any) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+
+def _discovery_revision(author_id: str, state: dict) -> tuple:
+    return (
+        author_id,
+        str(state.get("status") or ""),
+        int(state.get("version") or 0),
+        _revision_value(state.get("updated_at")),
+        int(state.get("analyzed_count") or 0),
+        int(state.get("attempted_count") or 0),
+    )
+
+
+def _memory_snapshot_token(repository, requested_ids: tuple[str, ...]) -> tuple:
+    graph_states = (
+        (getattr(repository, "_research_graph_store", None) or {})
+        .get("sync", {})
+    )
+    graph_token = tuple(sorted(
+        (
+            author_id,
+            str(state.get("status") or ""),
+            int(state.get("version") or 0),
+            str(state.get("updated_at") or ""),
+            str(state.get("data_fingerprint") or ""),
+        )
+        for author_id, state in graph_states.items()
+    ))
+    discovery_states = (
+        (getattr(repository, "_field_discovery_store", None) or {})
+        .get("states", {})
+    )
+    discovery_token = tuple(
+        _discovery_revision(
+            author_id,
+            discovery_states.get(author_id) or {},
+        )
+        for author_id in requested_ids
+    )
+    return ("memory", graph_token, discovery_token)
+
+
+def _postgres_snapshot_token(repository, requested_ids: tuple[str, ...]) -> tuple:
+    with repository.engine.connect() as conn:
+        graph = conn.execute(text("""
+            select count(*)::integer as state_count,
+                   coalesce(sum(version), 0)::bigint as version_total,
+                   max(updated_at) as latest_update,
+                   count(*) filter (where status = 'ready')::integer as ready_count,
+                   count(*) filter (
+                       where status in ('queued', 'updating')
+                   )::integer as active_count,
+                   count(*) filter (where status = 'failed')::integer as failed_count
+            from public.research_graph_sync_state
+        """)).mappings().one()
+        discovery_rows = []
+        if requested_ids:
+            placeholders = ", ".join(
+                f":author_id_{index}"
+                for index in range(len(requested_ids))
+            )
+            discovery_rows = conn.execute(text(f"""
+                select s.source_author_id as author_id, fds.status, fds.version,
+                       fds.updated_at, fds.analyzed_count, fds.attempted_count
+                from public.scholars s
+                left join public.field_discovery_state fds
+                    on fds.focus_scholar_id = s.id
+                where s.source = 'openalex'
+                  and s.source_author_id in ({placeholders})
+                order by s.source_author_id
+            """), {
+                f"author_id_{index}": author_id
+                for index, author_id in enumerate(requested_ids)
+            }).mappings().all()
+    graph_token = (
+        int(graph["state_count"] or 0),
+        int(graph["version_total"] or 0),
+        _revision_value(graph["latest_update"]),
+        int(graph["ready_count"] or 0),
+        int(graph["active_count"] or 0),
+        int(graph["failed_count"] or 0),
+    )
+    rows_by_author = {
+        row["author_id"]: row
+        for row in discovery_rows
+    }
+    discovery_token = tuple(
+        _discovery_revision(
+            author_id,
+            rows_by_author.get(author_id) or {},
+        )
+        for author_id in requested_ids
+    )
+    return ("postgres", graph_token, discovery_token)
+
+
+def intelligence_snapshot_token(
+    repository,
+    author_ids: list[str] | tuple[str, ...],
+) -> tuple:
+    """Return a cheap revision token for deterministic intelligence inputs."""
+    requested_ids = tuple(sorted(set(author_ids)))
+    if hasattr(repository, "engine"):
+        return _postgres_snapshot_token(repository, requested_ids)
+    return _memory_snapshot_token(repository, requested_ids)
+
+
 def _empty_scholar(
     author_id: str,
     *,

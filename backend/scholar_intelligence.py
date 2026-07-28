@@ -6,6 +6,7 @@ never described as absolute quality or causal effects.
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from math import log1p, sqrt
 from statistics import median
@@ -72,12 +73,13 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
 
 
-def _percentile(value: float, values: list[float]) -> float:
-    if not values:
+def _percentile(value: float, sorted_values: list[float]) -> float:
+    """Return the midpoint percentile for a value in an already sorted pool."""
+    if not sorted_values:
         return 0.0
-    below = sum(item < value for item in values)
-    equal = sum(item == value for item in values)
-    return (below + 0.5 * equal) / len(values)
+    below = bisect_left(sorted_values, value)
+    above_equal = bisect_right(sorted_values, value)
+    return (below + 0.5 * (above_equal - below)) / len(sorted_values)
 
 
 def _normalized_topic(value: str) -> str:
@@ -167,15 +169,20 @@ def _build_context(dataset: dict) -> dict:
         for name in _topic_names(work):
             topic_pools[_normalized_topic(name)].append(impact)
 
+    sorted_topic_pools = {
+        topic: sorted(values)
+        for topic, values in topic_pools.items()
+    }
+    sorted_all_impacts = sorted(all_impacts)
     impact_percentile = {}
     for work_id, work in works.items():
         pools = [
-            topic_pools[_normalized_topic(name)]
+            sorted_topic_pools[_normalized_topic(name)]
             for name in _topic_names(work)
-            if len(topic_pools[_normalized_topic(name)]) >= 3
+            if len(sorted_topic_pools[_normalized_topic(name)]) >= 3
         ]
         if not pools:
-            pools = [all_impacts]
+            pools = [sorted_all_impacts]
         impact_percentile[work_id] = (
             sum(_percentile(raw_impact[work_id], pool) for pool in pools)
             / max(1, len(pools))
@@ -336,7 +343,6 @@ def _representative_works(
 ) -> list[dict]:
     rows = []
     own_work_ids = set(scholar["work_ids"])
-    later_same_topic = Counter()
     ordered = sorted(
         (
             dataset["works"][work_id]
@@ -345,15 +351,7 @@ def _representative_works(
         ),
         key=lambda work: (work.get("year") or 0, work["id"]),
     )
-    for index, work in enumerate(ordered):
-        topics = {_normalized_topic(name) for name in _topic_names(work)}
-        later_same_topic[work["id"]] = sum(
-            bool(topics & {
-                _normalized_topic(name)
-                for name in _topic_names(later)
-            })
-            for later in ordered[index + 1:]
-        )
+    later_same_topic = _later_same_topic_counts(ordered)
     for work_id in own_work_ids:
         work = dataset["works"].get(work_id)
         if not work:
@@ -437,6 +435,26 @@ def _representative_works(
             row["source_id"],
         ),
     )[:limit]
+
+
+def _later_same_topic_counts(ordered: list[dict]) -> Counter:
+    """Count distinct later works sharing at least one topic with each work."""
+    result = Counter()
+    later_masks: dict[str, int] = defaultdict(int)
+    for index in range(len(ordered) - 1, -1, -1):
+        work = ordered[index]
+        topics = {
+            _normalized_topic(name)
+            for name in _topic_names(work)
+        }
+        shared_mask = 0
+        for topic in topics:
+            shared_mask |= later_masks[topic]
+        result[work["id"]] = shared_mask.bit_count()
+        current_bit = 1 << index
+        for topic in topics:
+            later_masks[topic] |= current_bit
+    return result
 
 
 def _style_dimension(
