@@ -91,7 +91,9 @@ flowchart LR
 | `openalex_identity_cache` | OpenAlex 作者身份指纹，按作者 ID 去重并独立设置 TTL |
 | `openalex_search_jobs` | 冷搜索/过期搜索刷新队列；保存请求用户，同一 `query_key` 只允许一个活跃任务 |
 | `upstream_rate_limits` | `openalex:server` 平台额度及兼容个人 provider 的恢复时间和最近响应状态 |
-| `app_users` | 应用用户；规范化用户名唯一、scrypt 密码摘要和启停状态 |
+| `app_users` | 应用用户；规范化用户名唯一、scrypt 密码摘要、启停状态和 `user/admin/super_admin` 角色 |
+| `analytics_visitors` | 随机访客令牌的 SHA-256 摘要、可选用户和最近活动时间；不保存原始 IP |
+| `analytics_events` | 页面访问、搜索、画像查看和异常分类；只保留必要动作、用户/学者引用与非敏感元数据 |
 | `user_api_credentials` | 用户上游凭据；Fernet 密文、末四位提示和验证时间，复合主键隔离用户/provider |
 | `auth_login_attempts` | 登录结果、用户名、IP 和时间，用于短时限速与审计 |
 | `auth_registration_attempts` | 注册结果、IP 和时间，用于公开注册防滥用 |
@@ -155,6 +157,15 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`re
 7. 退出时服务端撤销会话并清除 Cookie；管理员重置密码时撤销该用户已有会话。
 8. 搜索和画像生成在 PostgreSQL 事务内按用户与 IP 消费额度，多 Web 实例共享同一限制。
 9. 当前前端不展示个人 OpenAlex 设置；兼容的 `GET/PUT/DELETE /api/settings/openalex` 仍只操作当前会话用户，PUT 在生产环境继续要求 HTTPS，并在配置 `CREDENTIAL_ENCRYPTION_KEY` 后加密保存。
+10. `require_admin` 只允许 `admin/super_admin` 访问统计；`require_super_admin` 只允许受保护的 `admin` 超级管理员修改其他账号角色。普通管理员不能转授权，超级管理员不能被网页撤销。
+
+## 访问统计
+
+- 前端首次载入调用匿名可用的 `POST /api/analytics/visit`；服务端生成 30 天随机 `HttpOnly` 访客 Cookie，数据库只保存摘要。
+- API 中间件最多每分钟更新一次访客最近活动；近 5 分钟活动构成在线口径，登录用户和匿名访客分开统计。
+- 搜索、画像查看、注册/登录结果、限流和服务异常写入分类事件，不保存搜索姓名、密码、密钥、Cookie、原始异常堆栈或运营统计 IP。
+- `GET /api/admin/dashboard` 在 PostgreSQL 聚合 24 小时、7 天或 30 天趋势，并读取三类后台任务状态；`GET/PATCH /api/admin/users` 只向超级管理员开放。
+- 维护任务删除 30 天前的统计事件和长期未活动访客，不影响用户、画像、历史、追踪或研究图谱记录。
 
 系统提供公开本地账号注册，但不依赖外部身份提供商。建议前后端同域部署，以简化 Cookie 和 CSRF 边界；生产环境必须启用 HTTPS 与 Secure Cookie。
 
@@ -180,6 +191,7 @@ SSE 连接断开不会影响画像生成，浏览器重连后会先读取当前 
 - 服务端 OpenAlex key 只通过 `OPENALEX_API_KEY` 注入 Web/worker，不写入数据库、前端、API 响应、日志或异常。只有启用兼容个人 key 写接口时才需要稳定的 44 字符 `CREDENTIAL_ENCRYPTION_KEY`。
 - 生产环境的凭据写接口拒绝公网 HTTP 并返回 426；仅开发环境和回环主机允许 HTTP 测试。正式用户提交 key 前必须启用 HTTPS。
 - 搜索与画像生成设置独立账号/IP 限额，事件由 worker 定期清理。
+- 管理员入口显隐仅用于界面体验，真正权限由 FastAPI 角色依赖执行；运营统计不保存原始 IP，也不向管理员暴露会话 token、Cookie 或安全限速明细。
 - CORS 仅允许配置的前端域名，Cookie 请求启用 credentials。
 - 数据库、OpenAlex、可选凭据加密 key 和 LLM 密钥全部为服务端配置，不进入 Vite bundle。
 

@@ -9,6 +9,7 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
 const SEARCH_TIMEOUT_MS = 30_000
 const PROFILE_IDLE_TIMEOUT_MS = 120_000
+let pageVisitPromise: Promise<void> | null = null
 
 export type ApiErrorKind =
   | 'network'
@@ -107,6 +108,53 @@ export interface OpenAlexSettings {
     prepaid_remaining_usd?: number | null
     resets_at?: string | null
   }
+}
+
+export interface AdminDashboardData {
+  range: "24h" | "7d" | "30d"
+  summary: {
+    online_authenticated: number
+    online_anonymous: number
+    today_page_views: number
+    today_active_users: number
+    total_users: number
+    new_users: number
+    searches: number
+    profile_views: number
+  }
+  trends: Array<{
+    bucket: string
+    page_views: number
+    searches: number
+    active_users: number
+  }>
+  online_users: Array<{
+    id: string
+    username: string
+    last_seen_at: string
+  }>
+  popular_scholars: Array<{
+    scholar_id: string
+    name: string
+    views: number
+  }>
+  jobs: {
+    queued: number
+    running: number
+    succeeded: number
+    failed: number
+  }
+  anomalies: Array<{
+    type: "rate_limit" | "source_failure" | "job_failure" | "server_error"
+    count: number
+  }>
+}
+
+export interface AdminUser {
+  id: string
+  username: string
+  role: "user" | "admin" | "super_admin"
+  is_active: boolean
 }
 
 export async function searchAuthors(name: string, options: { signal?: AbortSignal } = {}): Promise<Candidate[]> {
@@ -313,6 +361,45 @@ export async function deleteOpenAlexSettings(): Promise<void> {
 export async function getHistory(): Promise<ScholarListItem[]> {
   const response = await authenticatedFetch('/history')
   return (await response.json()).items ?? []
+}
+
+export async function recordPageVisit(): Promise<void> {
+  if (!pageVisitPromise) {
+    pageVisitPromise = fetch(`${API_BASE}/analytics/visit`, {
+      method: 'POST',
+      credentials: 'include',
+    }).then(() => undefined)
+  }
+  await pageVisitPromise
+}
+
+export async function getAdminDashboard(
+  range: "24h" | "7d" | "30d",
+): Promise<AdminDashboardData> {
+  const response = await authenticatedFetch(`/admin/dashboard?range=${range}`)
+  return response.json()
+}
+
+export async function getAdminUsers(query = ""): Promise<{
+  items: AdminUser[]
+  total: number
+  next_cursor: string | null
+}> {
+  const params = new URLSearchParams()
+  if (query.trim()) params.set("query", query.trim())
+  const response = await authenticatedFetch(`/admin/users?${params}`)
+  return response.json()
+}
+
+export async function updateAdminRole(
+  userId: string,
+  role: "user" | "admin",
+): Promise<AdminUser> {
+  const response = await authenticatedFetch(`/admin/users/${encodeURIComponent(userId)}/role`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  })
+  return response.json()
 }
 
 export async function getTracking(): Promise<ScholarListItem[]> {

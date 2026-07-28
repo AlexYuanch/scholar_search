@@ -17,6 +17,7 @@ import {
   getTracking,
   markTrackingSeen,
   profileEventsUrl,
+  recordPageVisit,
   refreshProfile,
   removeTracking,
   searchAuthors,
@@ -28,6 +29,7 @@ import SidePanel from "@/components/SidePanel"
 import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
 import ScholarComparison from "@/components/ScholarComparison"
 import ProfileSection from "@/components/ProfileSection"
+import AdminDashboard from "@/components/AdminDashboard"
 
 interface WorkflowStage {
   node: string
@@ -253,6 +255,7 @@ export default function App() {
   const [authDialogOpen, setAuthDialogOpen] = useState(false)
   const [pendingSearch, setPendingSearch] = useState<string | null>(null)
   const [accountMode, setAccountMode] = useState<"history" | "favorites" | null>(null)
+  const [adminOpen, setAdminOpen] = useState(false)
   const [favorite, setFavorite] = useState(false)
   const [liveUpdateMessage, setLiveUpdateMessage] = useState("")
 
@@ -294,6 +297,10 @@ export default function App() {
     root.classList.toggle("dark", dark)
     localStorage.setItem("dark", String(dark))
   }, [dark])
+
+  useEffect(() => {
+    void recordPageVisit().catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     const root = document.documentElement
@@ -640,6 +647,18 @@ export default function App() {
 
             {user ? (
               <>
+                {user.can_view_admin && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1 px-2 text-xs"
+                    title={t("admin.nav")}
+                    onClick={() => setAdminOpen(true)}
+                  >
+                    <ShieldCheck className="h-4 w-4" />
+                    <span className="hidden lg:inline">{t("admin.nav")}</span>
+                  </Button>
+                )}
                 <span
                   className="hidden max-w-24 truncate rounded-md bg-muted px-2 py-1 text-xs font-medium text-foreground sm:inline"
                   title={user.username}
@@ -670,6 +689,7 @@ export default function App() {
                 </Button>
                 <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => {
                   setFavorite(false)
+                  setAdminOpen(false)
                   void signOut()
                 }}>
                   <LogOut className="h-3.5 w-3.5" /><span className="hidden md:inline">{t("auth.sign_out")}</span>
@@ -926,6 +946,15 @@ export default function App() {
         }}
         t={t}
       />
+      {user?.can_view_admin && (
+        <AdminDashboard
+          open={adminOpen}
+          onClose={() => setAdminOpen(false)}
+          user={user}
+          t={t}
+          lang={lang}
+        />
+      )}
     </div>
   )
 }

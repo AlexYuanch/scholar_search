@@ -100,7 +100,13 @@ def test_password_login_creates_revocable_session(monkeypatch):
         me = client.get("/api/auth/me")
         assert me.json() == {
             "authenticated": True,
-            "user": {"id": login.json()["user"]["id"], "username": "Research.Admin"},
+            "user": {
+                "id": login.json()["user"]["id"],
+                "username": "Research.Admin",
+                "role": "user",
+                "can_view_admin": False,
+                "can_manage_admins": False,
+            },
         }
 
         assert client.post("/api/auth/logout").status_code == 200
@@ -145,6 +151,22 @@ def test_public_registration_rejects_duplicate_username(monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Username is already registered"
+
+
+def test_public_registration_rejects_reserved_admin_username(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+
+    response = TestClient(app).post(
+        "/api/auth/register",
+        json={"username": "ADMIN", "password": "another secure password"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Username is reserved"
 
 
 def test_public_registration_is_rate_limited_by_ip(monkeypatch):

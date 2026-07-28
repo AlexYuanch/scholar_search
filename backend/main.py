@@ -29,6 +29,8 @@ from auth import (
     hash_password,
     hash_token,
     optional_user,
+    require_admin,
+    require_super_admin,
     require_user,
     verify_password,
 )
@@ -57,6 +59,7 @@ from research_graph_repository import (
     research_graph_needs_refresh,
 )
 from repository import (
+    AdminRoleError,
     APIQuotaExceeded,
     LoginRateLimitExceeded,
     RegistrationRateLimitExceeded,
@@ -180,6 +183,7 @@ SEARCH_RATE_LIMIT_PER_USER = int(os.getenv("SEARCH_RATE_LIMIT_PER_USER", "30"))
 SEARCH_RATE_LIMIT_PER_IP = int(os.getenv("SEARCH_RATE_LIMIT_PER_IP", "120"))
 PROFILE_RATE_LIMIT_PER_USER = int(os.getenv("PROFILE_RATE_LIMIT_PER_USER", "12"))
 PROFILE_RATE_LIMIT_PER_IP = int(os.getenv("PROFILE_RATE_LIMIT_PER_IP", "60"))
+ANALYTICS_COOKIE_NAME = "scholar_visitor"
 
 
 def _openalex_budget_guard(provider: str) -> int | None:
@@ -270,6 +274,38 @@ def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> No
     repository.touch_access(author_id)
     if user:
         repository.record_history(user.id, author_id, query_name)
+
+
+def _auth_user_payload(user: AuthUser | dict) -> dict:
+    role = str(user.role if isinstance(user, AuthUser) else user.get("role") or "user")
+    return {
+        "id": str(user.id if isinstance(user, AuthUser) else user["id"]),
+        "username": str(
+            user.username if isinstance(user, AuthUser) else user["username"]
+        ),
+        "role": role,
+        "can_view_admin": role in {"admin", "super_admin"},
+        "can_manage_admins": role == "super_admin",
+    }
+
+
+def _record_usage_event(
+    request: Request,
+    event_type: str,
+    user: AuthUser | None = None,
+    scholar_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    visitor_hash = getattr(request.state, "analytics_visitor_hash", None)
+    if not visitor_hash:
+        return
+    repository.record_analytics_event(
+        event_type,
+        visitor_hash,
+        user_id=user.id if user else None,
+        scholar_id=scholar_id,
+        metadata=metadata,
+    )
 
 
 def _consume_api_quota(action: str, user: AuthUser, request: Request) -> None:
@@ -397,6 +433,84 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def record_analytics_activity(request: Request, call_next):
+    excluded = (
+        request.method == "OPTIONS"
+        or request.url.path in {"/api/health", "/api/ready"}
+    )
+    if excluded:
+        return await call_next(request)
+
+    existing_visitor = request.cookies.get(ANALYTICS_COOKIE_NAME)
+    if not existing_visitor and request.url.path != "/api/analytics/visit":
+        return await call_next(request)
+
+    raw_visitor = existing_visitor or generate_token()
+    visitor_hash = hash_token(raw_visitor)
+    request.state.analytics_visitor_hash = visitor_hash
+    try:
+        response = await call_next(request)
+    except Exception:
+        try:
+            repository.touch_analytics_activity(visitor_hash, None)
+            repository.record_analytics_event(
+                "server_error",
+                visitor_hash,
+                metadata={"route": request.url.path[:200]},
+            )
+        except RepositoryNotConfigured:
+            pass
+        raise
+
+    auth_user = getattr(request.state, "auth_user", None)
+    try:
+        repository.touch_analytics_activity(
+            visitor_hash,
+            auth_user.id if auth_user else None,
+        )
+        if response.status_code == 429:
+            repository.record_analytics_event(
+                "rate_limit",
+                visitor_hash,
+                user_id=auth_user.id if auth_user else None,
+                metadata={"route": request.url.path[:200]},
+            )
+        elif response.status_code >= 500:
+            event_type = (
+                "source_failure"
+                if request.url.path.startswith((
+                    "/api/search",
+                    "/api/profile",
+                    "/api/authors/",
+                ))
+                else "server_error"
+            )
+            repository.record_analytics_event(
+                event_type,
+                visitor_hash,
+                user_id=auth_user.id if auth_user else None,
+                metadata={
+                    "route": request.url.path[:200],
+                    "status": response.status_code,
+                },
+            )
+    except RepositoryNotConfigured:
+        pass
+
+    if not existing_visitor:
+        response.set_cookie(
+            key=ANALYTICS_COOKIE_NAME,
+            value=raw_visitor,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=_env_bool("COOKIE_SECURE", True),
+            samesite="lax",
+            path="/",
+        )
+    return response
+
+
 @app.exception_handler(RepositoryNotConfigured)
 def repository_not_configured(_request, exc: RepositoryNotConfigured):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
@@ -436,6 +550,10 @@ class OpenAlexCredentialRequest(BaseModel):
 
 class ResearchGraphRefreshRequest(BaseModel):
     force_rebuild: bool = False
+
+
+class AdminRoleRequest(BaseModel):
+    role: str = Field(pattern="^(user|admin)$")
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -480,9 +598,15 @@ def _authenticated_response(user: dict, request: Request, status_code: int = 200
         user_agent=request.headers.get("user-agent", ""),
         request_ip=_client_ip(request),
     )
+    auth_user = AuthUser(
+        id=str(user["id"]),
+        username=str(user["username"]),
+        role=str(user.get("role") or "user"),
+    )
+    request.state.auth_user = auth_user
     response = JSONResponse({
         "status": "success",
-        "user": {"id": str(user["id"]), "username": user["username"]},
+        "user": _auth_user_payload(auth_user),
     }, status_code=status_code)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -499,6 +623,8 @@ def _authenticated_response(user: dict, request: Request, status_code: int = 200
 @app.post("/api/auth/register")
 def auth_register(req: PasswordLoginRequest, request: Request):
     request_ip = _client_ip(request)
+    if req.username.strip().casefold() == "admin":
+        raise HTTPException(status_code=409, detail="Username is reserved")
     try:
         repository.enforce_registration_rate_limit(request_ip)
     except RegistrationRateLimitExceeded as exc:
@@ -511,7 +637,9 @@ def auth_register(req: PasswordLoginRequest, request: Request):
         raise HTTPException(status_code=409, detail="Username is already registered") from exc
 
     repository.record_registration_attempt(request_ip, True)
-    return _authenticated_response(user, request, status_code=201)
+    response = _authenticated_response(user, request, status_code=201)
+    _record_usage_event(request, "register_success", request.state.auth_user)
+    return response
 
 
 @app.post("/api/auth/login")
@@ -529,16 +657,19 @@ def auth_login(req: PasswordLoginRequest, request: Request):
     authenticated = bool(user and user.get("is_active") and valid_credentials)
     repository.record_login_attempt(username, request_ip, authenticated)
     if not authenticated:
+        _record_usage_event(request, "login_failed")
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    return _authenticated_response(user, request)
+    response = _authenticated_response(user, request)
+    _record_usage_event(request, "login_success", request.state.auth_user)
+    return response
 
 
 @app.get("/api/auth/me")
 def auth_me(user: AuthUser | None = Depends(optional_user)):
     return {
         "authenticated": user is not None,
-        "user": {"id": user.id, "username": user.username} if user else None,
+        "user": _auth_user_payload(user) if user else None,
     }
 
 
@@ -555,6 +686,57 @@ def auth_logout(request: Request):
         samesite="lax",
     )
     return response
+
+
+@app.post("/api/analytics/visit", status_code=204)
+def analytics_visit(
+    request: Request,
+    user: AuthUser | None = Depends(optional_user),
+):
+    _record_usage_event(request, "page_view", user)
+    return None
+
+
+@app.get("/api/admin/dashboard")
+def admin_dashboard(
+    range_name: str = Query("7d", alias="range", pattern="^(24h|7d|30d)$"),
+    _user: AuthUser = Depends(require_admin),
+):
+    return repository.get_admin_dashboard(range_name)
+
+
+@app.get("/api/admin/users")
+def admin_users(
+    query: str = Query("", max_length=64),
+    cursor: str | None = None,
+    _user: AuthUser = Depends(require_super_admin),
+):
+    offset = _decode_cursor(cursor)
+    result = repository.list_admin_users(query=query, limit=50, offset=offset)
+    next_offset = offset + len(result["items"])
+    return {
+        "items": result["items"],
+        "total": result["total"],
+        "next_cursor": (
+            _encode_cursor(next_offset)
+            if next_offset < result["total"]
+            else None
+        ),
+    }
+
+
+@app.patch("/api/admin/users/{user_id}/role")
+def update_admin_role(
+    user_id: UUID,
+    req: AdminRoleRequest,
+    _user: AuthUser = Depends(require_super_admin),
+):
+    try:
+        return repository.set_user_role(str(user_id), req.role)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="User not found") from exc
+    except AdminRoleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/settings/openalex")
@@ -629,6 +811,7 @@ def search(
     """搜索学者姓名，返回去重后的候选人列表。"""
     api_key, budget_provider = _require_openalex_credential(user)
     _consume_api_quota("search", user, request)
+    _record_usage_event(request, "search", user)
     try:
         return search_with_cache(
             repository,
@@ -672,6 +855,12 @@ def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(requ
         _record_access(req.author_id, req.query_name or cached.get("query_name", ""), user)
         data = _payload_with_defaults(req.author_id, cached["payload"], cached)
         data["refreshStatus"] = refresh_status
+        _record_usage_event(
+            request,
+            "profile_view",
+            user,
+            scholar_id=cached.get("scholar_id"),
+        )
         return {
             "status": "success",
             "source": "cache",
@@ -702,6 +891,12 @@ def profile(req: ProfileRequest, request: Request, user: AuthUser = Depends(requ
         quality_flags=assessment.flags,
     )
     _record_access(req.author_id, req.query_name or saved.get("query_name", ""), user)
+    _record_usage_event(
+        request,
+        "profile_view",
+        user,
+        scholar_id=saved.get("scholar_id"),
+    )
 
     return {
         "status": "success",
@@ -797,6 +992,12 @@ def refresh_profile(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Scholar profile not found") from exc
     latest = repository.get_profile(author_id) or cached
+    _record_usage_event(
+        request,
+        "profile_refresh",
+        user,
+        scholar_id=cached.get("scholar_id"),
+    )
     return {
         "status": latest.get("refresh_status", "queued"),
         "job_id": job_id,
@@ -944,6 +1145,13 @@ async def profile_stream(
             req.author_id,
             req.query_name or cached.get("query_name", ""),
             user,
+        )
+        await asyncio.to_thread(
+            _record_usage_event,
+            request,
+            "profile_view",
+            user,
+            cached.get("scholar_id"),
         )
 
         async def generate_cached():
@@ -1102,6 +1310,13 @@ async def profile_stream(
             req.author_id,
             req.query_name or saved.get("query_name", ""),
             user,
+        )
+        await asyncio.to_thread(
+            _record_usage_event,
+            request,
+            "profile_view",
+            user,
+            saved.get("scholar_id"),
         )
         yield json.dumps({
             "type": "progress",

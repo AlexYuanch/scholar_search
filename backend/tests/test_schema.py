@@ -12,6 +12,8 @@ pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is n
 
 
 EXPECTED_TABLES = {
+    "analytics_events",
+    "analytics_visitors",
     "api_rate_limit_events",
     "app_users",
     "auth_login_attempts",
@@ -81,8 +83,25 @@ def test_local_password_user_columns_are_present():
     assert columns["username"] == "NO"
     assert columns["normalized_username"] == "NO"
     assert columns["password_hash"] == "NO"
+    assert columns["role"] == "NO"
     assert "email" not in columns
     assert "normalized_email" not in columns
+
+
+def test_analytics_tables_do_not_store_raw_ip():
+    with psycopg.connect(DATABASE_URL) as connection:
+        columns = {
+            row[0]
+            for row in connection.execute("""
+                select column_name
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name in ('analytics_visitors', 'analytics_events')
+            """)
+        }
+
+    assert "request_ip" not in columns
+    assert "ip" not in columns
 
 
 def test_favorite_tracking_columns_are_present():

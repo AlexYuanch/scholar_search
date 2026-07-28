@@ -203,6 +203,7 @@ def test_password_user_session_is_revocable():
         assert repository.get_user_by_session(session_hash) == {
             "id": user["id"],
             "username": username,
+            "role": "user",
         }
 
         repository.revoke_session(session_hash)
@@ -218,6 +219,57 @@ def test_password_user_session_is_revocable():
             conn.execute(text(
                 "delete from public.app_users where normalized_username = :username"
             ), {"username": username})
+
+
+def test_admin_roles_and_analytics_are_persistent():
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(8).hex()
+    admin_name = f"analytics-admin-{unique}"
+    member_name = f"analytics-member-{unique}"
+    visitor_hash = (unique * 8)[:64]
+    try:
+        admin = repository.create_password_user(
+            admin_name,
+            hash_password("analytics password"),
+            role="super_admin",
+        )
+        member = repository.create_password_user(
+            member_name,
+            hash_password("analytics password"),
+        )
+        repository.touch_analytics_activity(visitor_hash, member["id"])
+        repository.record_analytics_event(
+            "page_view",
+            visitor_hash,
+            user_id=member["id"],
+        )
+
+        promoted = repository.set_user_role(member["id"], "admin")
+        users = repository.list_admin_users(query=member_name)
+        dashboard = repository.get_admin_dashboard("24h")
+
+        assert promoted["role"] == "admin"
+        assert users["items"][0]["role"] == "admin"
+        assert dashboard["summary"]["today_page_views"] >= 1
+        assert dashboard["summary"]["online_authenticated"] >= 1
+        assert admin["role"] == "super_admin"
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text("""
+                delete from public.analytics_events
+                where visitor_hash = :visitor_hash
+            """), {"visitor_hash": visitor_hash})
+            conn.execute(text("""
+                delete from public.analytics_visitors
+                where visitor_hash = :visitor_hash
+            """), {"visitor_hash": visitor_hash})
+            conn.execute(text("""
+                delete from public.app_users
+                where normalized_username in (:admin_name, :member_name)
+            """), {
+                "admin_name": admin_name,
+                "member_name": member_name,
+            })
 
 
 def test_user_openalex_credential_is_persistent_private_and_owns_jobs():

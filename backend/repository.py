@@ -188,6 +188,10 @@ class APIQuotaExceeded(RuntimeError):
     pass
 
 
+class AdminRoleError(RuntimeError):
+    pass
+
+
 class InMemoryRepository:
     """Test repository with the same behavioral contract as PostgresRepository."""
 
@@ -209,6 +213,8 @@ class InMemoryRepository:
         self.openalex_search_jobs: dict[str, dict] = {}
         self.upstream_rate_limits: dict[str, dict] = {}
         self.user_api_credentials: dict[tuple[str, str], dict] = {}
+        self.analytics_visitors: dict[str, dict] = {}
+        self.analytics_events: list[dict] = []
 
     def _scholar(self, author_id: str, name: str = "") -> dict:
         if author_id not in self.scholars:
@@ -713,7 +719,12 @@ class InMemoryRepository:
                         self.profiles[author_id]["payload"]["refreshStatus"] = "failed"
             return deleted
 
-    def create_password_user(self, username: str, password_hash: str) -> dict:
+    def create_password_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: str = "user",
+    ) -> dict:
         normalized_username = username.strip().casefold()
         with self._lock:
             if normalized_username in self.users:
@@ -724,6 +735,8 @@ class InMemoryRepository:
                 "normalized_username": normalized_username,
                 "password_hash": password_hash,
                 "is_active": True,
+                "role": role,
+                "created_at": _now(),
             }
             self.users[normalized_username] = user
         return deepcopy(user)
@@ -744,6 +757,7 @@ class InMemoryRepository:
                 "id": user["id"],
                 "username": user["username"],
                 "is_active": user["is_active"],
+                "role": user.get("role", "user"),
             }
             for user in sorted(self.users.values(), key=lambda item: item["normalized_username"])
         ]
@@ -838,6 +852,196 @@ class InMemoryRepository:
             None,
         )
 
+    def touch_analytics_activity(self, visitor_hash: str, user_id: str | None) -> None:
+        with self._lock:
+            now = _now()
+            row = self.analytics_visitors.get(visitor_hash)
+            if row and row["last_seen_at"] > now - timedelta(minutes=1):
+                row["user_id"] = user_id
+                return
+            if row:
+                row["last_seen_at"] = now
+                row["user_id"] = user_id
+            else:
+                self.analytics_visitors[visitor_hash] = {
+                    "visitor_hash": visitor_hash,
+                    "user_id": user_id,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                }
+
+    def record_analytics_event(
+        self,
+        event_type: str,
+        visitor_hash: str,
+        user_id: str | None = None,
+        scholar_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        self.analytics_events.append({
+            "event_type": event_type,
+            "visitor_hash": visitor_hash,
+            "user_id": user_id,
+            "scholar_id": scholar_id,
+            "metadata": deepcopy(metadata or {}),
+            "created_at": _now(),
+        })
+
+    def list_admin_users(
+        self,
+        query: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        needle = query.strip().casefold()
+        rows = [
+            user for user in sorted(
+                self.users.values(),
+                key=lambda item: item["normalized_username"],
+            )
+            if not needle or needle in user["normalized_username"]
+        ]
+        return {
+            "items": [
+                {
+                    "id": user["id"],
+                    "username": user["username"],
+                    "role": user.get("role", "user"),
+                    "is_active": user["is_active"],
+                }
+                for user in rows[offset:offset + limit]
+            ],
+            "total": len(rows),
+        }
+
+    def set_user_role(self, user_id: str, role: str) -> dict:
+        if role not in {"user", "admin"}:
+            raise AdminRoleError("Invalid administrator role")
+        with self._lock:
+            user = next(
+                (item for item in self.users.values() if item["id"] == user_id),
+                None,
+            )
+            if not user:
+                raise KeyError(user_id)
+            if user.get("role") == "super_admin":
+                raise AdminRoleError("The super administrator cannot be changed")
+            user["role"] = role
+            return {
+                "id": user["id"],
+                "username": user["username"],
+                "role": role,
+                "is_active": user["is_active"],
+            }
+
+    def get_admin_dashboard(self, range_name: str) -> dict:
+        now = _now()
+        window = {
+            "24h": timedelta(hours=24),
+            "7d": timedelta(days=7),
+            "30d": timedelta(days=30),
+        }[range_name]
+        cutoff = now - window
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        events = [row for row in self.analytics_events if row["created_at"] >= cutoff]
+        today_events = [
+            row for row in self.analytics_events if row["created_at"] >= today
+        ]
+        online = [
+            row for row in self.analytics_visitors.values()
+            if row["last_seen_at"] >= now - timedelta(minutes=5)
+        ]
+        online_user_ids = {row["user_id"] for row in online if row.get("user_id")}
+        users_by_id = {user["id"]: user for user in self.users.values()}
+        profile_counts: dict[str, int] = {}
+        for row in events:
+            if row["event_type"] == "profile_view" and row.get("scholar_id"):
+                profile_counts[row["scholar_id"]] = (
+                    profile_counts.get(row["scholar_id"], 0) + 1
+                )
+        popular = []
+        for scholar_id, count in sorted(
+            profile_counts.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:8]:
+            scholar = next(
+                (item for item in self.scholars.values() if item["id"] == scholar_id),
+                {},
+            )
+            popular.append({
+                "scholar_id": scholar_id,
+                "name": scholar.get("name", ""),
+                "views": count,
+            })
+        trend_count = 24 if range_name == "24h" else 7 if range_name == "7d" else 30
+        bucket_delta = timedelta(hours=1) if range_name == "24h" else timedelta(days=1)
+        trends = []
+        for index in range(trend_count):
+            start = now - bucket_delta * (trend_count - index)
+            end = start + bucket_delta
+            bucket = [row for row in events if start <= row["created_at"] < end]
+            trends.append({
+                "bucket": _iso(start),
+                "page_views": sum(row["event_type"] == "page_view" for row in bucket),
+                "searches": sum(row["event_type"] == "search" for row in bucket),
+                "active_users": len({
+                    row["user_id"] for row in bucket if row.get("user_id")
+                }),
+            })
+        anomalies = []
+        for event_type in ("rate_limit", "source_failure", "job_failure", "server_error"):
+            count = sum(row["event_type"] == event_type for row in events)
+            if count:
+                anomalies.append({"type": event_type, "count": count})
+        jobs = {
+            "queued": sum(row.get("status") == "pending" for row in self.jobs.values()),
+            "running": sum(row.get("status") == "running" for row in self.jobs.values()),
+            "succeeded": sum(row.get("status") == "succeeded" for row in self.jobs.values()),
+            "failed": sum(row.get("status") == "failed" for row in self.jobs.values()),
+        }
+        if jobs["failed"] and not any(
+            item["type"] == "job_failure" for item in anomalies
+        ):
+            anomalies.append({"type": "job_failure", "count": jobs["failed"]})
+        return {
+            "range": range_name,
+            "summary": {
+                "online_authenticated": len(online_user_ids),
+                "online_anonymous": sum(not row.get("user_id") for row in online),
+                "today_page_views": sum(
+                    row["event_type"] == "page_view" for row in today_events
+                ),
+                "today_active_users": len({
+                    row["user_id"] for row in today_events if row.get("user_id")
+                }),
+                "total_users": len(self.users),
+                "new_users": sum(
+                    user.get("created_at", now) >= cutoff
+                    for user in self.users.values()
+                ),
+                "searches": sum(row["event_type"] == "search" for row in events),
+                "profile_views": sum(
+                    row["event_type"] == "profile_view" for row in events
+                ),
+            },
+            "trends": trends,
+            "online_users": [
+                {
+                    "id": user_id,
+                    "username": users_by_id[user_id]["username"],
+                    "last_seen_at": _iso(max(
+                        row["last_seen_at"] for row in online
+                        if row.get("user_id") == user_id
+                    )),
+                }
+                for user_id in online_user_ids if user_id in users_by_id
+            ],
+            "popular_scholars": popular,
+            "jobs": jobs,
+            "anomalies": anomalies,
+        }
+
     def revoke_session(self, session_hash: str) -> None:
         session = self.sessions.get(session_hash)
         if session:
@@ -855,7 +1059,12 @@ class InMemoryRepository:
         return None
 
     def run_maintenance(self) -> dict:
-        return {"enqueued": 0, "deleted": 0}
+        cutoff = _now() - timedelta(days=30)
+        previous_count = len(self.analytics_events)
+        self.analytics_events = [
+            row for row in self.analytics_events if row["created_at"] >= cutoff
+        ]
+        return {"enqueued": 0, "deleted": previous_count - len(self.analytics_events)}
 
     def healthcheck(self) -> bool:
         return True
@@ -1965,21 +2174,27 @@ class PostgresRepository:
             """), {"user_id": user_id, "error": error})
         return deleted
 
-    def create_password_user(self, username: str, password_hash: str) -> dict:
+    def create_password_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: str = "user",
+    ) -> dict:
         normalized_username = username.strip().casefold()
         try:
             with self.engine.begin() as conn:
                 row = conn.execute(text("""
                     insert into public.app_users (
-                        username, normalized_username, password_hash
+                        username, normalized_username, password_hash, role
                     ) values (
-                        :username, :normalized_username, :password_hash
+                        :username, :normalized_username, :password_hash, :role
                     )
-                    returning id, username, normalized_username, password_hash, is_active
+                    returning id, username, normalized_username, password_hash, is_active, role
                 """), {
                     "username": username.strip(),
                     "normalized_username": normalized_username,
                     "password_hash": password_hash,
+                    "role": role,
                 }).mappings().one()
         except IntegrityError as exc:
             if "app_users_normalized_username" in str(exc):
@@ -2009,19 +2224,24 @@ class PostgresRepository:
     def list_users(self) -> list[dict]:
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
-                select id, username, is_active
+                select id, username, is_active, role
                 from public.app_users
                 order by normalized_username
             """)).mappings().all()
         return [
-            {"id": str(row["id"]), "username": row["username"], "is_active": row["is_active"]}
+            {
+                "id": str(row["id"]),
+                "username": row["username"],
+                "is_active": row["is_active"],
+                "role": row["role"],
+            }
             for row in rows
         ]
 
     def get_user_for_login(self, username: str) -> dict | None:
         with self.engine.connect() as conn:
             row = conn.execute(text("""
-                select id, username, normalized_username, password_hash, is_active
+                select id, username, normalized_username, password_hash, is_active, role
                 from public.app_users
                 where normalized_username = :normalized_username
             """), {"normalized_username": username.strip().casefold()}).mappings().first()
@@ -2154,7 +2374,7 @@ class PostgresRepository:
     def get_user_by_session(self, session_hash: str) -> dict | None:
         with self.engine.begin() as conn:
             row = conn.execute(text("""
-                select u.id, u.username
+                select u.id, u.username, u.role
                 from public.user_sessions s
                 join public.app_users u on u.id = s.user_id
                 where s.token_hash = :token_hash
@@ -2169,7 +2389,307 @@ class PostgresRepository:
                     where token_hash = :token_hash
                       and last_seen_at < now() - interval '5 minutes'
                 """), {"token_hash": session_hash})
-        return {"id": str(row["id"]), "username": row["username"]} if row else None
+        return {
+            "id": str(row["id"]),
+            "username": row["username"],
+            "role": row["role"],
+        } if row else None
+
+    def touch_analytics_activity(self, visitor_hash: str, user_id: str | None) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into public.analytics_visitors (
+                    visitor_hash, user_id, first_seen_at, last_seen_at
+                ) values (
+                    :visitor_hash, cast(:user_id as uuid), now(), now()
+                )
+                on conflict (visitor_hash) do update
+                set user_id = excluded.user_id,
+                    last_seen_at = case
+                        when public.analytics_visitors.last_seen_at < now() - interval '1 minute'
+                        then now()
+                        else public.analytics_visitors.last_seen_at
+                    end
+            """), {
+                "visitor_hash": visitor_hash,
+                "user_id": user_id,
+            })
+
+    def record_analytics_event(
+        self,
+        event_type: str,
+        visitor_hash: str,
+        user_id: str | None = None,
+        scholar_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into public.analytics_events (
+                    visitor_hash, user_id, event_type, scholar_id, metadata
+                ) values (
+                    :visitor_hash,
+                    cast(:user_id as uuid),
+                    :event_type,
+                    cast(:scholar_id as uuid),
+                    cast(:metadata as jsonb)
+                )
+            """), {
+                "visitor_hash": visitor_hash,
+                "user_id": user_id,
+                "event_type": event_type,
+                "scholar_id": scholar_id,
+                "metadata": _json(metadata or {}),
+            })
+
+    def list_admin_users(
+        self,
+        query: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        params = {
+            "query": f"%{query.strip().casefold()}%",
+            "limit": limit,
+            "offset": offset,
+        }
+        with self.engine.connect() as conn:
+            total = conn.execute(text("""
+                select count(*)
+                from public.app_users
+                where normalized_username like :query
+            """), params).scalar_one()
+            rows = conn.execute(text("""
+                select id, username, role, is_active
+                from public.app_users
+                where normalized_username like :query
+                order by
+                    case role when 'super_admin' then 0 when 'admin' then 1 else 2 end,
+                    normalized_username
+                limit :limit offset :offset
+            """), params).mappings().all()
+        return {
+            "items": [
+                {
+                    "id": str(row["id"]),
+                    "username": row["username"],
+                    "role": row["role"],
+                    "is_active": row["is_active"],
+                }
+                for row in rows
+            ],
+            "total": int(total),
+        }
+
+    def set_user_role(self, user_id: str, role: str) -> dict:
+        if role not in {"user", "admin"}:
+            raise AdminRoleError("Invalid administrator role")
+        with self.engine.begin() as conn:
+            current = conn.execute(text("""
+                select id, username, role, is_active
+                from public.app_users
+                where id = cast(:user_id as uuid)
+                for update
+            """), {"user_id": user_id}).mappings().first()
+            if not current:
+                raise KeyError(user_id)
+            if current["role"] == "super_admin":
+                raise AdminRoleError("The super administrator cannot be changed")
+            row = conn.execute(text("""
+                update public.app_users
+                set role = :role, updated_at = now()
+                where id = cast(:user_id as uuid)
+                returning id, username, role, is_active
+            """), {"user_id": user_id, "role": role}).mappings().one()
+        return {
+            "id": str(row["id"]),
+            "username": row["username"],
+            "role": row["role"],
+            "is_active": row["is_active"],
+        }
+
+    def get_admin_dashboard(self, range_name: str) -> dict:
+        now = _now()
+        cutoff = now - {
+            "24h": timedelta(hours=24),
+            "7d": timedelta(days=7),
+            "30d": timedelta(days=30),
+        }[range_name]
+        params = {"cutoff": cutoff}
+        with self.engine.connect() as conn:
+            summary = conn.execute(text("""
+                select
+                    (
+                        select count(distinct user_id)
+                        from public.analytics_visitors
+                        where last_seen_at >= now() - interval '5 minutes'
+                          and user_id is not null
+                    ) as online_authenticated,
+                    (
+                        select count(*)
+                        from public.analytics_visitors
+                        where last_seen_at >= now() - interval '5 minutes'
+                          and user_id is null
+                    ) as online_anonymous,
+                    count(*) filter (
+                        where event_type = 'page_view'
+                          and created_at >= date_trunc('day', now())
+                    ) as today_page_views,
+                    count(distinct user_id) filter (
+                        where user_id is not null
+                          and created_at >= date_trunc('day', now())
+                    ) as today_active_users,
+                    (select count(*) from public.app_users) as total_users,
+                    (
+                        select count(*) from public.app_users
+                        where created_at >= :cutoff
+                    ) as new_users,
+                    count(*) filter (where event_type = 'search') as searches,
+                    count(*) filter (where event_type = 'profile_view') as profile_views
+                from public.analytics_events
+                where created_at >= :cutoff
+                   or created_at >= date_trunc('day', now())
+            """), params).mappings().one()
+
+            online_users = conn.execute(text("""
+                select u.id, u.username, max(v.last_seen_at) as last_seen_at
+                from public.analytics_visitors v
+                join public.app_users u on u.id = v.user_id
+                where v.last_seen_at >= now() - interval '5 minutes'
+                group by u.id, u.username
+                order by last_seen_at desc
+            """)).mappings().all()
+
+            popular = conn.execute(text("""
+                select s.id as scholar_id, s.display_name as name, count(*) as views
+                from public.analytics_events e
+                join public.scholars s on s.id = e.scholar_id
+                where e.event_type = 'profile_view'
+                  and e.created_at >= :cutoff
+                group by s.id, s.display_name
+                order by views desc, s.display_name
+                limit 8
+            """), params).mappings().all()
+
+            anomalies = conn.execute(text("""
+                select event_type as type, count(*) as count
+                from public.analytics_events
+                where created_at >= :cutoff
+                  and event_type in (
+                      'rate_limit', 'source_failure', 'job_failure', 'server_error'
+                  )
+                group by event_type
+                order by count desc
+            """), params).mappings().all()
+
+            jobs = conn.execute(text("""
+                with jobs as (
+                    select status, updated_at from public.refresh_jobs
+                    union all
+                    select status, updated_at from public.openalex_search_jobs
+                    union all
+                    select status, updated_at from public.research_graph_refresh_jobs
+                )
+                select
+                    count(*) filter (where status = 'pending') as queued,
+                    count(*) filter (where status = 'running') as running,
+                    count(*) filter (
+                        where status = 'succeeded' and updated_at >= :cutoff
+                    ) as succeeded,
+                    count(*) filter (
+                        where status = 'failed' and updated_at >= :cutoff
+                    ) as failed
+                from jobs
+            """), params).mappings().one()
+
+            if range_name == "24h":
+                trend_sql = """
+                    with buckets as (
+                        select generate_series(
+                            date_trunc('hour', now()) - interval '23 hours',
+                            date_trunc('hour', now()),
+                            interval '1 hour'
+                        ) as bucket
+                    )
+                    select b.bucket,
+                        count(e.id) filter (where e.event_type = 'page_view') as page_views,
+                        count(e.id) filter (where e.event_type = 'search') as searches,
+                        count(distinct e.user_id) filter (
+                            where e.user_id is not null
+                        ) as active_users
+                    from buckets b
+                    left join public.analytics_events e
+                      on e.created_at >= b.bucket
+                     and e.created_at < b.bucket + interval '1 hour'
+                    group by b.bucket
+                    order by b.bucket
+                """
+            else:
+                day_count = 6 if range_name == "7d" else 29
+                trend_sql = f"""
+                    with buckets as (
+                        select generate_series(
+                            date_trunc('day', now()) - interval '{day_count} days',
+                            date_trunc('day', now()),
+                            interval '1 day'
+                        ) as bucket
+                    )
+                    select b.bucket,
+                        count(e.id) filter (where e.event_type = 'page_view') as page_views,
+                        count(e.id) filter (where e.event_type = 'search') as searches,
+                        count(distinct e.user_id) filter (
+                            where e.user_id is not null
+                        ) as active_users
+                    from buckets b
+                    left join public.analytics_events e
+                      on e.created_at >= b.bucket
+                     and e.created_at < b.bucket + interval '1 day'
+                    group by b.bucket
+                    order by b.bucket
+                """
+            trends = conn.execute(text(trend_sql)).mappings().all()
+
+        anomaly_items = [
+            {"type": row["type"], "count": int(row["count"])}
+            for row in anomalies
+        ]
+        failed_jobs = int(jobs["failed"] or 0)
+        if failed_jobs and not any(
+            item["type"] == "job_failure" for item in anomaly_items
+        ):
+            anomaly_items.append({"type": "job_failure", "count": failed_jobs})
+
+        return {
+            "range": range_name,
+            "summary": {key: int(value or 0) for key, value in summary.items()},
+            "trends": [
+                {
+                    "bucket": _iso(row["bucket"]),
+                    "page_views": int(row["page_views"] or 0),
+                    "searches": int(row["searches"] or 0),
+                    "active_users": int(row["active_users"] or 0),
+                }
+                for row in trends
+            ],
+            "online_users": [
+                {
+                    "id": str(row["id"]),
+                    "username": row["username"],
+                    "last_seen_at": _iso(row["last_seen_at"]),
+                }
+                for row in online_users
+            ],
+            "popular_scholars": [
+                {
+                    "scholar_id": str(row["scholar_id"]),
+                    "name": row["name"],
+                    "views": int(row["views"]),
+                }
+                for row in popular
+            ],
+            "jobs": {key: int(value or 0) for key, value in jobs.items()},
+            "anomalies": anomaly_items,
+        }
 
     def revoke_session(self, session_hash: str) -> None:
         with self.engine.begin() as conn:
@@ -2275,6 +2795,8 @@ class PostgresRepository:
                 "delete from public.auth_registration_attempts where created_at < now() - interval '1 day'",
                 "delete from public.api_rate_limit_events where created_at < now() - interval '1 day'",
                 "delete from public.user_sessions where expires_at < now() - interval '7 days' or revoked_at < now() - interval '7 days'",
+                "delete from public.analytics_events where created_at < now() - interval '30 days'",
+                "delete from public.analytics_visitors where last_seen_at < now() - interval '30 days'",
             ):
                 deleted += conn.execute(text(statement)).rowcount
         return {"enqueued": enqueued, "deleted": deleted}

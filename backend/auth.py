@@ -75,6 +75,15 @@ def verify_password(password: str, encoded: str) -> bool:
 class AuthUser:
     id: str
     username: str
+    role: str = "user"
+
+    @property
+    def can_view_admin(self) -> bool:
+        return self.role in {"admin", "super_admin"}
+
+    @property
+    def can_manage_admins(self) -> bool:
+        return self.role == "super_admin"
 
 
 def optional_user(
@@ -86,8 +95,15 @@ def optional_user(
     repository = request.app.state.repository
     user = repository.get_user_by_session(hash_token(session_token))
     if not user:
+        request.state.auth_user = None
         return None
-    return AuthUser(id=str(user["id"]), username=str(user["username"]))
+    auth_user = AuthUser(
+        id=str(user["id"]),
+        username=str(user["username"]),
+        role=str(user.get("role") or "user"),
+    )
+    request.state.auth_user = auth_user
+    return auth_user
 
 
 def require_user(user: AuthUser | None = Depends(optional_user)) -> AuthUser:
@@ -95,5 +111,23 @@ def require_user(user: AuthUser | None = Depends(optional_user)) -> AuthUser:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
+        )
+    return user
+
+
+def require_admin(user: AuthUser = Depends(require_user)) -> AuthUser:
+    if not user.can_view_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
+    return user
+
+
+def require_super_admin(user: AuthUser = Depends(require_user)) -> AuthUser:
+    if not user.can_manage_admins:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super administrator access required",
         )
     return user

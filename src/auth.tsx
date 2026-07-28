@@ -5,6 +5,9 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api"
 export interface AuthUser {
   id: string
   username: string
+  role: "user" | "admin" | "super_admin"
+  can_view_admin: boolean
+  can_manage_admins: boolean
 }
 
 interface AuthContextValue {
