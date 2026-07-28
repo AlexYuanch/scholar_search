@@ -17,6 +17,18 @@ from field_discovery import (
     compare_field_institutions,
     get_field_discovery_state,
 )
+from intelligence_recommendations import (
+    CollaboratorMetrics,
+    CompetitorMetrics,
+    NarrativeContext,
+    PeerMetrics,
+    ReferenceMetrics,
+    assign_reference_angles,
+    collaborator_explanation,
+    competitor_explanation,
+    peer_explanation,
+    reference_explanation,
+)
 from intelligence_repository import load_intelligence_dataset
 
 
@@ -938,50 +950,38 @@ def _recommendation_topic_text(row: dict, lang: str) -> str:
     return " and ".join(topics)
 
 
-def _recommendation_identity(row: dict, lang: str) -> str:
+def _recommendation_narrative(row: dict) -> NarrativeContext:
     name = row["scholar"].get("name") or row["author_id"]
     institution = (_primary_affiliation(row["scholar"]) or {}).get("name")
-    if not institution:
-        return name
-    return (
-        f"{name}（{institution}）"
-        if lang == "zh"
-        else f"{name} at {institution}"
-    )
-
-
-def _recommendation_focus_name(row: dict, lang: str) -> str:
-    return (
-        row.get("focus_name")
-        or ("当前学者" if lang == "zh" else "the current scholar")
-    )
-
-
-def _recommendation_representative(row: dict, lang: str) -> str:
     representatives = (row.get("analysis") or {}).get("representative_works") or []
-    if not representatives:
-        return ""
-    work = representatives[0]
-    title = re.sub(r"\s+", " ", str(work.get("title") or "")).strip()
-    if not title:
-        return ""
+    representative = representatives[0] if representatives else {}
+    title = re.sub(
+        r"\s+",
+        " ",
+        str(representative.get("title") or ""),
+    ).strip()
     if len(title) > 88:
         title = f"{title[:85].rstrip()}…"
-    year = work.get("year")
-    if lang == "zh":
-        year_text = f"（{year}）" if year else ""
-        return f"当前图谱选出的代表成果之一是《{title}》{year_text}"
-    year_text = f" ({year})" if year else ""
-    return f'One representative result in the current graph is “{title}”{year_text}'
+    focus_name = row.get("focus_name")
+    return NarrativeContext(
+        identity_zh=f"{name}（{institution}）" if institution else name,
+        identity_en=f"{name} at {institution}" if institution else name,
+        focus_zh=focus_name or "当前学者",
+        focus_en=focus_name or "the current scholar",
+        topics_zh=_recommendation_topic_text(row, "zh"),
+        topics_en=_recommendation_topic_text(row, "en"),
+        representative_title=title or None,
+        representative_year=representative.get("year"),
+    )
 
 
-def _recommendation_dimension_evidence(
-    row: dict,
+def _dimension_evidence_value(
+    analysis: dict,
     dimension: str,
     code: str,
 ) -> Any:
     evidence = (
-        ((row.get("analysis") or {}).get("dimensions") or {})
+        (analysis.get("dimensions") or {})
         .get(dimension, {})
         .get("evidence", [])
     )
@@ -991,245 +991,12 @@ def _recommendation_dimension_evidence(
     )
 
 
-def _reference_explanation(
-    row: dict,
-    continuity: float | None,
-    impact: float | None,
-    downstream: float,
-    recent_works: int,
-) -> dict:
-    identity_zh = _recommendation_identity(row, "zh")
-    identity_en = _recommendation_identity(row, "en")
-    focus_zh = _recommendation_focus_name(row, "zh")
-    focus_en = _recommendation_focus_name(row, "en")
-    topics_zh = _recommendation_topic_text(row, "zh")
-    topics_en = _recommendation_topic_text(row, "en")
-    representative_zh = _recommendation_representative(row, "zh")
-    representative_en = _recommendation_representative(row, "en")
-    signals = {
-        "continuity": (continuity or 0) / 100,
-        "impact": (impact or 0) / 100,
-        "downstream": downstream,
-        "topic_overlap": row["topic_overlap"],
-        "recent_overlap": row["recent_overlap"],
-    }
-    dominant = row.get("reference_angle") or max(
-        signals,
-        key=lambda key: (signals[key], key),
-    )
-    if dominant == "continuity" and continuity is not None:
-        sustained_topics = _recommendation_dimension_evidence(
-            row, "continuity", "sustained_topics"
-        )
-        longest_span = _recommendation_dimension_evidence(
-            row, "continuity", "longest_span"
-        )
-        if sustained_topics is not None and longest_span is not None:
-            detail_zh = (
-                f"现有成果形成 {sustained_topics} 个跨年份方向，最长覆盖 {longest_span} 年，"
-                "更适合观察其如何沿着这些方向形成连续工作"
-            )
-            detail_en = (
-                f"the covered work forms {sustained_topics} multi-year direction"
-                f"{'s' if sustained_topics != 1 else ''}, with the longest spanning {longest_span} years, "
-                "making it most useful for seeing how sustained work develops along these topics"
-            )
-        else:
-            detail_zh = "跨年份研究延续更突出，适合观察这些方向如何形成连续工作"
-            detail_en = (
-                "multi-year continuity is the clearest signal, making it useful for seeing "
-                "how sustained work develops along these topics"
-            )
-    elif dominant == "impact" and impact is not None:
-        if downstream > 0:
-            detail_zh = (
-                f"代表成果的同主题、时间归一化影响信号更突出；当前约 "
-                f"{round(downstream * 100)}% 的图谱成果出现后续扩散，适合从代表成果入手查看传播路径"
-            )
-            detail_en = (
-                "the representative work has a stronger topic- and time-normalized impact signal, while "
-                f"about {round(downstream * 100)}% of covered results show follow-on diffusion, making "
-                "representative results the clearest starting point for reviewing later diffusion"
-            )
-        else:
-            detail_zh = (
-                "代表成果的同主题、时间归一化影响信号更突出，但本地图谱尚未观察到后续扩散；"
-                "适合先核对代表成果，不外推其整体影响力"
-            )
-            detail_en = (
-                "the representative work has a stronger topic- and time-normalized impact signal, "
-                "but no follow-on diffusion is visible in the local graph; review the representative "
-                "result without extrapolating broad influence"
-            )
-    elif dominant == "downstream":
-        detail_zh = (
-            f"当前图谱中约 {round(downstream * 100)}% 的成果出现后续扩散，"
-            "更适合追踪哪些工作正在带动后续研究"
-        )
-        detail_en = (
-            f"about {round(downstream * 100)}% of its covered results show follow-on diffusion, "
-            "making it useful for tracing which work is shaping later research"
-        )
-    elif dominant == "topic_overlap":
-        detail_zh = (
-            f"双方方向重合约 {round(row['topic_overlap'] * 100)}%，"
-            "更适合快速核对最接近的研究路径"
-        )
-        detail_en = (
-            f"their topic overlap is about {round(row['topic_overlap'] * 100)}%, "
-            "making this scholar useful for checking the closest related research path"
-        )
-    else:
-        detail_zh = (
-            f"近四年方向重合约 {round(row['recent_overlap'] * 100)}%，"
-            f"同期收录 {recent_works} 篇图谱论文，适合继续查看近期成果变化"
-        )
-        detail_en = (
-            f"their recent-topic overlap is about {round(row['recent_overlap'] * 100)}%, "
-            f"with {recent_works} graph works covered in the latest four years, "
-            "making recent changes the most useful angle to follow"
-        )
-    representative_sentence_zh = f"{representative_zh}。" if representative_zh else ""
-    representative_sentence_en = f"{representative_en}. " if representative_en else ""
-    return _i18n(
-        f"{identity_zh} 和 {focus_zh} 的共同方向是 {topics_zh}。"
-        f"{representative_sentence_zh}{detail_zh}。",
-        f"{identity_en} and {focus_en} both work on {topics_en}. "
-        f"{representative_sentence_en}{detail_en.capitalize()}.",
-    )
-
-
-def _peer_explanation(row: dict) -> dict:
-    identity_zh = _recommendation_identity(row, "zh")
-    identity_en = _recommendation_identity(row, "en")
-    focus_zh = _recommendation_focus_name(row, "zh")
-    focus_en = _recommendation_focus_name(row, "en")
-    topics_zh = _recommendation_topic_text(row, "zh")
-    topics_en = _recommendation_topic_text(row, "en")
-    representative_zh = _recommendation_representative(row, "zh")
-    representative_en = _recommendation_representative(row, "en")
-    if row["recent_overlap"] >= row["temporal"]:
-        detail_zh = (
-            f"近四年方向重合约 {round(row['recent_overlap'] * 100)}%，"
-            f"高于活跃年份重合的 {round(row['temporal'] * 100)}%；适合优先跟进近期成果"
-        )
-        detail_en = (
-            f"recent-topic overlap is about {round(row['recent_overlap'] * 100)}%, above the "
-            f"{round(row['temporal'] * 100)}% active-year overlap, so recent results are the clearest angle to follow"
-        )
-    else:
-        detail_zh = (
-            f"活跃年份重合约 {round(row['temporal'] * 100)}%，"
-            f"近四年方向重合约 {round(row['recent_overlap'] * 100)}%；适合观察同期研究如何演进"
-        )
-        detail_en = (
-            f"active-year overlap is about {round(row['temporal'] * 100)}%, with "
-            f"{round(row['recent_overlap'] * 100)}% recent-topic overlap, making concurrent research changes useful to follow"
-        )
-    representative_sentence_zh = (
-        f"{representative_zh}，可从这项成果入手；" if representative_zh else ""
-    )
-    representative_sentence_en = (
-        f"{representative_en}; " if representative_en else ""
-    )
-    return _i18n(
-        f"{identity_zh} 与 {focus_zh} 都在研究 {topics_zh}。"
-        f"{representative_sentence_zh}{detail_zh}。",
-        f"{identity_en} and {focus_en} both study {topics_en}. "
-        f"{representative_sentence_en}{detail_en.capitalize()}.",
-    )
-
-
-def _collaborator_explanation(row: dict) -> dict:
-    identity_zh = _recommendation_identity(row, "zh")
-    identity_en = _recommendation_identity(row, "en")
-    focus_zh = _recommendation_focus_name(row, "zh")
-    focus_en = _recommendation_focus_name(row, "en")
-    topics_zh = _recommendation_topic_text(row, "zh")
-    topics_en = _recommendation_topic_text(row, "en")
-    representative_zh = _recommendation_representative(row, "zh")
-    representative_en = _recommendation_representative(row, "en")
-    shared_count = len(row["shared_collaborators"])
-    if row["direct_count"] == 0:
-        relation_zh = (
-            f"目前没有合著论文，但有 {shared_count} 位共同合作者可作为联系路径"
-        )
-        relation_en = (
-            f"there is no coauthored paper yet, but {shared_count} mutual "
-            f"collaborator{'s' if shared_count != 1 else ''} provide a concrete connection path"
-        )
-    else:
-        relation_zh = (
-            f"目前只有 1 篇合著论文，尚未形成稳定合作；另有 {shared_count} 位共同合作者"
-        )
-        relation_en = (
-            f"there is only one coauthored paper and no established collaboration yet; "
-            f"{shared_count} mutual collaborator{'s' if shared_count != 1 else ''} provide additional links"
-        )
-    representative_sentence_zh = (
-        f"{representative_zh}，可先用它核对对方的实际研究侧重。" if representative_zh
-        else ""
-    )
-    representative_sentence_en = (
-        f"{representative_en}, which provides a concrete result for checking the scholar's research focus. "
-        if representative_en else ""
-    )
-    return _i18n(
-        f"{identity_zh} 与 {focus_zh} 在 {topics_zh} 上有交集，方法、系统或数据侧重存在差异。"
-        f"{representative_sentence_zh}{relation_zh}，适合先核对互补点再决定是否联系。",
-        f"{identity_en} overlaps with {focus_en} on {topics_en}, while the method, system, or data "
-        f"focus differs. {representative_sentence_en}{relation_en.capitalize()}; verify the complementary "
-        "strength before deciding whether to make contact.",
-    )
-
-
-def _competitor_explanation(row: dict) -> dict:
-    identity_zh = _recommendation_identity(row, "zh")
-    identity_en = _recommendation_identity(row, "en")
-    focus_zh = _recommendation_focus_name(row, "zh")
-    focus_en = _recommendation_focus_name(row, "en")
-    topics_zh = _recommendation_topic_text(row, "zh")
-    topics_en = _recommendation_topic_text(row, "en")
-    representative_zh = _recommendation_representative(row, "zh")
-    representative_en = _recommendation_representative(row, "en")
-    relation_zh = (
-        "尚无直接合作"
-        if row["direct_count"] == 0
-        else "只有少量直接合作"
-    )
-    relation_en = (
-        "there is no direct collaboration"
-        if row["direct_count"] == 0
-        else "direct collaboration is limited"
-    )
-    representative_sentence_zh = (
-        f"{representative_zh}，可用来核对具体问题边界。" if representative_zh else ""
-    )
-    representative_sentence_en = (
-        f"{representative_en}, which can be used to check the concrete problem boundary. "
-        if representative_en else ""
-    )
-    return _i18n(
-        f"{identity_zh} 与 {focus_zh} 近期都在推进 {topics_zh}。问题表述重合约 "
-        f"{round(row['problem_similarity'] * 100)}%，方法路线重合约 "
-        f"{round(row['method_similarity'] * 100)}%，且{relation_zh}。"
-        f"{representative_sentence_zh}这只是潜在选题重合，不是竞争关系认定。",
-        f"{identity_en} and {focus_en} are both working on {topics_en}. Research-question overlap is about "
-        f"{round(row['problem_similarity'] * 100)}% and method overlap is about "
-        f"{round(row['method_similarity'] * 100)}%, while {relation_en}. "
-        f"{representative_sentence_en}This is only potential topic overlap, not a finding of actual competition.",
-    )
-
-
-def _recommendations(
+def _recommendation_candidates(
     dataset: dict,
     context: dict,
     focus_author_id: str,
     analyses: dict[str, dict],
-    field_topics: set[str],
-    *,
-    limit: int,
-) -> dict:
+) -> list[dict]:
     focus = dataset["scholars"][focus_author_id]
     focus_topics = context["topic_profiles"][focus_author_id]
     focus_recent = context["recent_topic_profiles"][focus_author_id]
@@ -1242,41 +1009,29 @@ def _recommendations(
             continue
         if field_candidate_ids and author_id not in field_candidate_ids:
             continue
-        candidate_topic_profile = context["topic_profiles"].get(author_id, Counter())
-        topic_overlap = _weighted_jaccard(
-            focus_topics,
-            candidate_topic_profile,
-        )
+        candidate_topics = context["topic_profiles"].get(author_id, Counter())
+        topic_overlap = _weighted_jaccard(focus_topics, candidate_topics)
         recent_overlap = _weighted_jaccard(
             focus_recent,
             context["recent_topic_profiles"].get(author_id, Counter()),
         )
-        temporal = _temporal_overlap(dataset, focus, scholar)
-        direct = focus.get("collaborations", {}).get(author_id, {})
-        direct_count = int(direct.get("works_count") or 0)
+        collaboration = focus.get("collaborations", {}).get(author_id, {})
         shared_collaborators = sorted(
             set(focus.get("collaborations", {}))
             & set(scholar.get("collaborations", {}))
         )
-        method_similarity = _jaccard(
-            context["method_tokens"].get(focus_author_id, set()),
-            context["method_tokens"].get(author_id, set()),
+        candidate_categories = set(
+            context["category_profiles"].get(author_id, Counter())
         )
-        problem_similarity = _jaccard(
-            context["problem_tokens"].get(focus_author_id, set()),
-            context["problem_tokens"].get(author_id, set()),
-        )
-        candidate_categories = set(context["category_profiles"].get(author_id, Counter()))
         category_overlap = _jaccard(focus_categories, candidate_categories)
-        complementarity = 1 - category_overlap if focus_categories and candidate_categories else 0
         topic_display = {}
         for work_id in scholar["work_ids"]:
             for topic_name in _topic_names(dataset["works"].get(work_id) or {}):
                 topic_display.setdefault(_normalized_topic(topic_name), topic_name)
         shared_topic_keys = sorted(
-            set(focus_topics) & set(candidate_topic_profile),
+            set(focus_topics) & set(candidate_topics),
             key=lambda topic: (
-                -min(focus_topics[topic], candidate_topic_profile[topic]),
+                -min(focus_topics[topic], candidate_topics[topic]),
                 topic,
             ),
         )[:2]
@@ -1287,13 +1042,22 @@ def _recommendations(
             "analysis": analyses[author_id],
             "topic_overlap": topic_overlap,
             "recent_overlap": recent_overlap,
-            "temporal": temporal,
-            "direct_count": direct_count,
-            "direct": direct,
+            "temporal": _temporal_overlap(dataset, focus, scholar),
+            "direct_count": int(collaboration.get("works_count") or 0),
             "shared_collaborators": shared_collaborators,
-            "method_similarity": method_similarity,
-            "problem_similarity": problem_similarity,
-            "complementarity": complementarity,
+            "method_similarity": _jaccard(
+                context["method_tokens"].get(focus_author_id, set()),
+                context["method_tokens"].get(author_id, set()),
+            ),
+            "problem_similarity": _jaccard(
+                context["problem_tokens"].get(focus_author_id, set()),
+                context["problem_tokens"].get(author_id, set()),
+            ),
+            "complementarity": (
+                1 - category_overlap
+                if focus_categories and candidate_categories
+                else 0
+            ),
             "shared_topics": [
                 topic_display.get(topic, topic)
                 for topic in shared_topic_keys
@@ -1301,288 +1065,308 @@ def _recommendations(
             "institution_relationship": (
                 "same"
                 if focus_institution
-                and focus_institution == (_primary_affiliation(scholar) or {}).get("name")
+                and focus_institution
+                == (_primary_affiliation(scholar) or {}).get("name")
                 else "different_or_unknown"
             ),
         })
+    return candidates
 
-    reference_rows = []
-    reference_feature_order = (
-        "topic_overlap",
-        "recent_overlap",
-        "downstream",
-        "continuity",
-        "impact",
-    )
+
+def _build_reference_metrics(
+    candidates: list[dict],
+    dataset: dict,
+    context: dict,
+) -> dict[str, ReferenceMetrics]:
+    metrics_by_author = {}
+    latest_year = (dataset.get("as_of_year") or 0) - 3
     for row in candidates:
-        dimensions = row["analysis"]["dimensions"]
+        analysis = row["analysis"]
+        dimensions = analysis["dimensions"]
         quality = dimensions["academic_quality"].get("index")
+        scholar = row["scholar"]
         if (
             row["topic_overlap"] < 0.15
             or quality is None
-            or len(row["scholar"]["work_ids"]) < 4
-            or not row["scholar"].get("graph_ready")
+            or len(scholar["work_ids"]) < 4
+            or not scholar.get("graph_ready")
         ):
             continue
         recent_works = sum(
-            (dataset["works"][work_id].get("year") or 0)
-            >= ((dataset.get("as_of_year") or 0) - 3)
-            for work_id in row["scholar"]["work_ids"]
+            (dataset["works"][work_id].get("year") or 0) >= latest_year
+            for work_id in scholar["work_ids"]
             if work_id in dataset["works"]
         )
         downstream = _safe_ratio(
             sum(
                 context["incoming"].get(work_id, 0) > 0
-                for work_id in row["scholar"]["work_ids"]
+                for work_id in scholar["work_ids"]
             ),
-            len(row["scholar"]["work_ids"]),
+            len(scholar["work_ids"]),
         )
-        row["reference_recent_works"] = recent_works
-        row["reference_downstream"] = downstream
-        row["reference_features"] = {
-            "topic_overlap": row["topic_overlap"],
-            "recent_overlap": row["recent_overlap"],
-            "downstream": downstream,
-            "continuity": (dimensions["continuity"].get("index") or 0) / 100,
-            "impact": (dimensions["impact"].get("index") or 0) / 100,
-        }
-        row["reference_positions"] = {}
-        reference_rows.append(row)
-
-    for feature in reference_feature_order:
-        values = [row["reference_features"][feature] for row in reference_rows]
-        for row in reference_rows:
-            value = row["reference_features"][feature]
-            if len(values) <= 1:
-                position = 0.5
-            else:
-                lower = sum(candidate < value for candidate in values)
-                equal = sum(candidate == value for candidate in values)
-                position = (lower + max(0, equal - 1) / 2) / (len(values) - 1)
-            row["reference_positions"][feature] = position
-
-    for row in reference_rows:
-        row["reference_angle"] = max(
-            reference_feature_order,
-            key=lambda feature: (
-                row["reference_positions"][feature],
-                row["reference_features"][feature],
-                -reference_feature_order.index(feature),
+        metrics_by_author[row["author_id"]] = ReferenceMetrics(
+            recent_works=recent_works,
+            downstream=downstream,
+            continuity=dimensions["continuity"].get("index"),
+            impact=dimensions["impact"].get("index"),
+            topic_overlap=row["topic_overlap"],
+            recent_overlap=row["recent_overlap"],
+            sustained_topics=_dimension_evidence_value(
+                analysis,
+                "continuity",
+                "sustained_topics",
+            ),
+            longest_span=_dimension_evidence_value(
+                analysis,
+                "continuity",
+                "longest_span",
             ),
         )
+    return assign_reference_angles(metrics_by_author)
 
+
+def _shared_topics_evidence(row: dict) -> dict:
+    return _evidence(
+        "shared_topics",
+        "共同研究方向",
+        "Shared research topics",
+        "、".join(row["shared_topics"])
+        or _i18n("方向名称不足", "Topic names unavailable"),
+    )
+
+
+def _reference_recommendation(
+    row: dict,
+    metrics: ReferenceMetrics,
+) -> dict | None:
+    analysis = row["analysis"]
+    dimensions = analysis["dimensions"]
+    quality = dimensions["academic_quality"].get("index")
+    if quality is None:
+        return None
+    continuity = dimensions["continuity"].get("index")
+    impact = dimensions["impact"].get("index")
+    score = (
+        row["topic_overlap"] * 0.30
+        + quality / 100 * 0.20
+        + (continuity or 0) / 100 * 0.15
+        + (impact or 0) / 100 * 0.15
+        + min(1.0, metrics.recent_works / 4) * 0.10
+        + metrics.downstream * 0.10
+    )
+    return _recommendation(
+        "north_star",
+        row["scholar"],
+        score,
+        analysis["confidence"],
+        reference_explanation(_recommendation_narrative(row), metrics),
+        [
+            _shared_topics_evidence(row),
+            _evidence("field_overlap", "领域方向重合度", "Field-topic overlap", round(row["topic_overlap"], 3)),
+            _evidence("continuity", "研究延续性指数", "Continuity index", continuity),
+            _evidence("impact", "归一化影响力指数", "Normalized impact index", impact),
+            _evidence("recent_activity", "近四年图谱论文", "Graph papers in the latest four years", metrics.recent_works),
+            _evidence("downstream", "成果后续扩散覆盖", "Follow-on diffusion coverage", round(metrics.downstream, 3)),
+        ],
+        analysis["limitations"],
+    )
+
+
+def _peer_recommendation(row: dict) -> dict | None:
+    if (
+        row["topic_overlap"] < 0.18
+        or row["temporal"] < 0.15
+        or not row["scholar"].get("graph_ready")
+    ):
+        return None
+    score = (
+        row["topic_overlap"] * 0.45
+        + row["temporal"] * 0.20
+        + row["recent_overlap"] * 0.25
+        + (0.1 if _primary_affiliation(row["scholar"]) else 0)
+    )
+    return _recommendation(
+        "peer",
+        row["scholar"],
+        score,
+        row["analysis"]["confidence"],
+        peer_explanation(
+            _recommendation_narrative(row),
+            PeerMetrics(
+                recent_overlap=row["recent_overlap"],
+                temporal_overlap=row["temporal"],
+            ),
+        ),
+        [
+            _shared_topics_evidence(row),
+            _evidence("topic_overlap", "研究方向重合度", "Research-topic overlap", round(row["topic_overlap"], 3)),
+            _evidence("temporal_overlap", "活跃年份重合度", "Active-year overlap", round(row["temporal"], 3)),
+            _evidence("recent_overlap", "近期论文方向重合度", "Recent-paper topic overlap", round(row["recent_overlap"], 3)),
+            _evidence("institution", "当前论文关联机构", "Current publication-linked institution", (_primary_affiliation(row["scholar"]) or {}).get("name")),
+        ],
+        row["analysis"]["limitations"],
+    )
+
+
+def _collaborator_recommendation(row: dict) -> dict | None:
+    shared_count = len(row["shared_collaborators"])
+    if (
+        not row["scholar"].get("graph_ready")
+        or row["direct_count"] > 1
+        or shared_count < 1
+        or row["topic_overlap"] < 0.15
+        or row["complementarity"] < 0.15
+    ):
+        return None
+    score = (
+        row["topic_overlap"] * 0.25
+        + row["complementarity"] * 0.25
+        + min(1, shared_count / 3) * 0.20
+        + min(1, row["direct_count"] / 4) * 0.20
+        + row["temporal"] * 0.10
+    )
+    return _recommendation(
+        "potential_collaborator",
+        row["scholar"],
+        score,
+        row["analysis"]["confidence"],
+        collaborator_explanation(
+            _recommendation_narrative(row),
+            CollaboratorMetrics(
+                direct_count=row["direct_count"],
+                shared_collaborator_count=shared_count,
+            ),
+        ),
+        [
+            _shared_topics_evidence(row),
+            _evidence("topic_overlap", "主题交集", "Topic overlap", round(row["topic_overlap"], 3)),
+            _evidence("capability_complementarity", "方法/系统/数据类型互补度", "Method/system/data type complementarity", round(row["complementarity"], 3)),
+            _evidence("direct_collaboration", "直接合作论文", "Directly coauthored papers", row["direct_count"]),
+            _evidence("shared_collaborators", "共同合作者", "Shared collaborators", shared_count),
+            _evidence("temporal_overlap", "活跃时间重合度", "Active-period overlap", round(row["temporal"], 3)),
+        ],
+        [_i18n(
+            "稳定合作者属于合作关系页；一次合作若缺少互补性或共同合作者路径，也不作为新的合作线索。",
+            "Established collaborators belong in the collaboration view; one-off collaboration without complementarity or a shared-collaborator path is not treated as a new collaboration lead.",
+        )],
+    )
+
+
+def _competitor_recommendation(
+    row: dict,
+    collaborator_ids: set[str],
+) -> dict | None:
+    if (
+        row["author_id"] in collaborator_ids
+        or row["direct_count"] >= 2
+        or not row["scholar"].get("graph_ready")
+        or row["recent_overlap"] < 0.25
+        or row["problem_similarity"] < 0.08
+        or row["method_similarity"] < 0.08
+        or row["temporal"] < 0.15
+    ):
+        return None
+    score = (
+        row["recent_overlap"] * 0.35
+        + row["problem_similarity"] * 0.25
+        + row["method_similarity"] * 0.20
+        + row["temporal"] * 0.15
+        + (0.05 if row["direct_count"] == 0 else 0)
+    )
+    institution_context = (
+        _i18n(
+            "当前论文关联机构相同",
+            "Current publication-linked affiliation is the same",
+        )
+        if row["institution_relationship"] == "same"
+        else _i18n(
+            "当前论文关联机构不同或信息不足",
+            "Current publication-linked affiliations differ or are incomplete",
+        )
+    )
+    return _recommendation(
+        "potential_competitor",
+        row["scholar"],
+        score,
+        row["analysis"]["confidence"],
+        competitor_explanation(
+            _recommendation_narrative(row),
+            CompetitorMetrics(
+                direct_count=row["direct_count"],
+                problem_similarity=row["problem_similarity"],
+                method_similarity=row["method_similarity"],
+            ),
+        ),
+        [
+            _shared_topics_evidence(row),
+            _evidence("recent_topic_overlap", "近期研究问题方向重合度", "Recent research-problem topic overlap", round(row["recent_overlap"], 3)),
+            _evidence("problem_similarity", "摘要问题表述相似度", "Abstract-problem similarity", round(row["problem_similarity"], 3)),
+            _evidence("method_similarity", "摘要方法路线相似度", "Abstract-method similarity", round(row["method_similarity"], 3)),
+            _evidence("temporal_overlap", "发表时间重合度", "Publication-time overlap", round(row["temporal"], 3)),
+            _evidence("team_context", "机构/团队关系", "Institution/team context", institution_context),
+            _evidence("direct_collaboration", "直接合作论文", "Directly coauthored papers", row["direct_count"]),
+        ],
+        [_i18n(
+            "方向相似本身不足以判断竞争；只有问题、方法、时间与合作关系同时满足门槛才进入此列表。",
+            "Topic similarity alone is insufficient; problem, method, time, and collaboration thresholds must all be met.",
+        )],
+    )
+
+
+def _stable_recommendations(rows: list[dict], limit: int) -> list[dict]:
+    return sorted(
+        rows,
+        key=lambda item: (-item["index"], item["author_id"]),
+    )[:limit]
+
+
+def _recommendations(
+    dataset: dict,
+    context: dict,
+    focus_author_id: str,
+    analyses: dict[str, dict],
+    *,
+    limit: int,
+) -> dict:
+    candidates = _recommendation_candidates(
+        dataset,
+        context,
+        focus_author_id,
+        analyses,
+    )
+    reference_metrics = _build_reference_metrics(candidates, dataset, context)
     north_stars = []
     peers = []
     collaborators = []
     competitors = []
     collaborator_ids = set()
     for row in candidates:
-        analysis = row["analysis"]
-        confidence = analysis["confidence"]
-        dimensions = analysis["dimensions"]
-        quality = dimensions["academic_quality"].get("index")
-        continuity = dimensions["continuity"].get("index")
-        impact = dimensions["impact"].get("index")
-        if (
-            row["topic_overlap"] >= 0.15
-            and quality is not None
-            and len(row["scholar"]["work_ids"]) >= 4
-            and row["scholar"].get("graph_ready")
-        ):
-            recent_works = row["reference_recent_works"]
-            recent_activity = min(1.0, recent_works / 4)
-            downstream = row["reference_downstream"]
-            score = (
-                row["topic_overlap"] * 0.30
-                + quality / 100 * 0.20
-                + (continuity or 0) / 100 * 0.15
-                + (impact or 0) / 100 * 0.15
-                + recent_activity * 0.10
-                + downstream * 0.10
-            )
-            north_stars.append(_recommendation(
-                "north_star",
-                row["scholar"],
-                score,
-                confidence,
-                _reference_explanation(
-                    row,
-                    continuity,
-                    impact,
-                    downstream,
-                    recent_works,
-                ),
-                [
-                    _evidence(
-                        "shared_topics",
-                        "共同研究方向",
-                        "Shared research topics",
-                        "、".join(row["shared_topics"]) or _i18n(
-                            "方向名称不足",
-                            "Topic names unavailable",
-                        ),
-                    ),
-                    _evidence("field_overlap", "领域方向重合度", "Field-topic overlap", round(row["topic_overlap"], 3)),
-                    _evidence("continuity", "研究延续性指数", "Continuity index", continuity),
-                    _evidence("impact", "归一化影响力指数", "Normalized impact index", impact),
-                    _evidence("recent_activity", "近四年图谱论文", "Graph papers in the latest four years", recent_works),
-                    _evidence("downstream", "成果后续扩散覆盖", "Follow-on diffusion coverage", round(downstream, 3)),
-                ],
-                analysis["limitations"],
-            ))
-
-        if (
-            row["topic_overlap"] >= 0.18
-            and row["temporal"] >= 0.15
-            and row["scholar"].get("graph_ready")
-        ):
-            score = (
-                row["topic_overlap"] * 0.45
-                + row["temporal"] * 0.20
-                + row["recent_overlap"] * 0.25
-                + (0.1 if _primary_affiliation(row["scholar"]) else 0)
-            )
-            peers.append(_recommendation(
-                "peer",
-                row["scholar"],
-                score,
-                confidence,
-                _peer_explanation(row),
-                [
-                    _evidence(
-                        "shared_topics",
-                        "共同研究方向",
-                        "Shared research topics",
-                        "、".join(row["shared_topics"]) or _i18n(
-                            "方向名称不足",
-                            "Topic names unavailable",
-                        ),
-                    ),
-                    _evidence("topic_overlap", "研究方向重合度", "Research-topic overlap", round(row["topic_overlap"], 3)),
-                    _evidence("temporal_overlap", "活跃年份重合度", "Active-year overlap", round(row["temporal"], 3)),
-                    _evidence("recent_overlap", "近期论文方向重合度", "Recent-paper topic overlap", round(row["recent_overlap"], 3)),
-                    _evidence("institution", "当前论文关联机构", "Current publication-linked institution", (_primary_affiliation(row["scholar"]) or {}).get("name")),
-                ],
-                analysis["limitations"],
-            ))
-
-        collaboration_eligible = (
-            row["scholar"].get("graph_ready")
-            and row["direct_count"] <= 1
-            and len(row["shared_collaborators"]) >= 1
-            and row["topic_overlap"] >= 0.15
-            and row["complementarity"] >= 0.15
-        )
-        if collaboration_eligible:
-            score = (
-                row["topic_overlap"] * 0.25
-                + row["complementarity"] * 0.25
-                + min(1, len(row["shared_collaborators"]) / 3) * 0.20
-                + min(1, row["direct_count"] / 4) * 0.20
-                + row["temporal"] * 0.10
-            )
+        reference = reference_metrics.get(row["author_id"])
+        if reference is not None:
+            recommendation = _reference_recommendation(row, reference)
+            if recommendation is not None:
+                north_stars.append(recommendation)
+        peer = _peer_recommendation(row)
+        if peer is not None:
+            peers.append(peer)
+        collaborator = _collaborator_recommendation(row)
+        if collaborator is not None:
             collaborator_ids.add(row["author_id"])
-            collaborators.append(_recommendation(
-                "potential_collaborator",
-                row["scholar"],
-                score,
-                confidence,
-                _collaborator_explanation(row),
-                [
-                    _evidence(
-                        "shared_topics",
-                        "共同研究方向",
-                        "Shared research topics",
-                        "、".join(row["shared_topics"]) or _i18n(
-                            "方向名称不足",
-                            "Topic names unavailable",
-                        ),
-                    ),
-                    _evidence("topic_overlap", "主题交集", "Topic overlap", round(row["topic_overlap"], 3)),
-                    _evidence("capability_complementarity", "方法/系统/数据类型互补度", "Method/system/data type complementarity", round(row["complementarity"], 3)),
-                    _evidence("direct_collaboration", "直接合作论文", "Directly coauthored papers", row["direct_count"]),
-                    _evidence("shared_collaborators", "共同合作者", "Shared collaborators", len(row["shared_collaborators"])),
-                    _evidence("temporal_overlap", "活跃时间重合度", "Active-period overlap", round(row["temporal"], 3)),
-                ],
-                [_i18n(
-                    "稳定合作者属于合作关系页；一次合作若缺少互补性或共同合作者路径，也不作为新的合作线索。",
-                    "Established collaborators belong in the collaboration view; one-off collaboration without complementarity or a shared-collaborator path is not treated as a new collaboration lead.",
-                )],
-            ))
+            collaborators.append(collaborator)
 
     for row in candidates:
-        if (
-            row["author_id"] in collaborator_ids
-            or row["direct_count"] >= 2
-            or not row["scholar"].get("graph_ready")
-        ):
-            continue
-        if (
-            row["recent_overlap"] < 0.25
-            or row["problem_similarity"] < 0.08
-            or row["method_similarity"] < 0.08
-            or row["temporal"] < 0.15
-        ):
-            continue
-        score = (
-            row["recent_overlap"] * 0.35
-            + row["problem_similarity"] * 0.25
-            + row["method_similarity"] * 0.20
-            + row["temporal"] * 0.15
-            + (0.05 if row["direct_count"] == 0 else 0)
-        )
-        competitors.append(_recommendation(
-            "potential_competitor",
-            row["scholar"],
-            score,
-            row["analysis"]["confidence"],
-            _competitor_explanation(row),
-            [
-                _evidence(
-                    "shared_topics",
-                    "共同研究方向",
-                    "Shared research topics",
-                    "、".join(row["shared_topics"]) or _i18n(
-                        "方向名称不足",
-                        "Topic names unavailable",
-                    ),
-                ),
-                _evidence("recent_topic_overlap", "近期研究问题方向重合度", "Recent research-problem topic overlap", round(row["recent_overlap"], 3)),
-                _evidence("problem_similarity", "摘要问题表述相似度", "Abstract-problem similarity", round(row["problem_similarity"], 3)),
-                _evidence("method_similarity", "摘要方法路线相似度", "Abstract-method similarity", round(row["method_similarity"], 3)),
-                _evidence("temporal_overlap", "发表时间重合度", "Publication-time overlap", round(row["temporal"], 3)),
-                _evidence(
-                    "team_context",
-                    "机构/团队关系",
-                    "Institution/team context",
-                    (
-                        _i18n(
-                            "当前论文关联机构相同",
-                            "Current publication-linked affiliation is the same",
-                        )
-                        if row["institution_relationship"] == "same"
-                        else _i18n(
-                            "当前论文关联机构不同或信息不足",
-                            "Current publication-linked affiliations differ or are incomplete",
-                        )
-                    ),
-                ),
-                _evidence("direct_collaboration", "直接合作论文", "Directly coauthored papers", row["direct_count"]),
-            ],
-            [_i18n(
-                "方向相似本身不足以判断竞争；只有问题、方法、时间与合作关系同时满足门槛才进入此列表。",
-                "Topic similarity alone is insufficient; problem, method, time, and collaboration thresholds must all be met.",
-            )],
-        ))
-
-    def stable(rows: list[dict]) -> list[dict]:
-        return sorted(rows, key=lambda item: (-item["index"], item["author_id"]))[:limit]
+        competitor = _competitor_recommendation(row, collaborator_ids)
+        if competitor is not None:
+            competitors.append(competitor)
 
     return {
-        "north_stars": stable(north_stars),
-        "peers": stable(peers),
-        "potential_collaborators": stable(collaborators),
-        "potential_competitors": stable(competitors),
+        "north_stars": _stable_recommendations(north_stars, limit),
+        "peers": _stable_recommendations(peers, limit),
+        "potential_collaborators": _stable_recommendations(
+            collaborators,
+            limit,
+        ),
+        "potential_competitors": _stable_recommendations(competitors, limit),
     }
 
 
@@ -1745,7 +1529,6 @@ def build_scholar_intelligence(
         context,
         author_id,
         analyses,
-        field_topic_names,
         limit=limit,
     )
     subject_analysis = analyses[author_id]

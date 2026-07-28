@@ -37,12 +37,10 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 
-type Translate = (key: string) => string
 type DiscoveryFilter = "all" | IntelligenceRecommendation["category"]
 
 interface Props {
   profile: ScholarProfile
-  t: Translate
   lang: Lang
   onViewProfile: (authorId: string, scholarName: string) => void
   onCompare: (authorId: string) => void
@@ -255,6 +253,21 @@ interface MergedRecommendation {
   byCategory: Partial<Record<IntelligenceRecommendation["category"], IntelligenceRecommendation>>
 }
 
+function strongestRecommendationCategory(
+  row: MergedRecommendation,
+): IntelligenceRecommendation["category"] {
+  return CATEGORY_ORDER.reduce<IntelligenceRecommendation["category"] | null>(
+    (strongest, category) => {
+      const candidate = row.byCategory[category]
+      if (!candidate) return strongest
+      if (!strongest) return category
+      const current = row.byCategory[strongest]
+      return !current || candidate.index > current.index ? category : strongest
+    },
+    null,
+  ) as IntelligenceRecommendation["category"]
+}
+
 function mergeRecommendations(
   intelligence: ScholarIntelligence,
 ): MergedRecommendation[] {
@@ -311,20 +324,10 @@ function ScholarCard({
   onFeedback: (itemKey: string, verdict: "helpful" | "inaccurate") => void
   lang: Lang
 }) {
-  const strongestCategory = CATEGORY_ORDER.reduce<IntelligenceRecommendation["category"] | null>(
-    (strongest, category) => {
-      const candidate = row.byCategory[category]
-      if (!candidate) return strongest
-      if (!strongest) return category
-      const current = row.byCategory[strongest]
-      return !current || candidate.index > current.index ? category : strongest
-    },
-    null,
-  )
   const selectedCategory = (
     filter !== "all" && row.byCategory[filter]
       ? filter
-      : strongestCategory
+      : strongestRecommendationCategory(row)
   ) as IntelligenceRecommendation["category"]
   const selected = row.byCategory[selectedCategory] as IntelligenceRecommendation
   const facts = recommendationFacts(selected, lang)

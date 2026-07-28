@@ -480,10 +480,9 @@ export default function ProfileSection({
             <ScholarIntelligenceAnalysis
               key={profile.authorId}
               profile={profile}
-              t={t}
               lang={lang}
               onViewProfile={onViewProfile}
-              onCompare={(authorId) => onCompare(authorId)}
+              onCompare={onCompare}
               onTrackingChange={onTrackingChange}
             />
           )}
