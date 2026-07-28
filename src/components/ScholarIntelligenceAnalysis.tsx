@@ -32,9 +32,16 @@ import type {
   ScholarProfile,
 } from "@/types"
 import type { Lang } from "@/i18n"
+import InstitutionComparison from "@/components/InstitutionComparison"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 
 type DiscoveryFilter = "all" | IntelligenceRecommendation["category"]
@@ -446,8 +453,8 @@ function institutionSummary(
   }
   if (institution.current_collaboration_count === 0) {
     return lang === "zh"
-      ? `${institution.name} 近四年在 ${topicText} 上有较多论文，目前未找到与当前学者合著的论文；可查看 ${institution.analyzed_member_count} 位已分析的相关学者。`
-      : `${institution.name} has published frequently in ${topicText} over the past four years. No coauthored paper with the current scholar was found; ${institution.analyzed_member_count} analyzed relevant scholar${institution.analyzed_member_count === 1 ? "" : "s"} can be viewed.`
+      ? `${institution.name} 近四年在 ${topicText} 上有较多论文；当前图谱覆盖 ${institution.analyzed_member_count} 位相关学者，在这些数据里尚未找到与当前学者合著的论文。`
+      : `${institution.name} has published frequently in ${topicText} over the past four years. The current graph covers ${institution.analyzed_member_count} relevant scholar${institution.analyzed_member_count === 1 ? "" : "s"}, with no coauthored paper with the focus scholar found in that coverage.`
   }
   if (institution.current_collaboration_count === 1) {
     return lang === "zh"
@@ -510,7 +517,7 @@ function InstitutionCard({
             <p className="mt-1 font-semibold tabular-nums">{institution.recent_works}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "与该学者合著" : "Coauthored works"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "图谱内合著" : "Graph coauthored"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.current_collaboration_count}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
@@ -528,7 +535,7 @@ function InstitutionCard({
             {comparing
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
               : <ArrowLeftRight className="h-3.5 w-3.5" />}
-            {lang === "zh" ? "与我的机构比较" : "Compare with current institution"}
+            {lang === "zh" ? "查看与本机构差异" : "View difference from current institution"}
           </Button>
         )}
         <details className="group border-t pt-3">
@@ -550,63 +557,6 @@ function InstitutionCard({
             />
           </div>
         </details>
-      </CardContent>
-    </Card>
-  )
-}
-
-function InstitutionComparison({
-  comparison,
-  onClose,
-  lang,
-}: {
-  comparison: IntelligenceComparison
-  onClose: () => void
-  lang: Lang
-}) {
-  return (
-    <Card className="border-primary/30">
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="text-base">
-              {lang === "zh" ? "机构对比" : "Institution comparison"}
-            </CardTitle>
-            <CardDescription className="mt-1">
-              {localize(comparison.conclusion, lang)}
-            </CardDescription>
-          </div>
-          <Button size="sm" variant="ghost" onClick={onClose}>
-            {lang === "zh" ? "关闭" : "Close"}
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-3 border-b pb-2 text-xs font-medium">
-          <span>{lang === "zh" ? "维度" : "Dimension"}</span>
-          <span className="max-w-28 break-words text-right">
-            {comparison.left?.name || (lang === "zh" ? "当前机构" : "Current")}
-          </span>
-          <span className="max-w-28 break-words text-right">
-            {comparison.right?.name || (lang === "zh" ? "候选机构" : "Candidate")}
-          </span>
-        </div>
-        {comparison.status === "available" && comparison.dimensions?.map((row) => (
-          <div
-            key={row.key}
-            className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b py-2 text-xs last:border-b-0"
-          >
-            <span className="min-w-0 break-words text-muted-foreground">
-              {localize(row.label, lang)}
-            </span>
-            <span className="font-medium tabular-nums">
-              {typeof row.left === "number" ? row.left.toLocaleString() : "—"}
-            </span>
-            <span className="font-medium tabular-nums">
-              {typeof row.right === "number" ? row.right.toLocaleString() : "—"}
-            </span>
-          </div>
-        ))}
       </CardContent>
     </Card>
   )
@@ -1004,8 +954,8 @@ export default function ScholarIntelligenceAnalysis({
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
             {lang === "zh"
-              ? "查看相同方向上的论文活动、与当前学者的合著记录，以及可以继续查看的相关学者。"
-              : "Review publication activity in related topics, coauthorship with the current scholar, and relevant scholars available to view."}
+              ? "查看相同方向上的论文活动、当前图谱内的合著记录，以及可以继续查看的相关学者。"
+              : "Review publication activity in related topics, coauthorship within current graph coverage, and relevant scholars available to view."}
           </p>
         </div>
 

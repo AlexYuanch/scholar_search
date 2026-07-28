@@ -562,5 +562,6 @@ export interface IntelligenceComparison {
     right: IntelligenceWork[]
   }
   conclusion: LocalizedText
+  next_step?: LocalizedText
   limitations?: LocalizedText[]
 }

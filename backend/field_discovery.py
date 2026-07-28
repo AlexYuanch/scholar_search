@@ -1248,6 +1248,115 @@ def build_field_institutions(
     }
 
 
+def _institution_comparison_guidance(left: dict, right: dict) -> dict:
+    """Explain what the institution comparison supports without overclaiming."""
+    left_recent = int(left.get("recent_works") or 0)
+    right_recent = int(right.get("recent_works") or 0)
+    right_members = int(right.get("analyzed_member_count") or 0)
+    right_collaborations = int(right.get("current_collaboration_count") or 0)
+    left_name = left.get("name") or "当前机构"
+    right_name = right.get("name") or "对比机构"
+
+    if right_recent > left_recent:
+        activity_zh = (
+            f"{right_name} 近四年在所选方向的论文样本多于 {left_name}"
+        )
+        activity_en = (
+            f"{right_name} has more works in the selected topics over the "
+            f"past four years than {left_name}"
+        )
+    elif right_recent < left_recent:
+        activity_zh = (
+            f"{right_name} 近四年在所选方向的论文样本少于 {left_name}"
+        )
+        activity_en = (
+            f"{right_name} has fewer works in the selected topics over the "
+            f"past four years than {left_name}"
+        )
+    else:
+        activity_zh = (
+            f"{right_name} 与 {left_name} 近四年的所选方向论文样本量相同"
+        )
+        activity_en = (
+            f"{right_name} and {left_name} have the same four-year work "
+            "count in the selected topics"
+        )
+
+    if right_members == 0:
+        connection_zh = (
+            "；但当前图谱尚未覆盖该机构的相关学者，无法判断具体合作联系。"
+        )
+        connection_en = (
+            "; however, the current graph does not yet cover a relevant "
+            "scholar there, so specific collaboration links cannot be assessed."
+        )
+        next_step = {
+            "zh": (
+                "先把它作为机构层面的研究动向参考；补全到具体学者前，"
+                "不要据此判断合作机会。"
+            ),
+            "en": (
+                "Use this only as an institution-level research-activity "
+                "reference. Do not infer a collaboration opportunity until "
+                "specific scholars are covered."
+            ),
+        }
+    elif right_collaborations > 0:
+        connection_zh = (
+            f"；当前图谱覆盖 {right_members} 位相关学者，并找到 "
+            f"{right_collaborations} 篇与当前学者的合著论文。"
+        )
+        connection_en = (
+            f"; the current graph covers {right_members} relevant "
+            f"scholar{'s' if right_members != 1 else ''} and finds "
+            f"{right_collaborations} coauthored "
+            f"work{'s' if right_collaborations != 1 else ''} with the "
+            "focus scholar."
+        )
+        next_step = {
+            "zh": "到“合作关系”核对已有合作者和共同论文，再决定是否继续跟进。",
+            "en": (
+                "Review the existing collaborators and shared works under "
+                "Collaboration before deciding whether to follow up."
+            ),
+        }
+    else:
+        connection_zh = (
+            f"；当前图谱已覆盖 {right_members} 位相关学者，但尚未找到"
+            "与当前学者的合著论文。"
+        )
+        connection_en = (
+            f"; the current graph covers {right_members} relevant "
+            f"scholar{'s' if right_members != 1 else ''}, but no coauthored "
+            "work with the focus scholar was found in that coverage."
+        )
+        next_step = {
+            "zh": (
+                f"先查看该机构已分析的 {right_members} 位相关学者，"
+                "核对具体研究问题和方法，再判断是否值得联系。"
+            ),
+            "en": (
+                f"Review the {right_members} analyzed relevant "
+                f"scholar{'s' if right_members != 1 else ''} and compare "
+                "their specific questions and methods before considering contact."
+            ),
+        }
+
+    return {
+        "conclusion": {
+            "zh": (
+                f"{activity_zh}{connection_zh}"
+                "论文量只表示当前主题样本，不代表机构质量。"
+            ),
+            "en": (
+                f"{activity_en}{connection_en} Work counts describe only "
+                "the current topic sample, not institutional quality."
+            ),
+        },
+        "next_step": next_step,
+    }
+
+
 def compare_field_institutions(
     repository,
     focus_author_id: str,
@@ -1324,6 +1433,7 @@ def compare_field_institutions(
             "right": right["analyzed_member_count"],
         },
     ]
+    guidance = _institution_comparison_guidance(left, right)
     return {
         "analysis_version": "deterministic-graph-v1",
         "mode": "institution",
@@ -1331,10 +1441,7 @@ def compare_field_institutions(
         "left": left,
         "right": right,
         "dimensions": dimensions,
-        "conclusion": {
-            "zh": "比较仅描述主题活动、时间变化、合作记录和当前已分析成员，不判断机构绝对优劣。",
-            "en": "This comparison only describes topic activity, time windows, collaboration records, and currently analyzed scholars; it does not judge absolute institutional superiority.",
-        },
+        **guidance,
         "limitations": institution_view["limitations"],
     }
 

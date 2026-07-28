@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from auth import generate_token, hash_password, hash_token
 from intelligence_repository import _finalize_dataset, save_intelligence_feedback
 from field_discovery import (
+    _institution_comparison_guidance,
     advance_field_discovery,
     claim_field_discovery,
     discover_field_candidates,
@@ -64,6 +65,45 @@ def test_later_same_topic_counts_each_later_work_once():
         "W3": 0,
         "W4": 0,
     }
+
+
+def test_institution_comparison_guidance_respects_graph_coverage():
+    current = {
+        "name": "Current University",
+        "recent_works": 100,
+        "analyzed_member_count": 2,
+        "current_collaboration_count": 5,
+    }
+    uncovered = {
+        "name": "Uncovered University",
+        "recent_works": 250,
+        "analyzed_member_count": 0,
+        "current_collaboration_count": 0,
+    }
+    analyzed = {
+        "name": "Analyzed University",
+        "recent_works": 80,
+        "analyzed_member_count": 3,
+        "current_collaboration_count": 0,
+    }
+    connected = {
+        "name": "Connected University",
+        "recent_works": 120,
+        "analyzed_member_count": 2,
+        "current_collaboration_count": 4,
+    }
+
+    uncovered_guidance = _institution_comparison_guidance(current, uncovered)
+    analyzed_guidance = _institution_comparison_guidance(current, analyzed)
+    connected_guidance = _institution_comparison_guidance(current, connected)
+
+    assert "无法判断具体合作联系" in uncovered_guidance["conclusion"]["zh"]
+    assert "不要据此判断合作机会" in uncovered_guidance["next_step"]["zh"]
+    assert "当前图谱已覆盖 3 位相关学者" in analyzed_guidance["conclusion"]["zh"]
+    assert "先查看该机构已分析的 3 位相关学者" in analyzed_guidance["next_step"]["zh"]
+    assert "找到 4 篇与当前学者的合著论文" in connected_guidance["conclusion"]["zh"]
+    assert "到“合作关系”核对" in connected_guidance["next_step"]["zh"]
+    assert "机构质量" in uncovered_guidance["conclusion"]["zh"]
 
 
 def test_intelligence_projection_prefers_persistent_recent_affiliation():
