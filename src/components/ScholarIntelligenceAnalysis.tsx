@@ -39,7 +39,6 @@ import { Separator } from "@/components/ui/separator"
 
 type Translate = (key: string) => string
 type DiscoveryFilter = "all" | IntelligenceRecommendation["category"]
-type InstitutionKind = "active" | "opportunity"
 
 interface Props {
   profile: ScholarProfile
@@ -58,15 +57,38 @@ const CATEGORY_ORDER: IntelligenceRecommendation["category"][] = [
 ]
 
 const CATEGORY_LABELS: Record<IntelligenceRecommendation["category"], LocalizedText> = {
-  north_star: { zh: "长期关注", en: "Long-term watch" },
-  peer: { zh: "相近同行", en: "Related peer" },
-  potential_collaborator: { zh: "合作线索", en: "Collaboration lead" },
-  potential_competitor: { zh: "研究重合", en: "Research overlap" },
+  north_star: { zh: "学习参考", en: "Research reference" },
+  peer: { zh: "同行动态", en: "Peer activity" },
+  potential_collaborator: { zh: "合作人选", en: "Potential collaborator" },
+  potential_competitor: { zh: "选题重合", en: "Topic overlap" },
 }
 
 const FILTER_LABELS: Record<DiscoveryFilter, LocalizedText> = {
   all: { zh: "全部", en: "All" },
   ...CATEGORY_LABELS,
+}
+
+const FILTER_DESCRIPTIONS: Record<DiscoveryFilter, LocalizedText> = {
+  all: {
+    zh: "按用途查看：学习其研究路线、跟进同行动态、寻找合作人选，或提前核对选题重合。",
+    en: "Browse by purpose: learn from research paths, follow peers, find collaborators, or check topic overlap early.",
+  },
+  north_star: {
+    zh: "适合查看其代表成果和长期研究路线，作为研究参考；不表示“最好学者”。",
+    en: "Useful for reviewing representative work and long-term research paths; this does not mean “best scholar.”",
+  },
+  peer: {
+    zh: "研究方向和活跃时间相近，适合持续跟进近期成果。",
+    en: "Similar research focus and active period; useful for following recent work.",
+  },
+  potential_collaborator: {
+    zh: "存在研究交集或能力互补，且尚未形成稳定合作，可进一步核对合作可能。",
+    en: "Research overlap or complementary strengths without an established collaboration; worth reviewing as a possible collaborator.",
+  },
+  potential_competitor: {
+    zh: "近期研究问题和方法相近，适合提前核对选题是否重合；不代表实际竞争关系。",
+    en: "Recent research questions and methods are similar; useful for checking topic overlap, not proof of competition.",
+  },
 }
 
 const FACT_CODES: Record<IntelligenceRecommendation["category"], string[]> = {
@@ -331,8 +353,8 @@ function ScholarCard({
         {selectedCategory === "potential_competitor" && (
           <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
             {lang === "zh"
-              ? "仅为潜在研究重合线索，不代表实际竞争关系。"
-              : "Potential research-overlap signal only; it does not establish actual competition."}
+              ? "近期问题和方法相近，建议关注对方进展；不代表实际竞争关系。"
+              : "Recent questions and methods are similar; follow their progress, but do not treat this as proof of competition."}
           </p>
         )}
         <div className="flex flex-wrap gap-2">
@@ -406,27 +428,26 @@ function institutionSummary(
   }
   if (institution.analyzed_member_count === 0) {
     return lang === "zh"
-      ? `${institution.name} 近四年在 ${topicText} 上有持续论文活动，但还没有补全到具体相关学者，先作为后续了解的线索。`
-      : `${institution.name} has recent publication activity in ${topicText}, but no relevant scholar has been fully analyzed yet. Treat it as a lead for further review.`
+      ? `${institution.name} 近四年在 ${topicText} 上有持续论文活动；当前尚无已分析的相关学者可供查看。`
+      : `${institution.name} has recent publication activity in ${topicText}; no analyzed relevant scholar is currently available to view.`
   }
   if (institution.current_collaboration_count === 0) {
     return lang === "zh"
-      ? `${institution.name} 近四年在 ${topicText} 上较活跃，目前未发现与当前学者的合作论文；已找到 ${institution.analyzed_member_count} 位相关学者可进一步查看。`
-      : `${institution.name} has been active in ${topicText} over the past four years. No shared paper with the current scholar was found; ${institution.analyzed_member_count} relevant scholar${institution.analyzed_member_count === 1 ? "" : "s"} can be reviewed next.`
+      ? `${institution.name} 近四年在 ${topicText} 上有较多论文，目前未找到与当前学者合著的论文；可查看 ${institution.analyzed_member_count} 位已分析的相关学者。`
+      : `${institution.name} has published frequently in ${topicText} over the past four years. No coauthored paper with the current scholar was found; ${institution.analyzed_member_count} analyzed relevant scholar${institution.analyzed_member_count === 1 ? "" : "s"} can be viewed.`
   }
   if (institution.current_collaboration_count === 1) {
     return lang === "zh"
-      ? `${institution.name} 在 ${topicText} 上有近期活动，并已出现 1 篇合作论文；可以从这条已有联系继续了解相关学者。`
-      : `${institution.name} has recent activity in ${topicText} and one shared paper with the current scholar, providing an existing link for further exploration.`
+      ? `${institution.name} 近四年在 ${topicText} 上有论文活动，并找到 1 篇与当前学者合著的论文；可从已有合作关系查看相关学者。`
+      : `${institution.name} has recent publications in ${topicText} and one coauthored paper with the current scholar; related scholars can be explored through this existing collaboration.`
   }
   return lang === "zh"
-    ? `${institution.name} 在 ${topicText} 上有近期活动，也已有 ${institution.current_collaboration_count} 篇合作论文，更适合从现有合作关系继续了解。`
-    : `${institution.name} has recent activity in ${topicText} and ${institution.current_collaboration_count} shared papers with the current scholar, so existing collaborations are the clearest starting point.`
+    ? `${institution.name} 近四年在 ${topicText} 上有论文活动，并找到 ${institution.current_collaboration_count} 篇与当前学者合著的论文；可从已有合作关系查看相关学者。`
+    : `${institution.name} has recent publications in ${topicText} and ${institution.current_collaboration_count} coauthored papers with the current scholar; related scholars can be explored through these collaborations.`
 }
 
 function InstitutionCard({
   institution,
-  kinds,
   comparing,
   onCompare,
   feedback,
@@ -435,7 +456,6 @@ function InstitutionCard({
   lang,
 }: {
   institution: IntelligenceInstitution
-  kinds: InstitutionKind[]
   comparing: boolean
   onCompare: (institutionId: string) => void
   feedback?: "helpful" | "inaccurate"
@@ -462,13 +482,6 @@ function InstitutionCard({
                 {lang === "zh" ? "当前机构" : "Current institution"}
               </Badge>
             )}
-            {kinds.map((kind) => (
-              <Badge key={kind} variant="secondary" className="font-normal">
-                {kind === "active"
-                  ? (lang === "zh" ? "近期活跃" : "Recently active")
-                  : (lang === "zh" ? "合作线索" : "Collaboration lead")}
-              </Badge>
-            ))}
           </div>
         </div>
         <p className="text-sm leading-relaxed">
@@ -476,19 +489,19 @@ function InstitutionCard({
         </p>
         <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "相关论文" : "Related works"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "方向论文" : "Topic works"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.historical_works}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "近四年收录" : "Recent records"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "近四年论文" : "Works in 4 years"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.recent_works}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "合作论文" : "Shared papers"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "与该学者合著" : "Coauthored works"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.current_collaboration_count}</p>
           </div>
           <div className="rounded-md bg-muted/60 p-2">
-            <p className="text-muted-foreground">{lang === "zh" ? "已找到学者" : "Scholars found"}</p>
+            <p className="text-muted-foreground">{lang === "zh" ? "可查看学者" : "Viewable scholars"}</p>
             <p className="mt-1 font-semibold tabular-nums">{institution.analyzed_member_count}</p>
           </div>
         </div>
@@ -604,7 +617,6 @@ export default function ScholarIntelligenceAnalysis({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [filter, setFilter] = useState<DiscoveryFilter>("all")
-  const [institutionFilter, setInstitutionFilter] = useState<"all" | InstitutionKind>("all")
   const [actionBusy, setActionBusy] = useState(false)
   const [tracked, setTracked] = useState<Set<string>>(new Set())
   const [trackingBusy, setTrackingBusy] = useState("")
@@ -768,31 +780,19 @@ export default function ScholarIntelligenceAnalysis({
   )
   const mergedInstitutions = useMemo(() => {
     if (!intelligence) return []
-    const rows = new Map<string, {
-      institution: IntelligenceInstitution
-      kinds: InstitutionKind[]
-    }>()
-    for (const [kind, institutions] of [
-      ["active", intelligence.institutions.active],
-      ["opportunity", intelligence.institutions.opportunities],
-    ] as Array<[InstitutionKind, IntelligenceInstitution[]]>) {
+    const rows = new Map<string, IntelligenceInstitution>()
+    for (const institutions of [
+      intelligence.institutions.active,
+      intelligence.institutions.opportunities,
+    ]) {
       for (const institution of institutions) {
-        const current = rows.get(institution.institution_id) || {
-          institution,
-          kinds: [],
+        if (!rows.has(institution.institution_id)) {
+          rows.set(institution.institution_id, institution)
         }
-        if (!current.kinds.includes(kind)) current.kinds.push(kind)
-        rows.set(institution.institution_id, current)
       }
     }
     return [...rows.values()]
   }, [intelligence])
-  const visibleInstitutions = useMemo(
-    () => institutionFilter === "all"
-      ? mergedInstitutions
-      : mergedInstitutions.filter((row) => row.kinds.includes(institutionFilter)),
-    [institutionFilter, mergedInstitutions],
-  )
 
   if (loading) {
     return (
@@ -911,11 +911,9 @@ export default function ScholarIntelligenceAnalysis({
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h3 className="font-semibold">{lang === "zh" ? "关注学者" : "Scholars to watch"}</h3>
+            <h3 className="font-semibold">{lang === "zh" ? "相关学者" : "Relevant scholars"}</h3>
             <p className="mt-1 text-xs text-muted-foreground">
-              {lang === "zh"
-                ? "根据研究方向、活跃时间和合作关系整理；一个人可能同时符合多个关注理由。"
-                : "Organized by research topics, active periods, and collaboration links. One scholar may have more than one reason to watch."}
+              {localize(FILTER_DESCRIPTIONS[filter], lang)}
             </p>
           </div>
           <div className="flex max-w-full flex-wrap gap-1 rounded-lg border bg-muted/30 p-1">
@@ -977,44 +975,24 @@ export default function ScholarIntelligenceAnalysis({
       <Separator />
 
       <section>
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h3 className="flex items-center gap-2 font-semibold">
-              <Building2 className="h-4 w-4 text-primary" />
-              {lang === "zh" ? "关注机构" : "Institutions to watch"}
-            </h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {lang === "zh"
-                ? "看看哪些机构近期在这些方向上活跃，以及当前学者与它们有没有合作联系。"
-                : "See which institutions are active in these topics and whether they already have collaboration links with the current scholar."}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-1 rounded-lg border bg-muted/30 p-1">
-            {([
-              ["all", lang === "zh" ? "全部" : "All"],
-              ["active", lang === "zh" ? "近期活跃" : "Recently active"],
-              ["opportunity", lang === "zh" ? "合作线索" : "Collaboration leads"],
-            ] as const).map(([key, label]) => (
-              <Button
-                key={key}
-                size="sm"
-                variant={institutionFilter === key ? "default" : "ghost"}
-                className="h-7 px-2.5 text-xs"
-                onClick={() => setInstitutionFilter(key)}
-              >
-                {label}
-              </Button>
-            ))}
-          </div>
+        <div className="mb-3">
+          <h3 className="flex items-center gap-2 font-semibold">
+            <Building2 className="h-4 w-4 text-primary" />
+            {lang === "zh" ? "相关机构" : "Relevant institutions"}
+          </h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {lang === "zh"
+              ? "查看相同方向上的论文活动、与当前学者的合著记录，以及可以继续查看的相关学者。"
+              : "Review publication activity in related topics, coauthorship with the current scholar, and relevant scholars available to view."}
+          </p>
         </div>
 
-        {visibleInstitutions.length > 0 && (
+        {mergedInstitutions.length > 0 && (
           <div className="grid gap-3 lg:grid-cols-2">
-            {visibleInstitutions.map(({ institution, kinds }) => (
+            {mergedInstitutions.map((institution) => (
               <InstitutionCard
                 key={institution.institution_id}
                 institution={institution}
-                kinds={kinds}
                 comparing={institutionComparing === institution.institution_id}
                 onCompare={(institutionId) => void handleInstitutionCompare(institutionId)}
                 feedback={feedback[`institution_radar|${institution.institution_id}`]}
@@ -1024,14 +1002,6 @@ export default function ScholarIntelligenceAnalysis({
               />
             ))}
           </div>
-        )}
-
-        {!visibleInstitutions.length && mergedInstitutions.length > 0 && (
-          <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-            {lang === "zh"
-              ? "当前筛选下没有机构结果。"
-              : "No institution result is available under this filter."}
-          </p>
         )}
 
         {!mergedInstitutions.length && (
