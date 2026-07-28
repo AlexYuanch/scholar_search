@@ -1,4 +1,4 @@
-import { Activity, Clock3, Link2 } from "lucide-react"
+import { Activity, Clock3, Eye, Link2 } from "lucide-react"
 
 import type { Lang } from "@/i18n"
 import type {
@@ -19,6 +19,7 @@ import {
 interface Props {
   comparison: IntelligenceComparison
   onClose: () => void
+  onViewScholar: (authorId: string, scholarName: string) => void
   lang: Lang
 }
 
@@ -168,6 +169,7 @@ function InstitutionMetric({
 export default function InstitutionComparison({
   comparison,
   onClose,
+  onViewScholar,
   lang,
 }: Props) {
   const left = isInstitution(comparison.left) ? comparison.left : null
@@ -324,6 +326,32 @@ export default function InstitutionComparison({
               ? "零表示当前已分析范围内没有记录，不代表现实中一定没有合作。"
               : "Zero means no record within current analyzed coverage; it does not prove that no real-world collaboration exists."}
           </p>
+          {right.analyzed_members && right.analyzed_members.length > 0 && (
+            <div className="mt-3 border-t pt-3">
+              <p className="text-xs font-medium text-muted-foreground">
+                {lang === "zh"
+                  ? `可查看的相关学者（${right.analyzed_members.length}）`
+                  : `Relevant scholars available to view (${right.analyzed_members.length})`}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {right.analyzed_members.map((member) => (
+                  <Button
+                    key={member.author_id}
+                    size="sm"
+                    variant="outline"
+                    className="h-auto min-w-0 whitespace-normal py-1.5 text-left"
+                    onClick={() => onViewScholar(member.author_id, member.name)}
+                  >
+                    <Eye className="h-3.5 w-3.5 shrink-0" />
+                    <span className="break-words">{member.name}</span>
+                    <span className="text-muted-foreground">
+                      {lang === "zh" ? "查看画像" : "View profile"}
+                    </span>
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         {comparison.next_step && (

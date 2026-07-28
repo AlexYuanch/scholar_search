@@ -474,6 +474,10 @@ export interface IntelligenceInstitution {
   recent_works: number
   current_collaboration_count: number
   analyzed_member_count: number
+  analyzed_members?: Array<{
+    author_id: string
+    name: string
+  }>
   topics: Array<{ name: string }>
   is_focus_institution: boolean
   coverage: {

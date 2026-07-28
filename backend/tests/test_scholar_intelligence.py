@@ -8,6 +8,7 @@ from intelligence_repository import _finalize_dataset, save_intelligence_feedbac
 from field_discovery import (
     _institution_comparison_guidance,
     advance_field_discovery,
+    build_field_institutions,
     claim_field_discovery,
     discover_field_candidates,
     enqueue_field_discovery,
@@ -104,6 +105,70 @@ def test_institution_comparison_guidance_respects_graph_coverage():
     assert "找到 4 篇与当前学者的合著论文" in connected_guidance["conclusion"]["zh"]
     assert "到“合作关系”核对" in connected_guidance["next_step"]["zh"]
     assert "机构质量" in uncovered_guidance["conclusion"]["zh"]
+
+
+def test_field_institution_members_keep_clickable_author_identity(monkeypatch):
+    current_institution = "https://openalex.org/I-CURRENT"
+    target_institution = "https://openalex.org/I-TARGET"
+    first_author = "https://openalex.org/A-MEMBER-1"
+    second_author = "https://openalex.org/A-MEMBER-2"
+    monkeypatch.setattr(
+        "field_discovery._raw_institutions",
+        lambda _repository, _author_id: [
+            {
+                "source_id": current_institution,
+                "name": "Current University",
+                "historical_works": 20,
+                "recent_works": 5,
+            },
+            {
+                "source_id": target_institution,
+                "name": "Target University",
+                "historical_works": 40,
+                "recent_works": 12,
+            },
+        ],
+    )
+    dataset = {
+        "scholars": {
+            FOCUS: {
+                "affiliations": [{"source_id": current_institution}],
+                "collaborations": {
+                    first_author: {"works_count": 2},
+                    second_author: {"works_count": 1},
+                },
+            },
+            first_author: {
+                "name": "Same Name",
+                "graph_ready": True,
+                "affiliations": [{"source_id": target_institution}],
+            },
+            second_author: {
+                "name": "Same Name",
+                "graph_ready": True,
+                "affiliations": [{"source_id": target_institution}],
+            },
+        },
+    }
+
+    result = build_field_institutions(
+        InMemoryRepository(),
+        FOCUS,
+        dataset,
+        [{"name": "Knowledge Graph"}],
+    )
+    target = next(
+        row
+        for row in result["active"]
+        if row["institution_id"] == target_institution
+    )
+
+    assert target["analyzed_member_count"] == 2
+    assert target["current_collaboration_count"] == 3
+    assert target["analyzed_members"] == [
+        {"author_id": first_author, "name": "Same Name"},
+        {"author_id": second_author, "name": "Same Name"},
+    ]
 
 
 def test_intelligence_projection_prefers_persistent_recent_affiliation():

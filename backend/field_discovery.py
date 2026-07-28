@@ -1178,7 +1178,10 @@ def build_field_institutions(
             affiliation = (scholar.get("affiliations") or [{}])[0]
             if affiliation.get("source_id") != source_id:
                 continue
-            members.append(candidate_id)
+            members.append({
+                "author_id": candidate_id,
+                "name": scholar.get("name") or candidate_id,
+            })
             collaboration_count += int(
                 (focus.get("collaborations", {}).get(candidate_id) or {})
                 .get("works_count")
@@ -1192,6 +1195,13 @@ def build_field_institutions(
             "recent_works": int(raw.get("recent_works") or 0),
             "current_collaboration_count": collaboration_count,
             "analyzed_member_count": len(members),
+            "analyzed_members": sorted(
+                members,
+                key=lambda member: (
+                    member["name"].casefold(),
+                    member["author_id"],
+                ),
+            ),
             "topics": [
                 {"name": topic["name"]}
                 for topic in field_topics[:5]

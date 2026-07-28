@@ -988,6 +988,7 @@ export default function ScholarIntelligenceAnalysis({
       {institutionComparison && (
         <InstitutionComparison
           comparison={institutionComparison}
+          onViewScholar={onViewProfile}
           onClose={() => setInstitutionComparison(null)}
           lang={lang}
         />
