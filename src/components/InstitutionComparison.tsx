@@ -20,6 +20,7 @@ interface Props {
   comparison: IntelligenceComparison
   onClose: () => void
   onViewScholar: (authorId: string, scholarName: string) => void
+  focusScholarName: string
   lang: Lang
 }
 
@@ -170,6 +171,7 @@ export default function InstitutionComparison({
   comparison,
   onClose,
   onViewScholar,
+  focusScholarName,
   lang,
 }: Props) {
   const left = isInstitution(comparison.left) ? comparison.left : null
@@ -302,7 +304,9 @@ export default function InstitutionComparison({
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <div className="grid grid-cols-2 gap-2">
               <InstitutionMetric
-                label={lang === "zh" ? "本机构合著" : "Current coauthored"}
+                label={lang === "zh"
+                  ? `本机构 · 与 ${focusScholarName} 合著`
+                  : `Current · coauthored with ${focusScholarName}`}
                 value={left.current_collaboration_count.toLocaleString()}
               />
               <InstitutionMetric
@@ -312,7 +316,9 @@ export default function InstitutionComparison({
             </div>
             <div className="grid grid-cols-2 gap-2">
               <InstitutionMetric
-                label={lang === "zh" ? "对比机构合著" : "Compared coauthored"}
+                label={lang === "zh"
+                  ? `对比机构 · 与 ${focusScholarName} 合著`
+                  : `Compared · coauthored with ${focusScholarName}`}
                 value={right.current_collaboration_count.toLocaleString()}
               />
               <InstitutionMetric

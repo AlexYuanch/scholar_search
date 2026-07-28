@@ -94,15 +94,29 @@ def test_institution_comparison_guidance_respects_graph_coverage():
         "current_collaboration_count": 4,
     }
 
-    uncovered_guidance = _institution_comparison_guidance(current, uncovered)
-    analyzed_guidance = _institution_comparison_guidance(current, analyzed)
-    connected_guidance = _institution_comparison_guidance(current, connected)
+    uncovered_guidance = _institution_comparison_guidance(
+        current,
+        uncovered,
+        "Haofen Wang",
+    )
+    analyzed_guidance = _institution_comparison_guidance(
+        current,
+        analyzed,
+        "Haofen Wang",
+    )
+    connected_guidance = _institution_comparison_guidance(
+        current,
+        connected,
+        "Haofen Wang",
+    )
 
-    assert "无法判断具体合作联系" in uncovered_guidance["conclusion"]["zh"]
-    assert "不要据此判断合作机会" in uncovered_guidance["next_step"]["zh"]
+    assert "没有可显示姓名" in uncovered_guidance["conclusion"]["zh"]
+    assert "Haofen Wang" in uncovered_guidance["conclusion"]["zh"]
+    assert "next_step" not in uncovered_guidance
     assert "当前图谱已覆盖 3 位相关学者" in analyzed_guidance["conclusion"]["zh"]
+    assert "与 Haofen Wang 的合著论文" in analyzed_guidance["conclusion"]["zh"]
     assert "先查看该机构已分析的 3 位相关学者" in analyzed_guidance["next_step"]["zh"]
-    assert "找到 4 篇与当前学者的合著论文" in connected_guidance["conclusion"]["zh"]
+    assert "找到 4 篇与 Haofen Wang 的合著论文" in connected_guidance["conclusion"]["zh"]
     assert "到“合作关系”核对" in connected_guidance["next_step"]["zh"]
     assert "机构质量" in uncovered_guidance["conclusion"]["zh"]
 

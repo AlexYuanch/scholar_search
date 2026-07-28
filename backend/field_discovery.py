@@ -1258,7 +1258,11 @@ def build_field_institutions(
     }
 
 
-def _institution_comparison_guidance(left: dict, right: dict) -> dict:
+def _institution_comparison_guidance(
+    left: dict,
+    right: dict,
+    focus_scholar_name: str,
+) -> dict:
     """Explain what the institution comparison supports without overclaiming."""
     left_recent = int(left.get("recent_works") or 0)
     right_recent = int(right.get("recent_works") or 0)
@@ -1266,6 +1270,7 @@ def _institution_comparison_guidance(left: dict, right: dict) -> dict:
     right_collaborations = int(right.get("current_collaboration_count") or 0)
     left_name = left.get("name") or "当前机构"
     right_name = right.get("name") or "对比机构"
+    focus_name = focus_scholar_name or "当前学者"
 
     if right_recent > left_recent:
         activity_zh = (
@@ -1294,34 +1299,26 @@ def _institution_comparison_guidance(left: dict, right: dict) -> dict:
 
     if right_members == 0:
         connection_zh = (
-            "；但当前图谱尚未覆盖该机构的相关学者，无法判断具体合作联系。"
+            f"；目前没有可显示姓名的 {right_name} 相关学者，因此无法核对"
+            f"其与 {focus_name} 的具体合作联系。"
         )
         connection_en = (
-            "; however, the current graph does not yet cover a relevant "
-            "scholar there, so specific collaboration links cannot be assessed."
+            f"; however, there is no named relevant scholar from {right_name} "
+            f"in the current coverage, so specific collaboration links with "
+            f"{focus_name} cannot be assessed."
         )
-        next_step = {
-            "zh": (
-                "先把它作为机构层面的研究动向参考；补全到具体学者前，"
-                "不要据此判断合作机会。"
-            ),
-            "en": (
-                "Use this only as an institution-level research-activity "
-                "reference. Do not infer a collaboration opportunity until "
-                "specific scholars are covered."
-            ),
-        }
+        next_step = None
     elif right_collaborations > 0:
         connection_zh = (
             f"；当前图谱覆盖 {right_members} 位相关学者，并找到 "
-            f"{right_collaborations} 篇与当前学者的合著论文。"
+            f"{right_collaborations} 篇与 {focus_name} 的合著论文。"
         )
         connection_en = (
             f"; the current graph covers {right_members} relevant "
             f"scholar{'s' if right_members != 1 else ''} and finds "
             f"{right_collaborations} coauthored "
-            f"work{'s' if right_collaborations != 1 else ''} with the "
-            "focus scholar."
+            f"work{'s' if right_collaborations != 1 else ''} with "
+            f"{focus_name}."
         )
         next_step = {
             "zh": "到“合作关系”核对已有合作者和共同论文，再决定是否继续跟进。",
@@ -1333,12 +1330,12 @@ def _institution_comparison_guidance(left: dict, right: dict) -> dict:
     else:
         connection_zh = (
             f"；当前图谱已覆盖 {right_members} 位相关学者，但尚未找到"
-            "与当前学者的合著论文。"
+            f"与 {focus_name} 的合著论文。"
         )
         connection_en = (
             f"; the current graph covers {right_members} relevant "
             f"scholar{'s' if right_members != 1 else ''}, but no coauthored "
-            "work with the focus scholar was found in that coverage."
+            f"work with {focus_name} was found in that coverage."
         )
         next_step = {
             "zh": (
@@ -1352,7 +1349,7 @@ def _institution_comparison_guidance(left: dict, right: dict) -> dict:
             ),
         }
 
-    return {
+    result = {
         "conclusion": {
             "zh": (
                 f"{activity_zh}{connection_zh}"
@@ -1363,8 +1360,10 @@ def _institution_comparison_guidance(left: dict, right: dict) -> dict:
                 "the current topic sample, not institutional quality."
             ),
         },
-        "next_step": next_step,
     }
+    if next_step:
+        result["next_step"] = next_step
+    return result
 
 
 def compare_field_institutions(
@@ -1432,7 +1431,10 @@ def compare_field_institutions(
         },
         {
             "key": "collaboration",
-            "label": {"zh": "与当前学者合作论文", "en": "Works with the focus scholar"},
+            "label": {
+                "zh": f"与 {focus.get('name') or focus_author_id} 合作论文",
+                "en": f"Works with {focus.get('name') or focus_author_id}",
+            },
             "left": left["current_collaboration_count"],
             "right": right["current_collaboration_count"],
         },
@@ -1443,7 +1445,11 @@ def compare_field_institutions(
             "right": right["analyzed_member_count"],
         },
     ]
-    guidance = _institution_comparison_guidance(left, right)
+    guidance = _institution_comparison_guidance(
+        left,
+        right,
+        focus.get("name") or focus_author_id,
+    )
     return {
         "analysis_version": "deterministic-graph-v1",
         "mode": "institution",

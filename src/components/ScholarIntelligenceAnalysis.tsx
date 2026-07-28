@@ -435,6 +435,7 @@ function ScholarCard({
 
 function institutionSummary(
   institution: IntelligenceInstitution,
+  focusScholarName: string,
   lang: Lang,
 ) {
   const topicNames = institution.topics.slice(0, 2).map((topic) => topic.name)
@@ -443,8 +444,8 @@ function institutionSummary(
     : (lang === "zh" ? "相关方向" : "related topics")
   if (institution.is_focus_institution) {
     return lang === "zh"
-      ? `${institution.name} 是当前学者的主要关联机构，下面的数据用于和其他机构核对研究方向与合作联系。`
-      : `${institution.name} is the current scholar's primary affiliation. The figures below provide a baseline for comparing topics and collaboration links.`
+      ? `${institution.name} 是 ${focusScholarName} 的主要关联机构，下面的数据用于和其他机构核对研究方向与合作联系。`
+      : `${institution.name} is ${focusScholarName}'s primary affiliation. The figures below provide a baseline for comparing topics and collaboration links.`
   }
   if (institution.analyzed_member_count === 0) {
     return lang === "zh"
@@ -453,21 +454,22 @@ function institutionSummary(
   }
   if (institution.current_collaboration_count === 0) {
     return lang === "zh"
-      ? `${institution.name} 近四年在 ${topicText} 上有较多论文；当前图谱覆盖 ${institution.analyzed_member_count} 位相关学者，在这些数据里尚未找到与当前学者合著的论文。`
-      : `${institution.name} has published frequently in ${topicText} over the past four years. The current graph covers ${institution.analyzed_member_count} relevant scholar${institution.analyzed_member_count === 1 ? "" : "s"}, with no coauthored paper with the focus scholar found in that coverage.`
+      ? `${institution.name} 近四年在 ${topicText} 上有较多论文；当前图谱覆盖 ${institution.analyzed_member_count} 位相关学者，在这些数据里尚未找到与 ${focusScholarName} 合著的论文。`
+      : `${institution.name} has published frequently in ${topicText} over the past four years. The current graph covers ${institution.analyzed_member_count} relevant scholar${institution.analyzed_member_count === 1 ? "" : "s"}, with no coauthored paper with ${focusScholarName} found in that coverage.`
   }
   if (institution.current_collaboration_count === 1) {
     return lang === "zh"
-      ? `${institution.name} 近四年在 ${topicText} 上有论文活动，并找到 1 篇与当前学者合著的论文；可从已有合作关系查看相关学者。`
-      : `${institution.name} has recent publications in ${topicText} and one coauthored paper with the current scholar; related scholars can be explored through this existing collaboration.`
+      ? `${institution.name} 近四年在 ${topicText} 上有论文活动，并找到 1 篇与 ${focusScholarName} 合著的论文；可从已有合作关系查看相关学者。`
+      : `${institution.name} has recent publications in ${topicText} and one coauthored paper with ${focusScholarName}; related scholars can be explored through this existing collaboration.`
   }
   return lang === "zh"
-    ? `${institution.name} 近四年在 ${topicText} 上有论文活动，并找到 ${institution.current_collaboration_count} 篇与当前学者合著的论文；可从已有合作关系查看相关学者。`
-    : `${institution.name} has recent publications in ${topicText} and ${institution.current_collaboration_count} coauthored papers with the current scholar; related scholars can be explored through these collaborations.`
+    ? `${institution.name} 近四年在 ${topicText} 上有论文活动，并找到 ${institution.current_collaboration_count} 篇与 ${focusScholarName} 合著的论文；可从已有合作关系查看相关学者。`
+    : `${institution.name} has recent publications in ${topicText} and ${institution.current_collaboration_count} coauthored papers with ${focusScholarName}; related scholars can be explored through these collaborations.`
 }
 
 function InstitutionCard({
   institution,
+  focusScholarName,
   comparing,
   onCompare,
   feedback,
@@ -476,6 +478,7 @@ function InstitutionCard({
   lang,
 }: {
   institution: IntelligenceInstitution
+  focusScholarName: string
   comparing: boolean
   onCompare: (institutionId: string) => void
   feedback?: "helpful" | "inaccurate"
@@ -505,7 +508,7 @@ function InstitutionCard({
           </div>
         </div>
         <p className="text-sm leading-relaxed">
-          {institutionSummary(institution, lang)}
+          {institutionSummary(institution, focusScholarName, lang)}
         </p>
         <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
           <div className="rounded-md bg-muted/60 p-2">
@@ -965,6 +968,7 @@ export default function ScholarIntelligenceAnalysis({
               <InstitutionCard
                 key={institution.institution_id}
                 institution={institution}
+                focusScholarName={profile.name}
                 comparing={institutionComparing === institution.institution_id}
                 onCompare={(institutionId) => void handleInstitutionCompare(institutionId)}
                 feedback={feedback[`institution_radar|${institution.institution_id}`]}
@@ -989,6 +993,7 @@ export default function ScholarIntelligenceAnalysis({
         <InstitutionComparison
           comparison={institutionComparison}
           onViewScholar={onViewProfile}
+          focusScholarName={profile.name}
           onClose={() => setInstitutionComparison(null)}
           lang={lang}
         />
