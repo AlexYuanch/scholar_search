@@ -953,6 +953,19 @@ class InMemoryRepository:
         ]
         online_user_ids = {row["user_id"] for row in online if row.get("user_id")}
         users_by_id = {user["id"]: user for user in self.users.values()}
+        recent_activity = [
+            row for row in self.analytics_events
+            if row["created_at"] >= now - timedelta(minutes=5)
+        ]
+
+        def activity_for(visitor_hashes: set[str]) -> tuple[int, str | None]:
+            rows = [
+                row for row in recent_activity
+                if row.get("visitor_hash") in visitor_hashes
+            ]
+            latest = max(rows, key=lambda row: row["created_at"]) if rows else None
+            return len(rows), latest["event_type"] if latest else None
+
         profile_counts: dict[str, int] = {}
         for row in events:
             if row["event_type"] == "profile_view" and row.get("scholar_id"):
@@ -1004,6 +1017,36 @@ class InMemoryRepository:
             item["type"] == "job_failure" for item in anomalies
         ):
             anomalies.append({"type": "job_failure", "count": jobs["failed"]})
+        online_users = []
+        for user_id in online_user_ids:
+            if user_id not in users_by_id:
+                continue
+            sessions = [row for row in online if row.get("user_id") == user_id]
+            visitor_hashes = {row["visitor_hash"] for row in sessions}
+            activity_count, last_activity = activity_for(visitor_hashes)
+            online_users.append({
+                "id": user_id,
+                "username": users_by_id[user_id]["username"],
+                "first_seen_at": _iso(min(row["first_seen_at"] for row in sessions)),
+                "last_seen_at": _iso(max(row["last_seen_at"] for row in sessions)),
+                "activity_count": activity_count,
+                "last_activity": last_activity,
+                "session_count": len(sessions),
+            })
+        online_users.sort(key=lambda row: row["last_seen_at"], reverse=True)
+        online_visitors = []
+        for row in online:
+            if row.get("user_id"):
+                continue
+            activity_count, last_activity = activity_for({row["visitor_hash"]})
+            online_visitors.append({
+                "id": row["visitor_hash"][:6].upper(),
+                "first_seen_at": _iso(row["first_seen_at"]),
+                "last_seen_at": _iso(row["last_seen_at"]),
+                "activity_count": activity_count,
+                "last_activity": last_activity,
+            })
+        online_visitors.sort(key=lambda row: row["last_seen_at"], reverse=True)
         return {
             "range": range_name,
             "summary": {
@@ -1026,17 +1069,8 @@ class InMemoryRepository:
                 ),
             },
             "trends": trends,
-            "online_users": [
-                {
-                    "id": user_id,
-                    "username": users_by_id[user_id]["username"],
-                    "last_seen_at": _iso(max(
-                        row["last_seen_at"] for row in online
-                        if row.get("user_id") == user_id
-                    )),
-                }
-                for user_id in online_user_ids if user_id in users_by_id
-            ],
+            "online_users": online_users,
+            "online_visitors": online_visitors,
             "popular_scholars": popular,
             "jobs": jobs,
             "anomalies": anomalies,
@@ -2551,13 +2585,28 @@ class PostgresRepository:
                    or created_at >= date_trunc('day', now())
             """), params).mappings().one()
 
-            online_users = conn.execute(text("""
-                select u.id, u.username, max(v.last_seen_at) as last_seen_at
+            online_sessions = conn.execute(text("""
+                select
+                    v.visitor_hash,
+                    v.user_id,
+                    u.username,
+                    v.first_seen_at,
+                    v.last_seen_at,
+                    coalesce(activity.activity_count, 0) as activity_count,
+                    activity.last_activity
                 from public.analytics_visitors v
-                join public.app_users u on u.id = v.user_id
+                left join public.app_users u on u.id = v.user_id
+                left join lateral (
+                    select
+                        count(*) as activity_count,
+                        (array_agg(e.event_type order by e.created_at desc))[1]
+                            as last_activity
+                    from public.analytics_events e
+                    where e.visitor_hash = v.visitor_hash
+                      and e.created_at >= now() - interval '5 minutes'
+                ) activity on true
                 where v.last_seen_at >= now() - interval '5 minutes'
-                group by u.id, u.username
-                order by last_seen_at desc
+                order by v.last_seen_at desc
             """)).mappings().all()
 
             popular = conn.execute(text("""
@@ -2658,6 +2707,46 @@ class PostgresRepository:
             item["type"] == "job_failure" for item in anomaly_items
         ):
             anomaly_items.append({"type": "job_failure", "count": failed_jobs})
+        online_users_by_id: dict[str, dict] = {}
+        online_visitors = []
+        for row in online_sessions:
+            if row["user_id"]:
+                user_id = str(row["user_id"])
+                item = online_users_by_id.setdefault(user_id, {
+                    "id": user_id,
+                    "username": row["username"],
+                    "first_seen_at": row["first_seen_at"],
+                    "last_seen_at": row["last_seen_at"],
+                    "activity_count": 0,
+                    "last_activity": None,
+                    "session_count": 0,
+                })
+                item["first_seen_at"] = min(item["first_seen_at"], row["first_seen_at"])
+                if row["last_seen_at"] >= item["last_seen_at"]:
+                    item["last_seen_at"] = row["last_seen_at"]
+                    if row["last_activity"]:
+                        item["last_activity"] = row["last_activity"]
+                elif not item["last_activity"] and row["last_activity"]:
+                    item["last_activity"] = row["last_activity"]
+                item["activity_count"] += int(row["activity_count"] or 0)
+                item["session_count"] += 1
+            else:
+                online_visitors.append({
+                    "id": row["visitor_hash"][:6].upper(),
+                    "first_seen_at": _iso(row["first_seen_at"]),
+                    "last_seen_at": _iso(row["last_seen_at"]),
+                    "activity_count": int(row["activity_count"] or 0),
+                    "last_activity": row["last_activity"],
+                })
+        online_users = sorted(
+            ({
+                **row,
+                "first_seen_at": _iso(row["first_seen_at"]),
+                "last_seen_at": _iso(row["last_seen_at"]),
+            } for row in online_users_by_id.values()),
+            key=lambda row: row["last_seen_at"],
+            reverse=True,
+        )
 
         return {
             "range": range_name,
@@ -2671,14 +2760,8 @@ class PostgresRepository:
                 }
                 for row in trends
             ],
-            "online_users": [
-                {
-                    "id": str(row["id"]),
-                    "username": row["username"],
-                    "last_seen_at": _iso(row["last_seen_at"]),
-                }
-                for row in online_users
-            ],
+            "online_users": online_users,
+            "online_visitors": online_visitors,
             "popular_scholars": [
                 {
                     "scholar_id": str(row["scholar_id"]),

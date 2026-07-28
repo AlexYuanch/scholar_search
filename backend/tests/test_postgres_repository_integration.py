@@ -252,6 +252,15 @@ def test_admin_roles_and_analytics_are_persistent():
         assert users["items"][0]["role"] == "admin"
         assert dashboard["summary"]["today_page_views"] >= 1
         assert dashboard["summary"]["online_authenticated"] >= 1
+        online_member = next(
+            item for item in dashboard["online_users"]
+            if item["id"] == member["id"]
+        )
+        assert online_member["username"] == member_name
+        assert online_member["activity_count"] == 1
+        assert online_member["last_activity"] == "page_view"
+        assert online_member["session_count"] == 1
+        assert dashboard["online_visitors"] == []
         assert admin["role"] == "super_admin"
     finally:
         with repository.engine.begin() as conn:

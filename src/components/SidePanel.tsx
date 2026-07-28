@@ -41,15 +41,15 @@ export default function SidePanel({ data, onClose, onViewProfile, t, fullscreen 
         <button
           type="button"
           aria-label={t("panel.close")}
-          className="fixed inset-0 z-50 bg-black/30 lg:hidden"
+          className="fixed inset-x-0 bottom-0 top-14 z-50 bg-black/30 lg:hidden"
           onClick={onClose}
         />
       )}
       <aside
-        className={`fixed right-0 top-0 h-[100dvh] w-full max-w-md border-l bg-background shadow-xl ${
+        className={`fixed right-0 w-full max-w-md border-l bg-background shadow-xl ${
           fullscreen
-            ? "z-[70]"
-            : "z-[60] lg:sticky lg:right-auto lg:top-14 lg:z-20 lg:h-[calc(100dvh-3.5rem)] lg:max-w-none lg:self-start lg:shadow-none"
+            ? "top-0 z-[70] h-[100dvh]"
+            : "top-14 z-[60] h-[calc(100dvh-3.5rem)] lg:sticky lg:right-auto lg:z-20 lg:max-w-none lg:self-start lg:shadow-none"
         }`}
       >
       <div className="flex h-full flex-col">

@@ -162,9 +162,9 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`re
 ## 访问统计
 
 - 前端首次载入调用匿名可用的 `POST /api/analytics/visit`；服务端生成 30 天随机 `HttpOnly` 访客 Cookie，数据库只保存摘要。
-- API 中间件最多每分钟更新一次访客最近活动；近 5 分钟活动构成在线口径，登录用户和匿名访客分开统计。
+- API 中间件最多每分钟更新一次访客最近活动；近 5 分钟活动构成在线口径。登录会话按用户聚合并返回用户名、设备/浏览器会话数和最近动作，匿名会话仅返回访客摘要前缀、时间与动作计数。
 - 搜索、画像查看、注册/登录结果、限流和服务异常写入分类事件，不保存搜索姓名、密码、密钥、Cookie、原始异常堆栈或运营统计 IP。
-- `GET /api/admin/dashboard` 在 PostgreSQL 聚合 24 小时、7 天或 30 天趋势，并读取三类后台任务状态；`GET/PATCH /api/admin/users` 只向超级管理员开放。
+- `GET /api/admin/dashboard` 在 PostgreSQL 聚合 24 小时、7 天或 30 天趋势、在线用户与匿名访客明细，并读取三类后台任务状态；`GET/PATCH /api/admin/users` 只向超级管理员开放。
 - 维护任务删除 30 天前的统计事件和长期未活动访客，不影响用户、画像、历史、追踪或研究图谱记录。
 
 系统提供公开本地账号注册，但不依赖外部身份提供商。建议前后端同域部署，以简化 Cookie 和 CSRF 边界；生产环境必须启用 HTTPS 与 Secure Cookie。

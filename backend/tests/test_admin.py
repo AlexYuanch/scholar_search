@@ -141,11 +141,17 @@ def test_online_window_and_analytics_retention(monkeypatch):
         "a" * 64: {
             "visitor_hash": "a" * 64,
             "user_id": member["id"],
-            "first_seen_at": now,
+            "first_seen_at": now - timedelta(hours=1),
             "last_seen_at": now,
         },
         "b" * 64: {
             "visitor_hash": "b" * 64,
+            "user_id": None,
+            "first_seen_at": now - timedelta(minutes=3),
+            "last_seen_at": now,
+        },
+        "c" * 64: {
+            "visitor_hash": "c" * 64,
             "user_id": None,
             "first_seen_at": now,
             "last_seen_at": now - timedelta(minutes=6),
@@ -159,7 +165,23 @@ def test_online_window_and_analytics_retention(monkeypatch):
             "scholar_id": None,
             "metadata": {},
             "created_at": now - timedelta(days=31),
-        }
+        },
+        {
+            "event_type": "search",
+            "visitor_hash": "a" * 64,
+            "user_id": member["id"],
+            "scholar_id": None,
+            "metadata": {},
+            "created_at": now - timedelta(minutes=1),
+        },
+        {
+            "event_type": "page_view",
+            "visitor_hash": "b" * 64,
+            "user_id": None,
+            "scholar_id": None,
+            "metadata": {},
+            "created_at": now - timedelta(minutes=2),
+        },
     ]
     client = _client_for(monkeypatch, repository, admin["username"])
 
@@ -167,7 +189,20 @@ def test_online_window_and_analytics_retention(monkeypatch):
     maintenance = repository.run_maintenance()
 
     assert dashboard["summary"]["online_authenticated"] >= 1
-    assert dashboard["summary"]["online_anonymous"] == 0
+    assert dashboard["summary"]["online_anonymous"] == 1
+    assert dashboard["online_users"] == [{
+        "id": member["id"],
+        "username": "member",
+        "first_seen_at": dashboard["online_users"][0]["first_seen_at"],
+        "last_seen_at": dashboard["online_users"][0]["last_seen_at"],
+        "activity_count": 1,
+        "last_activity": "search",
+        "session_count": 1,
+    }]
+    assert len(dashboard["online_visitors"]) == 1
+    assert dashboard["online_visitors"][0]["id"] == "BBBBBB"
+    assert dashboard["online_visitors"][0]["activity_count"] == 1
+    assert dashboard["online_visitors"][0]["last_activity"] == "page_view"
     assert maintenance["deleted"] == 1
     assert all(
         event["created_at"] >= now - timedelta(days=30)

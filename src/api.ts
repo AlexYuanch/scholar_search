@@ -131,7 +131,18 @@ export interface AdminDashboardData {
   online_users: Array<{
     id: string
     username: string
+    first_seen_at: string
     last_seen_at: string
+    activity_count: number
+    last_activity: string | null
+    session_count: number
+  }>
+  online_visitors: Array<{
+    id: string
+    first_seen_at: string
+    last_seen_at: string
+    activity_count: number
+    last_activity: string | null
   }>
   popular_scholars: Array<{
     scholar_id: string

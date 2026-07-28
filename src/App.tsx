@@ -571,9 +571,21 @@ export default function App() {
   }, [loadProfile])
 
   const openAccountPanel = useCallback((mode: "history" | "favorites") => {
+    setAdminOpen(false)
     setPanel(null)
     setAccountMode(mode)
   }, [])
+
+  const toggleAdminDashboard = useCallback(() => {
+    if (adminOpen) {
+      setAdminOpen(false)
+      return
+    }
+    setPanel(null)
+    setAccountMode(null)
+    setComparisonOpen(false)
+    setAdminOpen(true)
+  }, [adminOpen])
 
   const handleReset = useCallback(() => {
     abortRef.current?.abort()
@@ -591,6 +603,7 @@ export default function App() {
     setSearched(false)
     setPanel(null)
     setAccountMode(null)
+    setAdminOpen(false)
     setComparisonOpen(false)
   }, [])
 
@@ -649,11 +662,11 @@ export default function App() {
               <>
                 {user.can_view_admin && (
                   <Button
-                    variant="ghost"
+                    variant={adminOpen ? "secondary" : "ghost"}
                     size="sm"
                     className="h-8 gap-1 px-2 text-xs"
                     title={t("admin.nav")}
-                    onClick={() => setAdminOpen(true)}
+                    onClick={toggleAdminDashboard}
                   >
                     <ShieldCheck className="h-4 w-4" />
                     <span className="hidden lg:inline">{t("admin.nav")}</span>
