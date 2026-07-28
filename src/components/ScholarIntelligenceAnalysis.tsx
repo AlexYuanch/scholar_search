@@ -514,7 +514,7 @@ function InstitutionCard({
         )}
         <details className="group border-t pt-3">
           <summary className="cursor-pointer list-none text-xs font-medium text-primary hover:underline">
-            {lang === "zh" ? "这条信息怎么来的" : "How this was derived"}
+            {lang === "zh" ? "数据范围" : "Data coverage"}
           </summary>
           <div className="mt-3 space-y-3">
             <p className="text-xs leading-relaxed text-muted-foreground">
@@ -627,7 +627,7 @@ export default function ScholarIntelligenceAnalysis({
         setError(
           reason instanceof ApiError
             ? reason.message
-            : (lang === "zh" ? "学术发现加载失败" : "Could not load academic discovery"),
+            : (lang === "zh" ? "同行与机构加载失败" : "Could not load peers and institutions"),
         )
       }
     } finally {
@@ -799,7 +799,7 @@ export default function ScholarIntelligenceAnalysis({
       <Card>
         <CardContent className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
-          {lang === "zh" ? "正在整理值得关注的学者…" : "Preparing academic discovery…"}
+          {lang === "zh" ? "正在整理同行与机构…" : "Preparing peers and institutions…"}
         </CardContent>
       </Card>
     )
@@ -811,7 +811,7 @@ export default function ScholarIntelligenceAnalysis({
         <CardContent className="space-y-4 p-6 text-sm">
           <p className="flex items-start gap-2 text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            {error || (lang === "zh" ? "学术发现暂不可用" : "Academic discovery is unavailable")}
+            {error || (lang === "zh" ? "同行与机构暂不可用" : "Peers and institutions are unavailable")}
           </p>
           <Button size="sm" variant="outline" onClick={() => void load()}>
             <RefreshCw className="h-3.5 w-3.5" />
@@ -1050,29 +1050,6 @@ export default function ScholarIntelligenceAnalysis({
           lang={lang}
         />
       )}
-
-      <details className="group rounded-lg border bg-muted/30">
-        <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium">
-          {lang === "zh" ? "结果怎么来的" : "How results are produced"}
-        </summary>
-        <div className="space-y-3 border-t px-4 py-4 text-xs leading-relaxed text-muted-foreground">
-          <p>{localize(intelligence.methodology.score_source, lang)}</p>
-          <p>{localize(intelligence.methodology.ranking_scope, lang)}</p>
-          <p>
-            {lang === "zh"
-              ? "候选发现只决定补全谁；只有完成阶段 2 动态研究图谱的候选，才能通过确定性门槛进入建议。"
-              : "Discovery only decides whom to enrich. A candidate must complete the stage-2 dynamic graph and pass deterministic thresholds before appearing."}
-          </p>
-          <p>
-            {lang === "zh"
-              ? `图谱版本 ${intelligence.generated_from_graph_version}；领域发现版本 ${discovery.version}。`
-              : `Graph version ${intelligence.generated_from_graph_version}; field-discovery version ${discovery.version}.`}
-          </p>
-          {intelligence.institutions.limitations.map((item) => (
-            <p key={item.zh}>{localize(item, lang)}</p>
-          ))}
-        </div>
-      </details>
     </div>
   )
 }
