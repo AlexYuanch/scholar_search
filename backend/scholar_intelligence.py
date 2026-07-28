@@ -957,6 +957,40 @@ def _recommendation_focus_name(row: dict, lang: str) -> str:
     )
 
 
+def _recommendation_representative(row: dict, lang: str) -> str:
+    representatives = (row.get("analysis") or {}).get("representative_works") or []
+    if not representatives:
+        return ""
+    work = representatives[0]
+    title = re.sub(r"\s+", " ", str(work.get("title") or "")).strip()
+    if not title:
+        return ""
+    if len(title) > 88:
+        title = f"{title[:85].rstrip()}…"
+    year = work.get("year")
+    if lang == "zh":
+        year_text = f"（{year}）" if year else ""
+        return f"当前图谱选出的代表成果之一是《{title}》{year_text}"
+    year_text = f" ({year})" if year else ""
+    return f'One representative result in the current graph is “{title}”{year_text}'
+
+
+def _recommendation_dimension_evidence(
+    row: dict,
+    dimension: str,
+    code: str,
+) -> Any:
+    evidence = (
+        ((row.get("analysis") or {}).get("dimensions") or {})
+        .get(dimension, {})
+        .get("evidence", [])
+    )
+    return next(
+        (item.get("value") for item in evidence if item.get("code") == code),
+        None,
+    )
+
+
 def _reference_explanation(
     row: dict,
     continuity: float | None,
@@ -970,55 +1004,98 @@ def _reference_explanation(
     focus_en = _recommendation_focus_name(row, "en")
     topics_zh = _recommendation_topic_text(row, "zh")
     topics_en = _recommendation_topic_text(row, "en")
-    if downstream >= 0.25:
-        detail_zh = "被后续研究接续的成果相对更多"
-        detail_en = "a larger share of the covered results has been taken up by later work"
-        use_zh = "适合用来追踪哪些成果正在带动后续研究"
-        use_en = "making this scholar useful for tracking which results are shaping follow-on work"
-    elif row["topic_overlap"] >= 0.25:
-        detail_zh = "双方的研究交集更集中"
-        detail_en = "their shared research focus is comparatively concentrated"
-        use_zh = "适合用来快速了解最接近的研究路径"
-        use_en = "making this scholar useful for quickly understanding the closest related research path"
-    elif continuity is not None and continuity >= 68:
-        detail_zh = "相关研究保持了较长时间的连续性"
-        detail_en = "the related work has remained consistent over a longer period"
-        use_zh = "适合用来观察这些方向如何逐步形成连续成果"
-        use_en = "making this scholar useful for seeing how those topics develop into a sustained line of work"
-    elif downstream >= 0.15:
-        detail_zh = "已有一部分成果被后续研究继续采用"
-        detail_en = "some covered results have been taken up by later work"
-        use_zh = "适合留意其后续研究如何展开"
-        use_en = "making this scholar useful for seeing how the follow-on work develops"
-    elif recent_works >= 300:
-        detail_zh = "近四年的公开论文活动尤其集中"
-        detail_en = "publication activity has been especially concentrated over the past four years"
-        use_zh = "适合及时查看这些方向上的新成果"
-        use_en = "making this scholar useful for keeping up with new results in these topics"
-    elif downstream >= 0.12:
-        detail_zh = "已有一部分成果被后续研究继续采用"
-        detail_en = "some covered results have been taken up by later work"
-        use_zh = "适合留意其后续研究如何展开"
-        use_en = "making this scholar useful for seeing how the follow-on work develops"
-    elif impact is not None and impact >= 70 and downstream >= 0.12:
-        detail_zh = "已有多项成果被后续研究接续"
-        detail_en = "several results have been taken up by later work"
-        use_zh = "适合用来追踪哪些成果正在带动后续研究"
-        use_en = "making this scholar useful for tracking which results are shaping follow-on work"
-    elif row["recent_overlap"] >= 0.25:
-        detail_zh = "近四年的研究重点也较接近"
-        detail_en = "their research focus has also been close over the past four years"
-        use_zh = "适合持续关注最新论文和方向变化"
-        use_en = "making this scholar worth following for new papers and shifts in direction"
+    representative_zh = _recommendation_representative(row, "zh")
+    representative_en = _recommendation_representative(row, "en")
+    signals = {
+        "continuity": (continuity or 0) / 100,
+        "impact": (impact or 0) / 100,
+        "downstream": downstream,
+        "topic_overlap": row["topic_overlap"],
+        "recent_overlap": row["recent_overlap"],
+    }
+    dominant = row.get("reference_angle") or max(
+        signals,
+        key=lambda key: (signals[key], key),
+    )
+    if dominant == "continuity" and continuity is not None:
+        sustained_topics = _recommendation_dimension_evidence(
+            row, "continuity", "sustained_topics"
+        )
+        longest_span = _recommendation_dimension_evidence(
+            row, "continuity", "longest_span"
+        )
+        if sustained_topics is not None and longest_span is not None:
+            detail_zh = (
+                f"现有成果形成 {sustained_topics} 个跨年份方向，最长覆盖 {longest_span} 年，"
+                "更适合观察其如何沿着这些方向形成连续工作"
+            )
+            detail_en = (
+                f"the covered work forms {sustained_topics} multi-year direction"
+                f"{'s' if sustained_topics != 1 else ''}, with the longest spanning {longest_span} years, "
+                "making it most useful for seeing how sustained work develops along these topics"
+            )
+        else:
+            detail_zh = "跨年份研究延续更突出，适合观察这些方向如何形成连续工作"
+            detail_en = (
+                "multi-year continuity is the clearest signal, making it useful for seeing "
+                "how sustained work develops along these topics"
+            )
+    elif dominant == "impact" and impact is not None:
+        if downstream > 0:
+            detail_zh = (
+                f"代表成果的同主题、时间归一化影响信号更突出；当前约 "
+                f"{round(downstream * 100)}% 的图谱成果出现后续扩散，适合从代表成果入手查看传播路径"
+            )
+            detail_en = (
+                "the representative work has a stronger topic- and time-normalized impact signal, while "
+                f"about {round(downstream * 100)}% of covered results show follow-on diffusion, making "
+                "representative results the clearest starting point for reviewing later diffusion"
+            )
+        else:
+            detail_zh = (
+                "代表成果的同主题、时间归一化影响信号更突出，但本地图谱尚未观察到后续扩散；"
+                "适合先核对代表成果，不外推其整体影响力"
+            )
+            detail_en = (
+                "the representative work has a stronger topic- and time-normalized impact signal, "
+                "but no follow-on diffusion is visible in the local graph; review the representative "
+                "result without extrapolating broad influence"
+            )
+    elif dominant == "downstream":
+        detail_zh = (
+            f"当前图谱中约 {round(downstream * 100)}% 的成果出现后续扩散，"
+            "更适合追踪哪些工作正在带动后续研究"
+        )
+        detail_en = (
+            f"about {round(downstream * 100)}% of its covered results show follow-on diffusion, "
+            "making it useful for tracing which work is shaping later research"
+        )
+    elif dominant == "topic_overlap":
+        detail_zh = (
+            f"双方方向重合约 {round(row['topic_overlap'] * 100)}%，"
+            "更适合快速核对最接近的研究路径"
+        )
+        detail_en = (
+            f"their topic overlap is about {round(row['topic_overlap'] * 100)}%, "
+            "making this scholar useful for checking the closest related research path"
+        )
     else:
-        detail_zh = "研究主题存在明确交集"
-        detail_en = "there is a clear overlap in research topics"
-        use_zh = "可以作为了解相近研究路径的参照"
-        use_en = "making this scholar a useful reference for a related research path"
+        detail_zh = (
+            f"近四年方向重合约 {round(row['recent_overlap'] * 100)}%，"
+            f"同期收录 {recent_works} 篇图谱论文，适合继续查看近期成果变化"
+        )
+        detail_en = (
+            f"their recent-topic overlap is about {round(row['recent_overlap'] * 100)}%, "
+            f"with {recent_works} graph works covered in the latest four years, "
+            "making recent changes the most useful angle to follow"
+        )
+    representative_sentence_zh = f"{representative_zh}。" if representative_zh else ""
+    representative_sentence_en = f"{representative_en}. " if representative_en else ""
     return _i18n(
-        f"{identity_zh} 和 {focus_zh} 都在关注 {topics_zh}。{detail_zh}，{use_zh}。",
+        f"{identity_zh} 和 {focus_zh} 的共同方向是 {topics_zh}。"
+        f"{representative_sentence_zh}{detail_zh}。",
         f"{identity_en} and {focus_en} both work on {topics_en}. "
-        f"{detail_en.capitalize()}, {use_en}.",
+        f"{representative_sentence_en}{detail_en.capitalize()}.",
     )
 
 
@@ -1029,18 +1106,37 @@ def _peer_explanation(row: dict) -> dict:
     focus_en = _recommendation_focus_name(row, "en")
     topics_zh = _recommendation_topic_text(row, "zh")
     topics_en = _recommendation_topic_text(row, "en")
-    if row["recent_overlap"] >= 0.3:
-        detail_zh = "近期研究重点接近，值得留意对方接下来发表什么"
-        detail_en = "their recent focus is especially close, so upcoming papers are worth watching"
-    elif row["temporal"] >= 0.5:
-        detail_zh = "双方活跃时间高度重合，属于同一阶段持续推进相近问题的同行"
-        detail_en = "their active periods overlap strongly, placing them among peers advancing related questions at the same time"
+    representative_zh = _recommendation_representative(row, "zh")
+    representative_en = _recommendation_representative(row, "en")
+    if row["recent_overlap"] >= row["temporal"]:
+        detail_zh = (
+            f"近四年方向重合约 {round(row['recent_overlap'] * 100)}%，"
+            f"高于活跃年份重合的 {round(row['temporal'] * 100)}%；适合优先跟进近期成果"
+        )
+        detail_en = (
+            f"recent-topic overlap is about {round(row['recent_overlap'] * 100)}%, above the "
+            f"{round(row['temporal'] * 100)}% active-year overlap, so recent results are the clearest angle to follow"
+        )
     else:
-        detail_zh = "研究方向和发表时间都有可确认的交集，适合持续跟踪"
-        detail_en = "their topics and publication periods overlap, making this scholar a relevant peer to follow"
+        detail_zh = (
+            f"活跃年份重合约 {round(row['temporal'] * 100)}%，"
+            f"近四年方向重合约 {round(row['recent_overlap'] * 100)}%；适合观察同期研究如何演进"
+        )
+        detail_en = (
+            f"active-year overlap is about {round(row['temporal'] * 100)}%, with "
+            f"{round(row['recent_overlap'] * 100)}% recent-topic overlap, making concurrent research changes useful to follow"
+        )
+    representative_sentence_zh = (
+        f"{representative_zh}，可从这项成果入手；" if representative_zh else ""
+    )
+    representative_sentence_en = (
+        f"{representative_en}; " if representative_en else ""
+    )
     return _i18n(
-        f"{identity_zh} 与 {focus_zh} 都在研究 {topics_zh}。{detail_zh}。",
-        f"{identity_en} and {focus_en} both study {topics_en}. {detail_en.capitalize()}.",
+        f"{identity_zh} 与 {focus_zh} 都在研究 {topics_zh}。"
+        f"{representative_sentence_zh}{detail_zh}。",
+        f"{identity_en} and {focus_en} both study {topics_en}. "
+        f"{representative_sentence_en}{detail_en.capitalize()}.",
     )
 
 
@@ -1051,28 +1147,39 @@ def _collaborator_explanation(row: dict) -> dict:
     focus_en = _recommendation_focus_name(row, "en")
     topics_zh = _recommendation_topic_text(row, "zh")
     topics_en = _recommendation_topic_text(row, "en")
+    representative_zh = _recommendation_representative(row, "zh")
+    representative_en = _recommendation_representative(row, "en")
     shared_count = len(row["shared_collaborators"])
     if row["direct_count"] == 0:
         relation_zh = (
-            f"目前还没有共同论文，但通过 {shared_count} 位共同合作者可以找到联系路径"
+            f"目前没有合著论文，但有 {shared_count} 位共同合作者可作为联系路径"
         )
         relation_en = (
-            f"they have no shared paper yet, but {shared_count} mutual "
-            f"collaborator{'s' if shared_count != 1 else ''} provide a connection path"
+            f"there is no coauthored paper yet, but {shared_count} mutual "
+            f"collaborator{'s' if shared_count != 1 else ''} provide a concrete connection path"
         )
     else:
         relation_zh = (
-            f"目前只有 1 篇共同论文，尚未形成稳定合作；另有 {shared_count} 位共同合作者"
+            f"目前只有 1 篇合著论文，尚未形成稳定合作；另有 {shared_count} 位共同合作者"
         )
         relation_en = (
-            f"they have only one shared paper and no established collaboration yet; "
+            f"there is only one coauthored paper and no established collaboration yet; "
             f"{shared_count} mutual collaborator{'s' if shared_count != 1 else ''} provide additional links"
         )
+    representative_sentence_zh = (
+        f"{representative_zh}，可先用它核对对方的实际研究侧重。" if representative_zh
+        else ""
+    )
+    representative_sentence_en = (
+        f"{representative_en}, which provides a concrete result for checking the scholar's research focus. "
+        if representative_en else ""
+    )
     return _i18n(
-        f"{identity_zh} 与 {focus_zh} 在 {topics_zh} 上有交集，研究能力侧重又有所不同。"
-        f"{relation_zh}，可以进一步判断是否值得合作。",
-        f"{identity_en} overlaps with {focus_en} on {topics_en}, while bringing a different "
-        f"capability mix. {relation_en.capitalize()}, providing a concrete lead to explore.",
+        f"{identity_zh} 与 {focus_zh} 在 {topics_zh} 上有交集，方法、系统或数据侧重存在差异。"
+        f"{representative_sentence_zh}{relation_zh}，适合先核对互补点再决定是否联系。",
+        f"{identity_en} overlaps with {focus_en} on {topics_en}, while the method, system, or data "
+        f"focus differs. {representative_sentence_en}{relation_en.capitalize()}; verify the complementary "
+        "strength before deciding whether to make contact.",
     )
 
 
@@ -1083,6 +1190,8 @@ def _competitor_explanation(row: dict) -> dict:
     focus_en = _recommendation_focus_name(row, "en")
     topics_zh = _recommendation_topic_text(row, "zh")
     topics_en = _recommendation_topic_text(row, "en")
+    representative_zh = _recommendation_representative(row, "zh")
+    representative_en = _recommendation_representative(row, "en")
     relation_zh = (
         "尚无直接合作"
         if row["direct_count"] == 0
@@ -1093,12 +1202,22 @@ def _competitor_explanation(row: dict) -> dict:
         if row["direct_count"] == 0
         else "direct collaboration is limited"
     )
+    representative_sentence_zh = (
+        f"{representative_zh}，可用来核对具体问题边界。" if representative_zh else ""
+    )
+    representative_sentence_en = (
+        f"{representative_en}, which can be used to check the concrete problem boundary. "
+        if representative_en else ""
+    )
     return _i18n(
-        f"{identity_zh} 与 {focus_zh} 近期都在推进 {topics_zh}，研究问题、方法和发表时间均出现重合，且{relation_zh}。"
-        "建议留意项目边界；这只是潜在研究重合线索，不是竞争关系认定。",
-        f"{identity_en} and {focus_en} are both working on {topics_en}; the research questions, methods, and publication "
-        f"timing overlap, while {relation_en}. This is only a potential signal to watch project boundaries, "
-        "not a finding of actual competition.",
+        f"{identity_zh} 与 {focus_zh} 近期都在推进 {topics_zh}。问题表述重合约 "
+        f"{round(row['problem_similarity'] * 100)}%，方法路线重合约 "
+        f"{round(row['method_similarity'] * 100)}%，且{relation_zh}。"
+        f"{representative_sentence_zh}这只是潜在选题重合，不是竞争关系认定。",
+        f"{identity_en} and {focus_en} are both working on {topics_en}. Research-question overlap is about "
+        f"{round(row['problem_similarity'] * 100)}% and method overlap is about "
+        f"{round(row['method_similarity'] * 100)}%, while {relation_en}. "
+        f"{representative_sentence_en}This is only potential topic overlap, not a finding of actual competition.",
     )
 
 
@@ -1187,6 +1306,71 @@ def _recommendations(
             ),
         })
 
+    reference_rows = []
+    reference_feature_order = (
+        "topic_overlap",
+        "recent_overlap",
+        "downstream",
+        "continuity",
+        "impact",
+    )
+    for row in candidates:
+        dimensions = row["analysis"]["dimensions"]
+        quality = dimensions["academic_quality"].get("index")
+        if (
+            row["topic_overlap"] < 0.15
+            or quality is None
+            or len(row["scholar"]["work_ids"]) < 4
+            or not row["scholar"].get("graph_ready")
+        ):
+            continue
+        recent_works = sum(
+            (dataset["works"][work_id].get("year") or 0)
+            >= ((dataset.get("as_of_year") or 0) - 3)
+            for work_id in row["scholar"]["work_ids"]
+            if work_id in dataset["works"]
+        )
+        downstream = _safe_ratio(
+            sum(
+                context["incoming"].get(work_id, 0) > 0
+                for work_id in row["scholar"]["work_ids"]
+            ),
+            len(row["scholar"]["work_ids"]),
+        )
+        row["reference_recent_works"] = recent_works
+        row["reference_downstream"] = downstream
+        row["reference_features"] = {
+            "topic_overlap": row["topic_overlap"],
+            "recent_overlap": row["recent_overlap"],
+            "downstream": downstream,
+            "continuity": (dimensions["continuity"].get("index") or 0) / 100,
+            "impact": (dimensions["impact"].get("index") or 0) / 100,
+        }
+        row["reference_positions"] = {}
+        reference_rows.append(row)
+
+    for feature in reference_feature_order:
+        values = [row["reference_features"][feature] for row in reference_rows]
+        for row in reference_rows:
+            value = row["reference_features"][feature]
+            if len(values) <= 1:
+                position = 0.5
+            else:
+                lower = sum(candidate < value for candidate in values)
+                equal = sum(candidate == value for candidate in values)
+                position = (lower + max(0, equal - 1) / 2) / (len(values) - 1)
+            row["reference_positions"][feature] = position
+
+    for row in reference_rows:
+        row["reference_angle"] = max(
+            reference_feature_order,
+            key=lambda feature: (
+                row["reference_positions"][feature],
+                row["reference_features"][feature],
+                -reference_feature_order.index(feature),
+            ),
+        )
+
     north_stars = []
     peers = []
     collaborators = []
@@ -1205,17 +1389,9 @@ def _recommendations(
             and len(row["scholar"]["work_ids"]) >= 4
             and row["scholar"].get("graph_ready")
         ):
-            recent_works = sum(
-                (dataset["works"][work_id].get("year") or 0)
-                >= ((dataset.get("as_of_year") or 0) - 3)
-                for work_id in row["scholar"]["work_ids"]
-                if work_id in dataset["works"]
-            )
+            recent_works = row["reference_recent_works"]
             recent_activity = min(1.0, recent_works / 4)
-            downstream = _safe_ratio(
-                sum(context["incoming"].get(work_id, 0) > 0 for work_id in row["scholar"]["work_ids"]),
-                len(row["scholar"]["work_ids"]),
-            )
+            downstream = row["reference_downstream"]
             score = (
                 row["topic_overlap"] * 0.30
                 + quality / 100 * 0.20

@@ -311,10 +311,20 @@ function ScholarCard({
   onFeedback: (itemKey: string, verdict: "helpful" | "inaccurate") => void
   lang: Lang
 }) {
+  const strongestCategory = CATEGORY_ORDER.reduce<IntelligenceRecommendation["category"] | null>(
+    (strongest, category) => {
+      const candidate = row.byCategory[category]
+      if (!candidate) return strongest
+      if (!strongest) return category
+      const current = row.byCategory[strongest]
+      return !current || candidate.index > current.index ? category : strongest
+    },
+    null,
+  )
   const selectedCategory = (
     filter !== "all" && row.byCategory[filter]
       ? filter
-      : CATEGORY_ORDER.find((category) => row.byCategory[category])
+      : strongestCategory
   ) as IntelligenceRecommendation["category"]
   const selected = row.byCategory[selectedCategory] as IntelligenceRecommendation
   const facts = recommendationFacts(selected, lang)

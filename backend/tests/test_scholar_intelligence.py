@@ -468,12 +468,34 @@ def test_recommendation_explanations_are_scholar_specific_and_name_shared_topics
         assert item["name"] in item["explanation"]["zh"]
         assert result["subject"]["name"] in item["explanation"]["zh"]
         assert shared_topics["value"] in item["explanation"]["zh"]
+        assert "代表成果之一是《" in item["explanation"]["zh"]
         explanations.append(item["explanation"]["zh"])
 
     assert len(explanations) == len(set(explanations))
     assert all(
         "在当前领域样本中" not in explanation
         for explanation in explanations
+    )
+    north_explanations = [
+        item["explanation"]["zh"]
+        for item in result["recommendations"]["north_stars"]
+    ]
+    rationale_types = {
+        marker
+        for marker in (
+            "跨年份方向",
+            "同主题、时间归一化影响",
+            "成果出现后续扩散",
+            "双方方向重合约",
+            "近四年方向重合约",
+        )
+        if any(marker in explanation for explanation in north_explanations)
+    }
+    assert len(rationale_types) >= 3
+    assert all(
+        "研究延续性证据为" not in explanation
+        and "同领域归一化影响证据为" not in explanation
+        for explanation in north_explanations
     )
 
 
