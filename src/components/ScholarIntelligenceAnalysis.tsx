@@ -627,7 +627,7 @@ export default function ScholarIntelligenceAnalysis({
         setError(
           reason instanceof ApiError
             ? reason.message
-            : (lang === "zh" ? "同行与机构加载失败" : "Could not load peers and institutions"),
+            : (lang === "zh" ? "研究圈加载失败" : "Could not load the research landscape"),
         )
       }
     } finally {
@@ -799,7 +799,7 @@ export default function ScholarIntelligenceAnalysis({
       <Card>
         <CardContent className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
-          {lang === "zh" ? "正在整理同行与机构…" : "Preparing peers and institutions…"}
+          {lang === "zh" ? "正在整理研究圈…" : "Preparing the research landscape…"}
         </CardContent>
       </Card>
     )
@@ -811,7 +811,7 @@ export default function ScholarIntelligenceAnalysis({
         <CardContent className="space-y-4 p-6 text-sm">
           <p className="flex items-start gap-2 text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            {error || (lang === "zh" ? "同行与机构暂不可用" : "Peers and institutions are unavailable")}
+            {error || (lang === "zh" ? "研究圈暂不可用" : "The research landscape is unavailable")}
           </p>
           <Button size="sm" variant="outline" onClick={() => void load()}>
             <RefreshCw className="h-3.5 w-3.5" />
