@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 
 type RangeName = "24h" | "7d" | "30d"
+type DetailView = "online" | "visits" | "users" | "searches"
 
 export default function AdminDashboard({
   open,
@@ -48,8 +49,9 @@ export default function AdminDashboard({
   const [users, setUsers] = useState<AdminUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
   const [changingUserId, setChangingUserId] = useState("")
-  const [onlineDetailsOpen, setOnlineDetailsOpen] = useState(false)
+  const [detailView, setDetailView] = useState<DetailView | null>(null)
   const [onlineTab, setOnlineTab] = useState<"users" | "visitors">("users")
+  const [searchTab, setSearchTab] = useState<"searches" | "profiles">("searches")
 
   const loadDashboard = useCallback(async () => {
     setLoading(true)
@@ -146,6 +148,9 @@ export default function AdminDashboard({
     ])
     return t(`admin.activity.${value && known.has(value) ? value : "active"}`)
   }
+  const visitorLabel = (username: string | null, visitorId: string) => (
+    username || `${t("admin.anonymous_visitor")} ${visitorId}`
+  )
   const onlinePreview = [
     ...(data?.online_users ?? []).map((item) => ({
       key: `user-${item.id}`,
@@ -167,28 +172,28 @@ export default function AdminDashboard({
       value: data.summary.online_authenticated + data.summary.online_anonymous,
       note: `${data.summary.online_authenticated} ${t("admin.members")} · ${data.summary.online_anonymous} ${t("admin.guests")}`,
       icon: Activity,
-      interactive: true,
+      detailView: "online" as const,
     },
     {
       label: t("admin.today_visits"),
       value: data.summary.today_page_views,
       note: `${data.summary.today_active_users} ${t("admin.active_members")}`,
       icon: BarChart3,
-      interactive: false,
+      detailView: "visits" as const,
     },
     {
       label: t("admin.total_users"),
       value: data.summary.total_users,
       note: `${data.summary.new_users} ${t("admin.new_in_range")}`,
       icon: Users,
-      interactive: false,
+      detailView: "users" as const,
     },
     {
       label: t("admin.searches"),
       value: data.summary.searches,
       note: `${data.summary.profile_views} ${t("admin.profile_views")}`,
       icon: Search,
-      interactive: false,
+      detailView: "searches" as const,
     },
   ] : []
 
@@ -250,19 +255,19 @@ export default function AdminDashboard({
         )}
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {summaryCards.map(({ label, value, note, icon: Icon, interactive }) => (
+          {summaryCards.map(({ label, value, note, icon: Icon, detailView: cardDetailView }) => (
             <Card
               key={label}
-              className={interactive ? "cursor-pointer transition-colors hover:border-primary/40 hover:bg-muted/20" : ""}
-              role={interactive ? "button" : undefined}
-              tabIndex={interactive ? 0 : undefined}
-              onClick={interactive ? () => setOnlineDetailsOpen(true) : undefined}
-              onKeyDown={interactive ? (event) => {
+              className="cursor-pointer transition-colors hover:border-primary/40 hover:bg-muted/20"
+              role="button"
+              tabIndex={0}
+              onClick={() => setDetailView(cardDetailView)}
+              onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault()
-                  setOnlineDetailsOpen(true)
+                  setDetailView(cardDetailView)
                 }
-              } : undefined}
+              }}
             >
               <CardContent className="p-4">
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
@@ -272,12 +277,10 @@ export default function AdminDashboard({
                 <p className="mt-3 text-3xl font-semibold tabular-nums">{value}</p>
                 <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>{note}</span>
-                  {interactive && (
-                    <span className="flex items-center gap-0.5 text-primary">
-                      {t("admin.view_online")}
-                      <ChevronRight className="h-3 w-3" />
-                    </span>
-                  )}
+                  <span className="flex items-center gap-0.5 text-primary">
+                    {t("admin.view_online")}
+                    <ChevronRight className="h-3 w-3" />
+                  </span>
                 </div>
               </CardContent>
             </Card>
@@ -352,7 +355,7 @@ export default function AdminDashboard({
                   variant="ghost"
                   size="sm"
                   className="h-7 gap-1 px-2 text-xs text-primary"
-                  onClick={() => setOnlineDetailsOpen(true)}
+                  onClick={() => setDetailView("online")}
                 >
                   {t("admin.view_all")}
                   <ChevronRight className="h-3 w-3" />
@@ -366,7 +369,7 @@ export default function AdminDashboard({
                     className="flex w-full items-center justify-between gap-3 rounded-lg bg-muted/50 px-3 py-2 text-left transition-colors hover:bg-muted"
                     onClick={() => {
                       setOnlineTab(item.type === "user" ? "users" : "visitors")
-                      setOnlineDetailsOpen(true)
+                      setDetailView("online")
                     }}
                   >
                     <div className="flex min-w-0 items-center gap-2">
@@ -488,11 +491,11 @@ export default function AdminDashboard({
         )}
       </main>
 
-      {onlineDetailsOpen && (
+      {detailView && (
         <div
           className="fixed inset-x-0 bottom-0 top-14 z-40 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4"
           role="presentation"
-          onClick={() => setOnlineDetailsOpen(false)}
+          onClick={() => setDetailView(null)}
         >
           <div
             className="max-h-[calc(100vh-4.5rem)] w-full overflow-hidden rounded-t-2xl border bg-background shadow-2xl sm:max-w-2xl sm:rounded-2xl"
@@ -503,20 +506,25 @@ export default function AdminDashboard({
           >
             <div className="flex items-start justify-between gap-4 border-b px-4 py-4 sm:px-5">
               <div>
-                <h2 id="online-details-title" className="font-semibold">{t("admin.online_details")}</h2>
-                <p className="mt-1 text-xs text-muted-foreground">{t("admin.online_details_desc")}</p>
+                <h2 id="online-details-title" className="font-semibold">
+                  {t(`admin.details.${detailView}.title`)}
+                </h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t(`admin.details.${detailView}.desc`)}
+                </p>
               </div>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 shrink-0"
-                onClick={() => setOnlineDetailsOpen(false)}
+                onClick={() => setDetailView(null)}
               >
                 <X className="h-4 w-4" />
               </Button>
             </div>
 
-            <div className="flex gap-1 border-b px-4 pt-3 sm:px-5">
+            {detailView === "online" && (
+              <div className="flex gap-1 border-b px-4 pt-3 sm:px-5">
               {([
                 ["users", `${t("admin.signed_in_users")} (${data?.online_users.length ?? 0})`],
                 ["visitors", `${t("admin.anonymous_visitors")} (${data?.online_visitors.length ?? 0})`],
@@ -535,10 +543,34 @@ export default function AdminDashboard({
                   {label}
                 </Button>
               ))}
-            </div>
+              </div>
+            )}
+
+            {detailView === "searches" && (
+              <div className="flex gap-1 border-b px-4 pt-3 sm:px-5">
+                {([
+                  ["searches", `${t("admin.search_records")} (${data?.recent_searches.length ?? 0})`],
+                  ["profiles", `${t("admin.profile_records")} (${data?.recent_profile_views.length ?? 0})`],
+                ] as const).map(([tab, label]) => (
+                  <Button
+                    key={tab}
+                    variant="ghost"
+                    size="sm"
+                    className={`rounded-b-none border-b-2 px-3 ${
+                      searchTab === tab
+                        ? "border-primary text-foreground"
+                        : "border-transparent text-muted-foreground"
+                    }`}
+                    onClick={() => setSearchTab(tab)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            )}
 
             <div className="max-h-[60vh] space-y-2 overflow-y-auto p-4 sm:p-5">
-              {onlineTab === "users" && (data?.online_users ?? []).map((item) => (
+              {detailView === "online" && onlineTab === "users" && (data?.online_users ?? []).map((item) => (
                 <div key={item.id} className="rounded-xl border p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
@@ -559,7 +591,7 @@ export default function AdminDashboard({
                 </div>
               ))}
 
-              {onlineTab === "visitors" && (data?.online_visitors ?? []).map((item) => (
+              {detailView === "online" && onlineTab === "visitors" && (data?.online_visitors ?? []).map((item) => (
                 <div key={item.id} className="rounded-xl border p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
@@ -579,15 +611,93 @@ export default function AdminDashboard({
                 </div>
               ))}
 
-              {onlineTab === "users" && !data?.online_users.length && (
+              {detailView === "visits" && (data?.recent_visits ?? []).map((item, index) => (
+                <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {item.username
+                      ? <UserRoundCheck className="h-4 w-4 shrink-0 text-emerald-600" />
+                      : <Globe2 className="h-4 w-4 shrink-0 text-sky-600" />}
+                    <span className="truncate text-sm font-medium">
+                      {visitorLabel(item.username, item.visitor_id)}
+                    </span>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatTime(item.occurred_at)}
+                  </span>
+                </div>
+              ))}
+
+              {detailView === "users" && (data?.recent_users ?? []).map((item) => (
+                <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Users className="h-4 w-4 shrink-0 text-primary" />
+                    <span className="truncate text-sm font-semibold">{item.username}</span>
+                    <Badge variant="outline">{t(`admin.role.${item.role}`)}</Badge>
+                    {!item.is_active && <Badge variant="outline">{t("admin.inactive")}</Badge>}
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatTime(item.created_at)}
+                  </span>
+                </div>
+              ))}
+
+              {detailView === "searches" && searchTab === "searches" && (data?.recent_searches ?? []).map((item, index) => (
+                <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="rounded-xl border p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-semibold">
+                        {item.query || t("admin.query_unavailable")}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {visitorLabel(item.username, item.visitor_id)}
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatTime(item.occurred_at)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+
+              {detailView === "searches" && searchTab === "profiles" && (data?.recent_profile_views ?? []).map((item, index) => (
+                <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="rounded-xl border p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-semibold">
+                        {item.name || t("admin.unknown_scholar")}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {visitorLabel(item.username, item.visitor_id)}
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatTime(item.occurred_at)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+
+              {detailView === "online" && onlineTab === "users" && !data?.online_users.length && (
                 <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_online_users")}</p>
               )}
-              {onlineTab === "visitors" && !data?.online_visitors.length && (
+              {detailView === "online" && onlineTab === "visitors" && !data?.online_visitors.length && (
                 <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_online_visitors")}</p>
+              )}
+              {detailView === "visits" && !data?.recent_visits.length && (
+                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_visits")}</p>
+              )}
+              {detailView === "users" && !data?.recent_users.length && (
+                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_recent_users")}</p>
+              )}
+              {detailView === "searches" && searchTab === "searches" && !data?.recent_searches.length && (
+                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_searches")}</p>
+              )}
+              {detailView === "searches" && searchTab === "profiles" && !data?.recent_profile_views.length && (
+                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_profile_views")}</p>
               )}
             </div>
 
-            {onlineTab === "visitors" && (
+            {detailView === "online" && onlineTab === "visitors" && (
               <p className="border-t bg-muted/30 px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:px-5">
                 {t("admin.visitor_privacy")}
               </p>

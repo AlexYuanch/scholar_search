@@ -243,6 +243,12 @@ def test_admin_roles_and_analytics_are_persistent():
             visitor_hash,
             user_id=member["id"],
         )
+        repository.record_analytics_event(
+            "search",
+            visitor_hash,
+            user_id=member["id"],
+            metadata={"query": "Junbo Zhang"},
+        )
 
         promoted = repository.set_user_role(member["id"], "admin")
         users = repository.list_admin_users(query=member_name)
@@ -257,10 +263,22 @@ def test_admin_roles_and_analytics_are_persistent():
             if item["id"] == member["id"]
         )
         assert online_member["username"] == member_name
-        assert online_member["activity_count"] == 1
-        assert online_member["last_activity"] == "page_view"
+        assert online_member["activity_count"] == 2
+        assert online_member["last_activity"] == "search"
         assert online_member["session_count"] == 1
         assert dashboard["online_visitors"] == []
+        assert any(
+            item["username"] == member_name
+            for item in dashboard["recent_visits"]
+        )
+        assert any(
+            item["username"] == member_name
+            and item["query"] == "Junbo Zhang"
+            for item in dashboard["recent_searches"]
+        )
+        assert {admin_name, member_name}.issubset({
+            item["username"] for item in dashboard["recent_users"]
+        })
         assert admin["role"] == "super_admin"
     finally:
         with repository.engine.begin() as conn:

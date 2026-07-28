@@ -171,7 +171,7 @@ def test_online_window_and_analytics_retention(monkeypatch):
             "visitor_hash": "a" * 64,
             "user_id": member["id"],
             "scholar_id": None,
-            "metadata": {},
+            "metadata": {"query": "Haofen Wang"},
             "created_at": now - timedelta(minutes=1),
         },
         {
@@ -203,6 +203,14 @@ def test_online_window_and_analytics_retention(monkeypatch):
     assert dashboard["online_visitors"][0]["id"] == "BBBBBB"
     assert dashboard["online_visitors"][0]["activity_count"] == 1
     assert dashboard["online_visitors"][0]["last_activity"] == "page_view"
+    assert dashboard["recent_visits"][0]["visitor_id"] == "BBBBBB"
+    assert dashboard["recent_visits"][0]["username"] is None
+    assert dashboard["recent_searches"][0]["query"] == "Haofen Wang"
+    assert dashboard["recent_searches"][0]["username"] == "member"
+    assert {item["username"] for item in dashboard["recent_users"]} == {
+        "admin",
+        "member",
+    }
     assert maintenance["deleted"] == 1
     assert all(
         event["created_at"] >= now - timedelta(days=30)

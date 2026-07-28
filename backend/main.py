@@ -811,7 +811,12 @@ def search(
     """搜索学者姓名，返回去重后的候选人列表。"""
     api_key, budget_provider = _require_openalex_credential(user)
     _consume_api_quota("search", user, request)
-    _record_usage_event(request, "search", user)
+    _record_usage_event(
+        request,
+        "search",
+        user,
+        metadata={"query": name.strip()[:200]},
+    )
     try:
         return search_with_cache(
             repository,

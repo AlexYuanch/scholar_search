@@ -1047,6 +1047,72 @@ class InMemoryRepository:
                 "last_activity": last_activity,
             })
         online_visitors.sort(key=lambda row: row["last_seen_at"], reverse=True)
+        recent_visits = []
+        for row in sorted(
+            (
+                event for event in today_events
+                if event["event_type"] == "page_view"
+            ),
+            key=lambda event: event["created_at"],
+            reverse=True,
+        )[:50]:
+            user = users_by_id.get(row.get("user_id"))
+            recent_visits.append({
+                "visitor_id": row["visitor_hash"][:6].upper(),
+                "username": user["username"] if user else None,
+                "occurred_at": _iso(row["created_at"]),
+            })
+        recent_users = [
+            {
+                "id": user["id"],
+                "username": user["username"],
+                "role": user.get("role", "user"),
+                "is_active": user["is_active"],
+                "created_at": _iso(user.get("created_at", now)),
+            }
+            for user in sorted(
+                (
+                    user for user in self.users.values()
+                    if user.get("created_at", now) >= cutoff
+                ),
+                key=lambda user: user.get("created_at", now),
+                reverse=True,
+            )[:50]
+        ]
+        recent_searches = []
+        recent_profile_views = []
+        for row in sorted(
+            events,
+            key=lambda event: event["created_at"],
+            reverse=True,
+        ):
+            user = users_by_id.get(row.get("user_id"))
+            identity = {
+                "visitor_id": row["visitor_hash"][:6].upper(),
+                "username": user["username"] if user else None,
+                "occurred_at": _iso(row["created_at"]),
+            }
+            if row["event_type"] == "search" and len(recent_searches) < 50:
+                recent_searches.append({
+                    **identity,
+                    "query": str(row.get("metadata", {}).get("query") or ""),
+                })
+            elif (
+                row["event_type"] == "profile_view"
+                and len(recent_profile_views) < 50
+            ):
+                scholar = next(
+                    (
+                        item for item in self.scholars.values()
+                        if item["id"] == row.get("scholar_id")
+                    ),
+                    {},
+                )
+                recent_profile_views.append({
+                    **identity,
+                    "scholar_id": row.get("scholar_id"),
+                    "name": scholar.get("name", ""),
+                })
         return {
             "range": range_name,
             "summary": {
@@ -1071,6 +1137,10 @@ class InMemoryRepository:
             "trends": trends,
             "online_users": online_users,
             "online_visitors": online_visitors,
+            "recent_visits": recent_visits,
+            "recent_users": recent_users,
+            "recent_searches": recent_searches,
+            "recent_profile_views": recent_profile_views,
             "popular_scholars": popular,
             "jobs": jobs,
             "anomalies": anomalies,
@@ -2609,6 +2679,57 @@ class PostgresRepository:
                 order by v.last_seen_at desc
             """)).mappings().all()
 
+            recent_visits = conn.execute(text("""
+                select
+                    e.visitor_hash,
+                    u.username,
+                    e.created_at
+                from public.analytics_events e
+                left join public.app_users u on u.id = e.user_id
+                where e.event_type = 'page_view'
+                  and e.created_at >= date_trunc('day', now())
+                order by e.created_at desc
+                limit 50
+            """)).mappings().all()
+
+            recent_users = conn.execute(text("""
+                select id, username, role, is_active, created_at
+                from public.app_users
+                where created_at >= :cutoff
+                order by created_at desc
+                limit 50
+            """), params).mappings().all()
+
+            recent_searches = conn.execute(text("""
+                select
+                    e.visitor_hash,
+                    u.username,
+                    coalesce(e.metadata ->> 'query', '') as query,
+                    e.created_at
+                from public.analytics_events e
+                left join public.app_users u on u.id = e.user_id
+                where e.event_type = 'search'
+                  and e.created_at >= :cutoff
+                order by e.created_at desc
+                limit 50
+            """), params).mappings().all()
+
+            recent_profile_views = conn.execute(text("""
+                select
+                    e.visitor_hash,
+                    u.username,
+                    e.scholar_id,
+                    s.display_name as name,
+                    e.created_at
+                from public.analytics_events e
+                left join public.app_users u on u.id = e.user_id
+                left join public.scholars s on s.id = e.scholar_id
+                where e.event_type = 'profile_view'
+                  and e.created_at >= :cutoff
+                order by e.created_at desc
+                limit 50
+            """), params).mappings().all()
+
             popular = conn.execute(text("""
                 select s.id as scholar_id, s.display_name as name, count(*) as views
                 from public.analytics_events e
@@ -2762,6 +2883,45 @@ class PostgresRepository:
             ],
             "online_users": online_users,
             "online_visitors": online_visitors,
+            "recent_visits": [
+                {
+                    "visitor_id": row["visitor_hash"][:6].upper(),
+                    "username": row["username"],
+                    "occurred_at": _iso(row["created_at"]),
+                }
+                for row in recent_visits
+            ],
+            "recent_users": [
+                {
+                    "id": str(row["id"]),
+                    "username": row["username"],
+                    "role": row["role"],
+                    "is_active": row["is_active"],
+                    "created_at": _iso(row["created_at"]),
+                }
+                for row in recent_users
+            ],
+            "recent_searches": [
+                {
+                    "visitor_id": row["visitor_hash"][:6].upper(),
+                    "username": row["username"],
+                    "query": row["query"],
+                    "occurred_at": _iso(row["created_at"]),
+                }
+                for row in recent_searches
+            ],
+            "recent_profile_views": [
+                {
+                    "visitor_id": row["visitor_hash"][:6].upper(),
+                    "username": row["username"],
+                    "scholar_id": (
+                        str(row["scholar_id"]) if row["scholar_id"] else None
+                    ),
+                    "name": row["name"] or "",
+                    "occurred_at": _iso(row["created_at"]),
+                }
+                for row in recent_profile_views
+            ],
             "popular_scholars": [
                 {
                     "scholar_id": str(row["scholar_id"]),

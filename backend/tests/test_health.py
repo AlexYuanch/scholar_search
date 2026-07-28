@@ -120,6 +120,7 @@ def test_search_uses_server_openalex_key_without_user_configuration(
     repository = InMemoryRepository()
     monkeypatch.setattr(main, "repository", repository)
     monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
+    monkeypatch.setenv("COOKIE_SECURE", "false")
     monkeypatch.setattr(
         main,
         "search_authors",
@@ -136,12 +137,18 @@ def test_search_uses_server_openalex_key_without_user_configuration(
         lambda candidates, **_kwargs: candidates,
     )
 
+    assert authenticated_client.post("/api/analytics/visit").status_code == 204
     response = authenticated_client.get("/api/search?name=Ada")
 
     assert response.status_code == 200
     assert [candidate["name"] for candidate in response.json()["candidates"]] == [
         "Ada Lovelace"
     ]
+    search_event = next(
+        event for event in repository.analytics_events
+        if event["event_type"] == "search"
+    )
+    assert search_event["metadata"] == {"query": "Ada"}
 
 
 def test_search_reports_missing_platform_data_source_configuration(

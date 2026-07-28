@@ -4,6 +4,48 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
+usage() {
+    cat <<'EOF'
+用法：./deploy/deploy.sh [模式] [--dry-run]
+
+模式：
+  --auto       根据上次成功部署后的 Git 变更自动选择（默认）
+  --frontend   仅构建并更新前端
+  --backend    运行迁移，仅构建并更新 Web 与 Worker
+  --full       完整构建并更新全部服务
+  --dry-run    只显示部署计划，不执行 Docker 命令
+  --help       显示帮助
+EOF
+}
+
+MODE=auto
+DRY_RUN=false
+MODE_SET=false
+for argument in "$@"; do
+    case "$argument" in
+        --auto|--frontend|--backend|--full)
+            if [ "$MODE_SET" = true ]; then
+                echo "一次只能指定一种部署模式。" >&2
+                exit 2
+            fi
+            MODE=${argument#--}
+            MODE_SET=true
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "未知参数：$argument" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
 if [ ! -f .env ]; then
     echo "缺少 .env：请先执行 cp .env.example .env 并填写生产配置。" >&2
     exit 1
@@ -128,8 +170,120 @@ else
     fi
 fi
 
-docker compose config --quiet
-docker compose up -d --build --remove-orphans --wait --wait-timeout 180
-docker compose ps
+hash_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+STATE_DIR=".deploy-state"
+LAST_COMMIT_FILE=".deploy-state/last-successful-commit"
+ENV_HASH_FILE=".deploy-state/env.sha256"
+CURRENT_COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
+CURRENT_ENV_HASH=$(hash_file .env)
+LAST_COMMIT=$(cat "$LAST_COMMIT_FILE" 2>/dev/null || true)
+LAST_ENV_HASH=$(cat "$ENV_HASH_FILE" 2>/dev/null || true)
+DEPLOY_FRONTEND=false
+DEPLOY_BACKEND=false
+DEPLOY_FULL=false
+
+case "$MODE" in
+    frontend) DEPLOY_FRONTEND=true ;;
+    backend) DEPLOY_BACKEND=true ;;
+    full) DEPLOY_FULL=true ;;
+    auto)
+        if [ -z "$CURRENT_COMMIT" ] \
+            || [ -z "$LAST_COMMIT" ] \
+            || ! git cat-file -e "$LAST_COMMIT^{commit}" 2>/dev/null; then
+            DEPLOY_FULL=true
+            PLAN_REASON="首次使用增量部署或上次部署记录不可用"
+        else
+            CHANGED_FILES=$(git diff --name-only "$LAST_COMMIT..$CURRENT_COMMIT")
+            while IFS= read -r changed_file; do
+                [ -z "$changed_file" ] && continue
+                case "$changed_file" in
+                    src/*|public/*|index.html|package.json|package-lock.json|vite.config.*|tsconfig*.json|components.json)
+                        DEPLOY_FRONTEND=true
+                        ;;
+                    backend/*)
+                        DEPLOY_BACKEND=true
+                        ;;
+                    README.md|docs/*|session-handoff.md|AGENTS.md)
+                        ;;
+                    *)
+                        DEPLOY_FULL=true
+                        ;;
+                esac
+            done <<EOF
+$CHANGED_FILES
+EOF
+            PLAN_REASON="基于 $LAST_COMMIT..$CURRENT_COMMIT 的文件变化"
+        fi
+        ;;
+esac
+
+if [ -n "$LAST_ENV_HASH" ] && [ "$LAST_ENV_HASH" != "$CURRENT_ENV_HASH" ]; then
+    DEPLOY_FULL=true
+    DEPLOY_FRONTEND=false
+    DEPLOY_BACKEND=false
+    PLAN_REASON=".env 已变化"
+fi
+
+if [ "$DEPLOY_FULL" = true ]; then
+    DEPLOY_FRONTEND=false
+    DEPLOY_BACKEND=false
+    PLAN_LABEL="完整构建"
+elif [ "$DEPLOY_FRONTEND" = true ] && [ "$DEPLOY_BACKEND" = true ]; then
+    PLAN_LABEL="前端与后端增量构建"
+elif [ "$DEPLOY_FRONTEND" = true ]; then
+    PLAN_LABEL="仅前端增量构建"
+elif [ "$DEPLOY_BACKEND" = true ]; then
+    PLAN_LABEL="仅后端增量构建"
+else
+    PLAN_LABEL="无需更新运行服务"
+fi
+
+echo "部署计划：$PLAN_LABEL"
+if [ -n "${PLAN_REASON:-}" ]; then
+    echo "判定依据：$PLAN_REASON"
+fi
+
+run_command() {
+    if [ "$DRY_RUN" = true ]; then
+        printf '将执行：'
+        printf ' %s' "$@"
+        printf '\n'
+    else
+        "$@"
+    fi
+}
+
+run_command docker compose config --quiet
+
+if [ "$DEPLOY_FULL" = true ]; then
+    run_command docker compose up -d --build --remove-orphans --wait --wait-timeout 180
+else
+    if [ "$DEPLOY_BACKEND" = true ]; then
+        run_command docker compose build migrate web worker
+        run_command docker compose run --rm migrate
+        run_command docker compose up -d --no-deps --wait --wait-timeout 180 web worker
+    fi
+    if [ "$DEPLOY_FRONTEND" = true ]; then
+        run_command docker compose build frontend
+        run_command docker compose up -d --no-deps --wait --wait-timeout 180 frontend
+    fi
+fi
+
+run_command docker compose ps
+
+if [ "$DRY_RUN" = false ] && { [ "$MODE" = auto ] || [ "$MODE" = full ]; }; then
+    mkdir -p "$STATE_DIR"
+    printf '%s\n' "$CURRENT_COMMIT" > "$LAST_COMMIT_FILE"
+    printf '%s\n' "$CURRENT_ENV_HASH" > "$ENV_HASH_FILE"
+elif [ "$DRY_RUN" = false ]; then
+    echo "显式局部部署不会推进自动部署基线；下次 --auto 仍会复核全部 Git 变化。"
+fi
 
 echo "部署完成：$PUBLIC_APP_URL"

@@ -68,6 +68,24 @@ def test_production_deploy_does_not_reject_random_keys_containing_your():
     assert "your_DeepSeek_API_Key" in script
 
 
+def test_production_deploy_supports_safe_incremental_modes():
+    script = DEPLOY.read_text()
+    result = subprocess.run(
+        [str(DEPLOY), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    for option in ("--auto", "--frontend", "--backend", "--full", "--dry-run"):
+        assert option in result.stdout
+    assert ".deploy-state/last-successful-commit" in script
+    assert "docker compose build frontend" in script
+    assert "docker compose build migrate web worker" in script
+    assert "docker compose run --rm migrate" in script
+    assert "docker compose up -d --build --remove-orphans" in script
+
+
 def test_compose_runs_daily_postgres_backups_without_manual_profile():
     compose = COMPOSE.read_text()
 

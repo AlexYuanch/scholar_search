@@ -144,6 +144,31 @@ export interface AdminDashboardData {
     activity_count: number
     last_activity: string | null
   }>
+  recent_visits: Array<{
+    visitor_id: string
+    username: string | null
+    occurred_at: string
+  }>
+  recent_users: Array<{
+    id: string
+    username: string
+    role: "user" | "admin" | "super_admin"
+    is_active: boolean
+    created_at: string
+  }>
+  recent_searches: Array<{
+    visitor_id: string
+    username: string | null
+    query: string
+    occurred_at: string
+  }>
+  recent_profile_views: Array<{
+    visitor_id: string
+    username: string | null
+    scholar_id: string | null
+    name: string
+    occurred_at: string
+  }>
   popular_scholars: Array<{
     scholar_id: string
     name: string
