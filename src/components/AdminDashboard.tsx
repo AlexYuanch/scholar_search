@@ -8,7 +8,6 @@ import {
   Globe2,
   RefreshCw,
   Search,
-  ShieldCheck,
   UserRoundCheck,
   Users,
   X,
@@ -91,6 +90,16 @@ export default function AdminDashboard({
     }, 250)
     return () => globalThis.clearTimeout(timer)
   }, [loadUsers, open, query, user.can_manage_admins])
+
+  useEffect(() => {
+    if (!detailView) return
+    const timer = globalThis.setTimeout(() => {
+      document
+        .querySelector(`[data-admin-detail="${detailView}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    }, 120)
+    return () => globalThis.clearTimeout(timer)
+  }, [detailView])
 
   const maxTrend = useMemo(
     () => Math.max(
@@ -197,46 +206,36 @@ export default function AdminDashboard({
 
   return (
     <section className="scholar-admin-page min-h-[calc(100vh-3.5rem)] bg-background">
-      <div className="border-b bg-background/95">
-        <div className="mx-auto flex min-h-20 max-w-6xl items-center justify-between gap-3 px-4 py-4 sm:px-6">
-          <div className="flex min-w-0 items-center gap-2">
-            <ShieldCheck className="h-5 w-5 text-primary" />
-            <div className="min-w-0">
-              <h1 className="text-lg font-semibold sm:text-xl">{t("admin.title")}</h1>
-              <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t("admin.subtitle")}</p>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 gap-1.5"
-            onClick={() => void loadDashboard()}
-            disabled={loading}
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            <span>{t("admin.refresh")}</span>
-          </Button>
-        </div>
-      </div>
-
-      <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
+      <main className="scholar-admin-content space-y-6 py-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold">{t("admin.overview")}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{t("admin.online_definition")}</p>
           </div>
-          <div className="flex rounded-lg border bg-muted/40 p-1">
-            {(["24h", "7d", "30d"] as RangeName[]).map((item) => (
-              <Button
-                key={item}
-                variant={range === item ? "default" : "ghost"}
-                size="sm"
-                className="h-7 px-3 text-xs"
-                onClick={() => setRange(item)}
-              >
-                {t(`admin.range.${item}`)}
-              </Button>
-            ))}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex rounded-lg border bg-muted/40 p-1">
+              {(["24h", "7d", "30d"] as RangeName[]).map((item) => (
+                <Button
+                  key={item}
+                  variant={range === item ? "default" : "ghost"}
+                  size="sm"
+                  className="h-7 px-3 text-xs"
+                  onClick={() => setRange(item)}
+                >
+                  {t(`admin.range.${item}`)}
+                </Button>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-1.5"
+              onClick={() => void loadDashboard()}
+              disabled={loading}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              <span>{t("admin.refresh")}</span>
+            </Button>
           </div>
         </div>
 
@@ -247,22 +246,23 @@ export default function AdminDashboard({
           </div>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="scholar-admin-summary-grid">
           {summaryCards.map(({ label, value, note, icon: Icon, detailView: cardDetailView }) => (
             <Card
               key={label}
-              className="cursor-pointer transition-colors hover:border-primary/40 hover:bg-muted/20"
-              role="button"
-              tabIndex={0}
-              onClick={() => setDetailView(cardDetailView)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault()
-                  setDetailView(cardDetailView)
-                }
-              }}
+              data-admin-detail={cardDetailView}
+              className={`scholar-admin-summary-card ${
+                detailView === cardDetailView ? "is-expanded" : ""
+              }`}
             >
-              <CardContent className="p-4">
+              <button
+                type="button"
+                className="scholar-admin-summary-trigger"
+                aria-expanded={detailView === cardDetailView}
+                onClick={() => setDetailView((current) => (
+                  current === cardDetailView ? null : cardDetailView
+                ))}
+              >
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>{label}</span>
                   <Icon className="h-4 w-4" />
@@ -272,10 +272,195 @@ export default function AdminDashboard({
                   <span>{note}</span>
                   <span className="flex items-center gap-0.5 text-primary">
                     {t("admin.view_online")}
-                    <ChevronRight className="h-3 w-3" />
+                    <ChevronRight className="scholar-admin-summary-chevron h-3 w-3" />
                   </span>
                 </div>
-              </CardContent>
+              </button>
+
+              <div
+                className="scholar-admin-inline-details"
+                aria-hidden={detailView !== cardDetailView}
+              >
+                <div className="scholar-admin-inline-details-inner">
+                  <div className="flex items-start justify-between gap-4 border-t px-4 py-4 sm:px-5">
+                    <div>
+                      <h3 className="font-semibold">
+                        {t(`admin.details.${cardDetailView}.title`)}
+                      </h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {t(`admin.details.${cardDetailView}.desc`)}
+                      </p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => setDetailView(null)}
+                      aria-label={lang === "zh" ? "收起明细" : "Collapse details"}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  {cardDetailView === "online" && (
+                    <div className="flex gap-1 border-y px-4 pt-3 sm:px-5">
+                      {([
+                        ["users", `${t("admin.signed_in_users")} (${data?.online_users.length ?? 0})`],
+                        ["visitors", `${t("admin.anonymous_visitors")} (${data?.online_visitors.length ?? 0})`],
+                      ] as const).map(([tab, tabLabel]) => (
+                        <Button
+                          key={tab}
+                          variant="ghost"
+                          size="sm"
+                          className={`rounded-b-none border-b-2 px-3 ${
+                            onlineTab === tab
+                              ? "border-primary text-foreground"
+                              : "border-transparent text-muted-foreground"
+                          }`}
+                          onClick={() => setOnlineTab(tab)}
+                        >
+                          {tabLabel}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+
+                  {cardDetailView === "searches" && (
+                    <div className="flex gap-1 border-y px-4 pt-3 sm:px-5">
+                      {([
+                        ["searches", `${t("admin.search_records")} (${data?.recent_searches.length ?? 0})`],
+                        ["profiles", `${t("admin.profile_records")} (${data?.recent_profile_views.length ?? 0})`],
+                      ] as const).map(([tab, tabLabel]) => (
+                        <Button
+                          key={tab}
+                          variant="ghost"
+                          size="sm"
+                          className={`rounded-b-none border-b-2 px-3 ${
+                            searchTab === tab
+                              ? "border-primary text-foreground"
+                              : "border-transparent text-muted-foreground"
+                          }`}
+                          onClick={() => setSearchTab(tab)}
+                        >
+                          {tabLabel}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="scholar-admin-inline-list">
+                    {cardDetailView === "online" && onlineTab === "users" && (data?.online_users ?? []).map((item) => (
+                      <div key={item.id} className="rounded-xl border p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <UserRoundCheck className="h-4 w-4 shrink-0 text-emerald-600" />
+                            <span className="truncate text-sm font-semibold">{item.username}</span>
+                            <Badge variant="outline">{t("admin.signed_in")}</Badge>
+                          </div>
+                          <span className="text-xs text-muted-foreground">{activityLabel(item.last_activity)}</span>
+                        </div>
+                        <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                          <span>{t("admin.first_seen")}：{formatTime(item.first_seen_at)}</span>
+                          <span>{t("admin.last_seen")}：{formatTime(item.last_seen_at)}</span>
+                          <span>{t("admin.recent_actions")}：{item.activity_count}</span>
+                          <span>{t("admin.online_sessions")}：{item.session_count}</span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {cardDetailView === "online" && onlineTab === "visitors" && (data?.online_visitors ?? []).map((item) => (
+                      <div key={item.id} className="rounded-xl border p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <Globe2 className="h-4 w-4 shrink-0 text-sky-600" />
+                            <span className="text-sm font-semibold">{t("admin.anonymous_visitor")} {item.id}</span>
+                            <Badge variant="outline">{t("admin.not_signed_in")}</Badge>
+                          </div>
+                          <span className="text-xs text-muted-foreground">{activityLabel(item.last_activity)}</span>
+                        </div>
+                        <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                          <span>{t("admin.first_seen")}：{formatTime(item.first_seen_at)}</span>
+                          <span>{t("admin.last_seen")}：{formatTime(item.last_seen_at)}</span>
+                          <span>{t("admin.recent_actions")}：{item.activity_count}</span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {cardDetailView === "visits" && (data?.recent_visits ?? []).map((item, index) => (
+                      <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          {item.username
+                            ? <UserRoundCheck className="h-4 w-4 shrink-0 text-emerald-600" />
+                            : <Globe2 className="h-4 w-4 shrink-0 text-sky-600" />}
+                          <span className="truncate text-sm font-medium">{visitorLabel(item.username, item.visitor_id)}</span>
+                        </div>
+                        <span className="shrink-0 text-xs text-muted-foreground">{formatTime(item.occurred_at)}</span>
+                      </div>
+                    ))}
+
+                    {cardDetailView === "users" && (data?.recent_users ?? []).map((item) => (
+                      <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Users className="h-4 w-4 shrink-0 text-primary" />
+                          <span className="truncate text-sm font-semibold">{item.username}</span>
+                          <Badge variant="outline">{t(`admin.role.${item.role}`)}</Badge>
+                          {!item.is_active && <Badge variant="outline">{t("admin.inactive")}</Badge>}
+                        </div>
+                        <span className="shrink-0 text-xs text-muted-foreground">{formatTime(item.created_at)}</span>
+                      </div>
+                    ))}
+
+                    {cardDetailView === "searches" && searchTab === "searches" && (data?.recent_searches ?? []).map((item, index) => (
+                      <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="rounded-xl border p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="break-words text-sm font-semibold">{item.query || t("admin.query_unavailable")}</p>
+                            <p className="mt-1 truncate text-xs text-muted-foreground">{visitorLabel(item.username, item.visitor_id)}</p>
+                          </div>
+                          <span className="shrink-0 text-xs text-muted-foreground">{formatTime(item.occurred_at)}</span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {cardDetailView === "searches" && searchTab === "profiles" && (data?.recent_profile_views ?? []).map((item, index) => (
+                      <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="rounded-xl border p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="break-words text-sm font-semibold">{item.name || t("admin.unknown_scholar")}</p>
+                            <p className="mt-1 truncate text-xs text-muted-foreground">{visitorLabel(item.username, item.visitor_id)}</p>
+                          </div>
+                          <span className="shrink-0 text-xs text-muted-foreground">{formatTime(item.occurred_at)}</span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {cardDetailView === "online" && onlineTab === "users" && !data?.online_users.length && (
+                      <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_online_users")}</p>
+                    )}
+                    {cardDetailView === "online" && onlineTab === "visitors" && !data?.online_visitors.length && (
+                      <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_online_visitors")}</p>
+                    )}
+                    {cardDetailView === "visits" && !data?.recent_visits.length && (
+                      <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_visits")}</p>
+                    )}
+                    {cardDetailView === "users" && !data?.recent_users.length && (
+                      <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_recent_users")}</p>
+                    )}
+                    {cardDetailView === "searches" && searchTab === "searches" && !data?.recent_searches.length && (
+                      <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_searches")}</p>
+                    )}
+                    {cardDetailView === "searches" && searchTab === "profiles" && !data?.recent_profile_views.length && (
+                      <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_profile_views")}</p>
+                    )}
+                  </div>
+
+                  {cardDetailView === "online" && onlineTab === "visitors" && (
+                    <p className="border-t bg-muted/30 px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:px-5">
+                      {t("admin.visitor_privacy")}
+                    </p>
+                  )}
+                </div>
+              </div>
             </Card>
           ))}
         </div>
@@ -484,220 +669,6 @@ export default function AdminDashboard({
         )}
       </main>
 
-      {detailView && (
-        <div
-          className="fixed inset-x-0 bottom-0 top-14 z-40 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4"
-          role="presentation"
-          onClick={() => setDetailView(null)}
-        >
-          <div
-            className="max-h-[calc(100vh-4.5rem)] w-full overflow-hidden rounded-t-2xl border bg-background shadow-2xl sm:max-w-2xl sm:rounded-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="online-details-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-4 border-b px-4 py-4 sm:px-5">
-              <div>
-                <h2 id="online-details-title" className="font-semibold">
-                  {t(`admin.details.${detailView}.title`)}
-                </h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t(`admin.details.${detailView}.desc`)}
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={() => setDetailView(null)}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-
-            {detailView === "online" && (
-              <div className="flex gap-1 border-b px-4 pt-3 sm:px-5">
-              {([
-                ["users", `${t("admin.signed_in_users")} (${data?.online_users.length ?? 0})`],
-                ["visitors", `${t("admin.anonymous_visitors")} (${data?.online_visitors.length ?? 0})`],
-              ] as const).map(([tab, label]) => (
-                <Button
-                  key={tab}
-                  variant="ghost"
-                  size="sm"
-                  className={`rounded-b-none border-b-2 px-3 ${
-                    onlineTab === tab
-                      ? "border-primary text-foreground"
-                      : "border-transparent text-muted-foreground"
-                  }`}
-                  onClick={() => setOnlineTab(tab)}
-                >
-                  {label}
-                </Button>
-              ))}
-              </div>
-            )}
-
-            {detailView === "searches" && (
-              <div className="flex gap-1 border-b px-4 pt-3 sm:px-5">
-                {([
-                  ["searches", `${t("admin.search_records")} (${data?.recent_searches.length ?? 0})`],
-                  ["profiles", `${t("admin.profile_records")} (${data?.recent_profile_views.length ?? 0})`],
-                ] as const).map(([tab, label]) => (
-                  <Button
-                    key={tab}
-                    variant="ghost"
-                    size="sm"
-                    className={`rounded-b-none border-b-2 px-3 ${
-                      searchTab === tab
-                        ? "border-primary text-foreground"
-                        : "border-transparent text-muted-foreground"
-                    }`}
-                    onClick={() => setSearchTab(tab)}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </div>
-            )}
-
-            <div className="max-h-[60vh] space-y-2 overflow-y-auto p-4 sm:p-5">
-              {detailView === "online" && onlineTab === "users" && (data?.online_users ?? []).map((item) => (
-                <div key={item.id} className="rounded-xl border p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <UserRoundCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-                      <span className="truncate text-sm font-semibold">{item.username}</span>
-                      <Badge variant="outline">{t("admin.signed_in")}</Badge>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {activityLabel(item.last_activity)}
-                    </span>
-                  </div>
-                  <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                    <span>{t("admin.first_seen")}：{formatTime(item.first_seen_at)}</span>
-                    <span>{t("admin.last_seen")}：{formatTime(item.last_seen_at)}</span>
-                    <span>{t("admin.recent_actions")}：{item.activity_count}</span>
-                    <span>{t("admin.online_sessions")}：{item.session_count}</span>
-                  </div>
-                </div>
-              ))}
-
-              {detailView === "online" && onlineTab === "visitors" && (data?.online_visitors ?? []).map((item) => (
-                <div key={item.id} className="rounded-xl border p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <Globe2 className="h-4 w-4 shrink-0 text-sky-600" />
-                      <span className="text-sm font-semibold">{t("admin.anonymous_visitor")} {item.id}</span>
-                      <Badge variant="outline">{t("admin.not_signed_in")}</Badge>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {activityLabel(item.last_activity)}
-                    </span>
-                  </div>
-                  <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                    <span>{t("admin.first_seen")}：{formatTime(item.first_seen_at)}</span>
-                    <span>{t("admin.last_seen")}：{formatTime(item.last_seen_at)}</span>
-                    <span>{t("admin.recent_actions")}：{item.activity_count}</span>
-                  </div>
-                </div>
-              ))}
-
-              {detailView === "visits" && (data?.recent_visits ?? []).map((item, index) => (
-                <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border p-3">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {item.username
-                      ? <UserRoundCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-                      : <Globe2 className="h-4 w-4 shrink-0 text-sky-600" />}
-                    <span className="truncate text-sm font-medium">
-                      {visitorLabel(item.username, item.visitor_id)}
-                    </span>
-                  </div>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatTime(item.occurred_at)}
-                  </span>
-                </div>
-              ))}
-
-              {detailView === "users" && (data?.recent_users ?? []).map((item) => (
-                <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <Users className="h-4 w-4 shrink-0 text-primary" />
-                    <span className="truncate text-sm font-semibold">{item.username}</span>
-                    <Badge variant="outline">{t(`admin.role.${item.role}`)}</Badge>
-                    {!item.is_active && <Badge variant="outline">{t("admin.inactive")}</Badge>}
-                  </div>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatTime(item.created_at)}
-                  </span>
-                </div>
-              ))}
-
-              {detailView === "searches" && searchTab === "searches" && (data?.recent_searches ?? []).map((item, index) => (
-                <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="break-words text-sm font-semibold">
-                        {item.query || t("admin.query_unavailable")}
-                      </p>
-                      <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {visitorLabel(item.username, item.visitor_id)}
-                      </p>
-                    </div>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {formatTime(item.occurred_at)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-
-              {detailView === "searches" && searchTab === "profiles" && (data?.recent_profile_views ?? []).map((item, index) => (
-                <div key={`${item.visitor_id}-${item.occurred_at}-${index}`} className="rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="break-words text-sm font-semibold">
-                        {item.name || t("admin.unknown_scholar")}
-                      </p>
-                      <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {visitorLabel(item.username, item.visitor_id)}
-                      </p>
-                    </div>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {formatTime(item.occurred_at)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-
-              {detailView === "online" && onlineTab === "users" && !data?.online_users.length && (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_online_users")}</p>
-              )}
-              {detailView === "online" && onlineTab === "visitors" && !data?.online_visitors.length && (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_online_visitors")}</p>
-              )}
-              {detailView === "visits" && !data?.recent_visits.length && (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_visits")}</p>
-              )}
-              {detailView === "users" && !data?.recent_users.length && (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_recent_users")}</p>
-              )}
-              {detailView === "searches" && searchTab === "searches" && !data?.recent_searches.length && (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_searches")}</p>
-              )}
-              {detailView === "searches" && searchTab === "profiles" && !data?.recent_profile_views.length && (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t("admin.no_profile_views")}</p>
-              )}
-            </div>
-
-            {detailView === "online" && onlineTab === "visitors" && (
-              <p className="border-t bg-muted/30 px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:px-5">
-                {t("admin.visitor_privacy")}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
     </section>
   )
 }

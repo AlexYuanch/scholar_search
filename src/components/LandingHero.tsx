@@ -1,3 +1,4 @@
+import { useEffect } from "react"
 import { ArrowRight, BookOpen, Network, Search, ShieldCheck } from "lucide-react"
 import researchAssistantDark from "@/assets/research-assistant.jpg"
 import researchAssistantLight from "@/assets/research-assistant-light.jpg"
@@ -24,6 +25,32 @@ export default function LandingHero({
   onSearch,
   t,
 }: Props) {
+  useEffect(() => {
+    const items = Array.from(
+      document.querySelectorAll<HTMLElement>(".scholar-landing [data-scholar-reveal]"),
+    )
+    if (!items.length) return
+
+    if (!("IntersectionObserver" in window)) {
+      items.forEach((item) => item.classList.add("is-visible"))
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          entry.target.classList.toggle("is-visible", entry.isIntersecting)
+        })
+      },
+      {
+        threshold: 0.08,
+        rootMargin: "-5% 0px -8%",
+      },
+    )
+    items.forEach((item) => observer.observe(item))
+    return () => observer.disconnect()
+  }, [])
+
   const abilities = [
     {
       icon: BookOpen,
@@ -126,7 +153,7 @@ export default function LandingHero({
         </div>
       </div>
 
-      <div className="scholar-source-strip">
+      <div className="scholar-source-strip" data-scholar-reveal="fade">
         <div>
           <p>{t("landing.not_just_search")}</p>
           <div className="scholar-source-list" aria-label={t("landing.trust_note")}>
@@ -140,7 +167,7 @@ export default function LandingHero({
       </div>
 
       <div className="scholar-abilities">
-        <div className="scholar-section-heading">
+        <div className="scholar-section-heading" data-scholar-reveal="up">
           <div>
             <p>{t("landing.workflow_label")}</p>
             <h2>{t("landing.workflow_title")}</h2>
@@ -149,7 +176,7 @@ export default function LandingHero({
         </div>
         <div className="scholar-ability-grid">
           {abilities.map(({ icon: Icon, number, title, text, tags }) => (
-            <article key={number} className="scholar-ability-card">
+            <article key={number} className="scholar-ability-card" data-scholar-reveal="up">
               <div className="scholar-ability-card-top">
                 <Icon />
                 <span>{number}</span>

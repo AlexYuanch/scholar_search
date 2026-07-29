@@ -382,6 +382,48 @@ a {
   overflow: hidden;
 }
 
+.scholar-landing [data-scholar-reveal] {
+  opacity: 0;
+  transform: translateY(1.6rem);
+  transition:
+    opacity 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 720ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.scholar-landing [data-scholar-reveal="fade"] {
+  transform: none;
+}
+
+.scholar-landing [data-scholar-reveal="left"] {
+  transform: translateX(-1.8rem);
+}
+
+.scholar-landing [data-scholar-reveal="right"] {
+  transform: translateX(1.8rem);
+}
+
+.scholar-landing [data-scholar-reveal].is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.scholar-ability-grid [data-scholar-reveal]:nth-child(2),
+.scholar-guide-steps [data-scholar-reveal]:nth-child(2),
+.scholar-boundary-list [data-scholar-reveal]:nth-child(2) {
+  transition-delay: 80ms;
+}
+
+.scholar-ability-grid [data-scholar-reveal]:nth-child(3),
+.scholar-guide-steps [data-scholar-reveal]:nth-child(3),
+.scholar-boundary-list [data-scholar-reveal]:nth-child(3) {
+  transition-delay: 160ms;
+}
+
+.scholar-boundary-list [data-scholar-reveal]:nth-child(4) {
+  transition-delay: 240ms;
+}
+
 .scholar-hero {
   display: grid;
   width: min(1180px, calc(100vw - 48px));
@@ -794,18 +836,6 @@ html:lang(en) .scholar-section-heading h2 {
   transition: border-color 180ms ease, transform 180ms ease;
 }
 
-.scholar-ability-card:nth-child(1) {
-  animation: scholar-rise 620ms 80ms both;
-}
-
-.scholar-ability-card:nth-child(2) {
-  animation: scholar-rise 620ms 160ms both;
-}
-
-.scholar-ability-card:nth-child(3) {
-  animation: scholar-rise 620ms 240ms both;
-}
-
 .scholar-ability-card:nth-child(2) .scholar-ability-card-top {
   color: var(--_accent-blue);
 }
@@ -1028,7 +1058,7 @@ html:lang(en) .scholar-section-heading h2 {
   display: grid;
   align-items: stretch;
   gap: 1.1rem;
-  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.72fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .scholar-case-viewer,
@@ -1090,8 +1120,9 @@ html:lang(en) .scholar-section-heading h2 {
 
 .scholar-case-screen img {
   display: block;
-  width: 100%;
-  max-height: 475px;
+  width: auto;
+  max-width: 100%;
+  max-height: 720px;
   object-fit: contain;
   animation: scholar-case-reveal 280ms ease-out both;
 }
@@ -1114,10 +1145,12 @@ html:lang(en) .scholar-section-heading h2 {
 }
 
 .scholar-case-findings {
-  display: flex;
+  display: grid;
   min-width: 0;
   padding: 1.45rem;
-  flex-direction: column;
+  align-items: start;
+  gap: 0 1.5rem;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1fr);
 }
 
 .scholar-case-kicker {
@@ -1128,6 +1161,7 @@ html:lang(en) .scholar-section-heading h2 {
   color: var(--color-primary);
   font-size: 0.74rem;
   letter-spacing: 0.08em;
+  grid-column: 1 / -1;
 }
 
 .scholar-case-kicker svg {
@@ -1139,6 +1173,7 @@ html:lang(en) .scholar-section-heading h2 {
   font-size: 1.35rem;
   font-weight: 500;
   line-height: 1.35;
+  grid-column: 1 / -1;
 }
 
 .scholar-case-findings dl {
@@ -1197,15 +1232,17 @@ html:lang(en) .scholar-section-heading h2 {
 }
 
 .scholar-case-date {
-  margin: auto 0 0.9rem;
+  margin: 0.4rem 0 0.9rem;
   color: color-mix(in srgb, var(--color-muted-foreground), transparent 18%);
   font-size: 0.66rem;
   line-height: 1.55;
+  grid-column: 1 / -1;
 }
 
 .scholar-case-findings .button,
 .scholar-case-findings button {
   width: 100%;
+  grid-column: 1 / -1;
 }
 
 .scholar-boundaries {
@@ -1289,6 +1326,99 @@ html:lang(en) .scholar-section-heading h2 {
   animation: scholar-rise 420ms both;
 }
 
+.scholar-admin-content {
+  width: 100%;
+  max-width: none;
+  padding-inline: clamp(1rem, 3vw, 3.5rem);
+}
+
+.scholar-admin-summary-grid {
+  display: grid;
+  align-items: start;
+  gap: 0.8rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.scholar-admin-summary-card {
+  min-width: 0;
+  overflow: hidden;
+  transition:
+    grid-column 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms ease,
+    box-shadow 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.scholar-admin-summary-card:hover {
+  border-color: color-mix(in srgb, var(--color-primary), transparent 52%);
+  transform: translateY(-2px);
+}
+
+.scholar-admin-summary-card.is-expanded {
+  grid-column: 1 / -1;
+  border-color: color-mix(in srgb, var(--color-primary), transparent 48%);
+  box-shadow: 0 24px 70px color-mix(in srgb, #000, transparent 88%);
+  transform: none;
+}
+
+.scholar-admin-summary-trigger {
+  display: block;
+  width: 100%;
+  padding: 1rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scholar-admin-summary-trigger:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -3px;
+}
+
+.scholar-admin-summary-chevron {
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.scholar-admin-summary-card.is-expanded .scholar-admin-summary-chevron {
+  transform: rotate(90deg);
+}
+
+.scholar-admin-inline-details {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    grid-template-rows 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    visibility 0s linear 420ms;
+}
+
+.scholar-admin-summary-card.is-expanded .scholar-admin-inline-details {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    grid-template-rows 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 260ms 90ms ease,
+    visibility 0s linear 0s;
+}
+
+.scholar-admin-inline-details-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scholar-admin-inline-list {
+  display: grid;
+  max-height: min(52vh, 34rem);
+  padding: 1rem;
+  overflow-y: auto;
+  gap: 0.5rem;
+}
+
 @keyframes scholar-rise {
   from {
     opacity: 0;
@@ -1338,6 +1468,10 @@ html:lang(en) .scholar-section-heading h2 {
 }
 
 @media (max-width: 1000px) {
+  .scholar-admin-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .scholar-hero {
     min-height: auto;
     padding-top: 84px;
@@ -1407,6 +1541,7 @@ html:lang(en) .scholar-section-heading h2 {
 
   .scholar-case-findings {
     min-height: 0;
+    grid-template-columns: 1fr;
   }
 
   .scholar-case-date {
@@ -1415,6 +1550,19 @@ html:lang(en) .scholar-section-heading h2 {
 }
 
 @media (max-width: 700px) {
+  .scholar-admin-content {
+    padding-inline: 0.875rem;
+  }
+
+  .scholar-admin-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scholar-admin-inline-list {
+    max-height: 60vh;
+    padding: 0.875rem;
+  }
+
   .scholar-brand small,
   .scholar-nav-actions > div:first-child {
     display: none;
@@ -1554,6 +1702,13 @@ html:lang(en) .scholar-section-heading h2 {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .scholar-landing [data-scholar-reveal],
+  .scholar-landing [data-scholar-reveal].is-visible {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
   .scholar-hero-visual,
   .scholar-hero-image.is-visible,
   .scholar-orbit,

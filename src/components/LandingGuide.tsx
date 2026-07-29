@@ -9,10 +9,10 @@ import {
   SearchCheck,
   Sparkles,
 } from "lucide-react"
-import candidateImage from "@/assets/guide/li-feifei-candidate.jpg"
-import collaborationImage from "@/assets/guide/li-feifei-collaboration.jpg"
-import overviewImage from "@/assets/guide/li-feifei-overview.jpg"
-import workflowImage from "@/assets/guide/li-feifei-workflow.jpg"
+import candidateImage from "@/assets/guide/scholar-case-candidate.png"
+import collaborationImage from "@/assets/guide/scholar-case-collaboration.png"
+import overviewImage from "@/assets/guide/scholar-case-overview.png"
+import workflowImage from "@/assets/guide/scholar-case-workflow.png"
 import { Button } from "@/components/ui/button"
 import type { Lang } from "@/i18n"
 
@@ -49,14 +49,14 @@ export default function LandingGuide({ lang, onTryExample, t }: Props) {
   return (
     <div className="scholar-guide">
       <section className="scholar-guide-start" aria-labelledby="guide-start-title">
-        <div className="scholar-guide-heading">
+        <div className="scholar-guide-heading" data-scholar-reveal="up">
           <p>{t("guide.label")}</p>
           <h2 id="guide-start-title">{t("guide.title")}</h2>
           <span>{t("guide.description")}</span>
         </div>
         <div className="scholar-guide-steps">
           {steps.map(({ icon: Icon, title, text }, index) => (
-            <article key={title}>
+            <article key={title} data-scholar-reveal="up">
               <div>
                 <Icon />
                 <span>0{index + 1}</span>
@@ -69,7 +69,7 @@ export default function LandingGuide({ lang, onTryExample, t }: Props) {
       </section>
 
       <section className="scholar-case-study" aria-labelledby="case-study-title">
-        <div className="scholar-case-intro">
+        <div className="scholar-case-intro" data-scholar-reveal="up">
           <div>
             <p>{t("guide.case_label")}</p>
             <h2 id="case-study-title">{t("guide.case_title")}</h2>
@@ -78,7 +78,7 @@ export default function LandingGuide({ lang, onTryExample, t }: Props) {
         </div>
 
         <div className="scholar-case-layout">
-          <div className="scholar-case-viewer">
+          <div className="scholar-case-viewer" data-scholar-reveal="left">
             <div className="scholar-case-tabs" role="tablist" aria-label={t("guide.case_title")}>
               {cases.map((item) => (
                 <button
@@ -105,7 +105,7 @@ export default function LandingGuide({ lang, onTryExample, t }: Props) {
             </div>
           </div>
 
-          <aside className="scholar-case-findings">
+          <aside className="scholar-case-findings" data-scholar-reveal="right">
             <p className="scholar-case-kicker">
               <Sparkles />
               {t("guide.findings_label")}
@@ -139,14 +139,14 @@ export default function LandingGuide({ lang, onTryExample, t }: Props) {
       </section>
 
       <section className="scholar-boundaries" aria-labelledby="boundaries-title">
-        <div>
+        <div data-scholar-reveal="left">
           <p>{t("guide.boundary_label")}</p>
           <h2 id="boundaries-title">{t("guide.boundary_title")}</h2>
           <span>{t("guide.boundary_description")}</span>
         </div>
         <div className="scholar-boundary-list">
           {[1, 2, 3, 4].map((number) => (
-            <article key={number}>
+            <article key={number} data-scholar-reveal="right">
               <CircleAlert />
               <p>{t(`guide.boundary_${number}`)}</p>
             </article>
