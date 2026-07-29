@@ -872,6 +872,402 @@ html:lang(en) .scholar-section-heading h2 {
   font-size: 0.65rem;
 }
 
+.scholar-guide {
+  border-top: 1px solid color-mix(in srgb, var(--color-border), transparent 18%);
+  background:
+    radial-gradient(circle at 12% 20%, color-mix(in srgb, var(--_accent-blue), transparent 92%), transparent 28rem),
+    radial-gradient(circle at 86% 58%, color-mix(in srgb, var(--_accent-gold), transparent 92%), transparent 26rem);
+}
+
+.scholar-guide-start,
+.scholar-case-study,
+.scholar-boundaries {
+  width: min(1180px, calc(100vw - 48px));
+  margin: 0 auto;
+}
+
+.scholar-guide-start {
+  padding: 108px 0 92px;
+}
+
+.scholar-guide-heading {
+  max-width: 720px;
+  margin-bottom: 2.4rem;
+}
+
+.scholar-guide-heading > p,
+.scholar-case-intro > div > p,
+.scholar-boundaries > div:first-child > p {
+  margin: 0 0 0.55rem;
+  color: var(--color-primary);
+  font-size: 0.82rem;
+  letter-spacing: 0.13em;
+}
+
+.scholar-guide-heading h2,
+.scholar-case-intro h2,
+.scholar-boundaries h2 {
+  margin: 0;
+  font-size: clamp(2rem, 3vw, 2.72rem);
+  font-weight: 450;
+  letter-spacing: -0.03em;
+  line-height: 1.22;
+  text-wrap: balance;
+}
+
+.scholar-guide-heading > span,
+.scholar-boundaries > div:first-child > span {
+  display: block;
+  margin-top: 0.9rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.92rem;
+  line-height: 1.8;
+}
+
+.scholar-guide-steps {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.scholar-guide-steps article {
+  position: relative;
+  min-height: 188px;
+  padding: 1.45rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-card), transparent 5%);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.scholar-guide-steps article::after {
+  position: absolute;
+  right: -2.5rem;
+  bottom: -3.4rem;
+  width: 8rem;
+  height: 8rem;
+  border: 1px solid color-mix(in srgb, var(--color-primary), transparent 76%);
+  border-radius: 50%;
+  content: "";
+}
+
+.scholar-guide-steps article:nth-child(2)::after {
+  border-color: color-mix(in srgb, var(--_accent-blue), transparent 66%);
+}
+
+.scholar-guide-steps article:nth-child(3)::after {
+  border-color: color-mix(in srgb, var(--_accent-gold), transparent 62%);
+}
+
+.scholar-guide-steps article:hover {
+  border-color: color-mix(in srgb, var(--color-primary), transparent 48%);
+  box-shadow: 0 18px 48px color-mix(in srgb, #000, transparent 90%);
+  transform: translateY(-3px);
+}
+
+.scholar-guide-steps article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--color-primary);
+}
+
+.scholar-guide-steps article:nth-child(2) > div {
+  color: var(--_accent-blue);
+}
+
+.scholar-guide-steps article:nth-child(3) > div {
+  color: var(--_accent-gold);
+}
+
+.scholar-guide-steps article svg {
+  width: 1.25rem;
+}
+
+.scholar-guide-steps article > div > span {
+  color: color-mix(in srgb, var(--color-muted-foreground), transparent 35%);
+  font-size: 0.72rem;
+}
+
+.scholar-guide-steps h3 {
+  margin: 1.7rem 0 0.55rem;
+  font-size: 1.08rem;
+  font-weight: 600;
+}
+
+.scholar-guide-steps p {
+  max-width: 29rem;
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.84rem;
+  line-height: 1.7;
+}
+
+.scholar-case-study {
+  padding: 96px 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-border), transparent 14%);
+}
+
+.scholar-case-intro {
+  display: grid;
+  margin-bottom: 2rem;
+  align-items: end;
+  gap: 2rem;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.72fr);
+}
+
+.scholar-case-intro > p {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.9rem;
+  line-height: 1.8;
+}
+
+.scholar-case-layout {
+  display: grid;
+  align-items: stretch;
+  gap: 1.1rem;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.72fr);
+}
+
+.scholar-case-viewer,
+.scholar-case-findings {
+  border: 1px solid var(--color-border);
+  border-radius: 1.15rem;
+  background: color-mix(in srgb, var(--color-card), transparent 4%);
+  box-shadow: 0 20px 58px color-mix(in srgb, #000, transparent 91%);
+}
+
+.scholar-case-viewer {
+  min-width: 0;
+  padding: 0.85rem;
+}
+
+.scholar-case-tabs {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.15rem 0.1rem 0.85rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.scholar-case-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.scholar-case-tabs button {
+  flex: 0 0 auto;
+  padding: 0.5rem 0.78rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.scholar-case-tabs button:hover {
+  color: var(--color-foreground);
+}
+
+.scholar-case-tabs button[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--color-primary), transparent 68%);
+  background: color-mix(in srgb, var(--color-primary), transparent 88%);
+  color: var(--color-primary);
+}
+
+.scholar-case-screen {
+  display: grid;
+  min-height: 346px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-border), transparent 20%);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-muted), transparent 36%);
+}
+
+.scholar-case-screen img {
+  display: block;
+  width: 100%;
+  max-height: 475px;
+  object-fit: contain;
+  animation: scholar-case-reveal 280ms ease-out both;
+}
+
+.scholar-case-caption {
+  display: grid;
+  padding: 1rem 0.35rem 0.25rem;
+  gap: 0.32rem;
+}
+
+.scholar-case-caption strong {
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.scholar-case-caption span {
+  color: var(--color-muted-foreground);
+  font-size: 0.78rem;
+  line-height: 1.65;
+}
+
+.scholar-case-findings {
+  display: flex;
+  min-width: 0;
+  padding: 1.45rem;
+  flex-direction: column;
+}
+
+.scholar-case-kicker {
+  display: flex;
+  margin: 0;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-primary);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+}
+
+.scholar-case-kicker svg {
+  width: 1rem;
+}
+
+.scholar-case-findings h3 {
+  margin: 0.85rem 0 1.25rem;
+  font-size: 1.35rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.scholar-case-findings dl {
+  display: grid;
+  margin: 0;
+  gap: 0.55rem;
+}
+
+.scholar-case-findings dl > div {
+  display: flex;
+  padding: 0.72rem 0.8rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--color-muted), transparent 18%);
+}
+
+.scholar-case-findings dt {
+  color: var(--color-muted-foreground);
+  font-size: 0.72rem;
+}
+
+.scholar-case-findings dd {
+  margin: 0;
+  text-align: right;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.scholar-case-findings ul {
+  display: grid;
+  margin: 1.15rem 0;
+  padding: 0;
+  gap: 0.72rem;
+  list-style: none;
+}
+
+.scholar-case-findings li {
+  display: grid;
+  align-items: start;
+  gap: 0.55rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  color: var(--color-muted-foreground);
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+.scholar-case-findings li svg {
+  width: 0.95rem;
+  color: var(--color-primary);
+}
+
+.scholar-case-findings li:nth-child(3) svg {
+  color: var(--_accent-gold);
+}
+
+.scholar-case-date {
+  margin: auto 0 0.9rem;
+  color: color-mix(in srgb, var(--color-muted-foreground), transparent 18%);
+  font-size: 0.66rem;
+  line-height: 1.55;
+}
+
+.scholar-case-findings .button,
+.scholar-case-findings button {
+  width: 100%;
+}
+
+.scholar-boundaries {
+  display: grid;
+  padding: 96px 0 120px;
+  align-items: start;
+  gap: 3rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border), transparent 14%);
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1fr);
+}
+
+.scholar-boundary-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.scholar-boundary-list article {
+  display: grid;
+  padding: 1rem 1.05rem;
+  align-items: start;
+  gap: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--color-border), transparent 8%);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--color-card), transparent 12%);
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.scholar-boundary-list article:nth-child(2) {
+  border-color: color-mix(in srgb, var(--_accent-blue), transparent 68%);
+}
+
+.scholar-boundary-list article:nth-child(3) {
+  border-color: color-mix(in srgb, var(--_accent-gold), transparent 66%);
+}
+
+.scholar-boundary-list article:nth-child(4) {
+  border-color: color-mix(in srgb, var(--_accent-plum), transparent 70%);
+}
+
+.scholar-boundary-list svg {
+  width: 1rem;
+  color: var(--_accent-coral);
+}
+
+.scholar-boundary-list p {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.8rem;
+  line-height: 1.65;
+}
+
+@keyframes scholar-case-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.988);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .scholar-profile-page {
   width: min(1180px, calc(100vw - 48px));
   max-width: none;
@@ -997,6 +1393,25 @@ html:lang(en) .scholar-section-heading h2 {
   .scholar-ability-card > p {
     min-height: 0;
   }
+
+  .scholar-guide-steps,
+  .scholar-case-layout,
+  .scholar-boundaries {
+    grid-template-columns: 1fr;
+  }
+
+  .scholar-case-intro {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .scholar-case-findings {
+    min-height: 0;
+  }
+
+  .scholar-case-date {
+    margin-top: 0.3rem;
+  }
 }
 
 @media (max-width: 700px) {
@@ -1008,6 +1423,9 @@ html:lang(en) .scholar-section-heading h2 {
   .scholar-hero,
   .scholar-source-strip > div,
   .scholar-abilities,
+  .scholar-guide-start,
+  .scholar-case-study,
+  .scholar-boundaries,
   .scholar-profile-page {
     width: calc(100vw - 28px);
   }
@@ -1095,6 +1513,41 @@ html:lang(en) .scholar-section-heading h2 {
     padding: 1.35rem;
   }
 
+  .scholar-guide-start,
+  .scholar-case-study {
+    padding: 72px 0;
+  }
+
+  .scholar-guide-heading h2,
+  .scholar-case-intro h2,
+  .scholar-boundaries h2 {
+    font-size: 2rem;
+  }
+
+  .scholar-guide-steps article {
+    min-height: 0;
+    padding: 1.25rem;
+  }
+
+  .scholar-case-viewer,
+  .scholar-case-findings {
+    border-radius: 0.95rem;
+  }
+
+  .scholar-case-screen {
+    min-height: 210px;
+  }
+
+  .scholar-case-tabs {
+    margin-right: -0.35rem;
+    margin-left: -0.35rem;
+  }
+
+  .scholar-boundaries {
+    padding: 72px 0 88px;
+    gap: 2rem;
+  }
+
   .scholar-profile-heading {
     padding: 1rem;
   }
@@ -1107,6 +1560,7 @@ html:lang(en) .scholar-section-heading h2 {
   .scholar-orbit-dot,
   .scholar-visual-label,
   .scholar-ability-card,
+  .scholar-case-screen img,
   .scholar-admin-page,
   .scholar-side-panel--responsive {
     animation: none;

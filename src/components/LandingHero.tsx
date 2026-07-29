@@ -1,6 +1,7 @@
 import { ArrowRight, BookOpen, Network, Search, ShieldCheck } from "lucide-react"
 import researchAssistantDark from "@/assets/research-assistant.jpg"
 import researchAssistantLight from "@/assets/research-assistant-light.jpg"
+import LandingGuide from "@/components/LandingGuide"
 import { Button } from "@/components/ui/button"
 import type { Lang } from "@/i18n"
 
@@ -162,6 +163,16 @@ export default function LandingHero({
           ))}
         </div>
       </div>
+
+      <LandingGuide
+        lang={lang}
+        t={t}
+        onTryExample={() => {
+          onQueryChange("Fei-Fei Li")
+          window.scrollTo({ top: 0, behavior: "smooth" })
+          window.setTimeout(() => document.getElementById("landing-scholar-search")?.focus(), 420)
+        }}
+      />
     </section>
   )
 }
