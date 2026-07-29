@@ -43,6 +43,11 @@ from credentials import (
     validate_credential_configuration,
 )
 from events import ProfileEventBroker
+from field_discovery import (
+    advance_field_discovery,
+    enqueue_field_discovery,
+    get_field_discovery_state,
+)
 from openalex import (
     OpenAlexError,
     configure_budget_control,
@@ -73,6 +78,9 @@ from search_service import (
     build_live_candidate_payload,
     search_with_cache,
 )
+from intelligence_repository import save_intelligence_feedback
+from intelligence_service import ScholarIntelligenceService
+from scholar_intelligence import ANALYSIS_VERSION
 from state import default_state
 from workflow import graph
 
@@ -176,6 +184,7 @@ PROGRESS_MESSAGES = {
 
 repository = create_repository()
 event_broker = ProfileEventBroker(os.getenv("DATABASE_URL"))
+intelligence_service = ScholarIntelligenceService()
 CACHE_MAX_AGE_DAYS = 7
 DUMMY_PASSWORD_HASH = hash_password("invalid-login-password")
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "600"))
@@ -579,6 +588,28 @@ class ResearchGraphRefreshRequest(BaseModel):
 
 class AdminRoleRequest(BaseModel):
     role: str = Field(pattern="^(user|admin)$")
+
+
+class IntelligenceDiscoverRequest(BaseModel):
+    force_refresh: bool = False
+
+
+class IntelligenceCompareRequest(BaseModel):
+    author_ids: list[str] = Field(min_length=2, max_length=2)
+    mode: str = Field(default="scholar", pattern="^(scholar|team|institution)$")
+
+
+class IntelligenceFeedbackRequest(BaseModel):
+    target_author_id: str = Field(min_length=1, max_length=300)
+    candidate_author_id: str | None = Field(default=None, max_length=300)
+    analysis_key: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[a-z0-9_.:-]+$",
+    )
+    verdict: str = Field(pattern="^(helpful|inaccurate)$")
+    analysis_version: str = Field(default=ANALYSIS_VERSION, max_length=80)
+    context: dict = Field(default_factory=dict)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1193,6 +1224,180 @@ def author_research_graph(
                 detail="Scholar profile not found",
             ) from exc
     return get_research_graph(repository, author_id)
+
+
+@app.get("/api/authors/{author_id:path}/intelligence")
+def author_intelligence(
+    author_id: str,
+    request: Request,
+    limit: int = Query(8, ge=1, le=20),
+    user: AuthUser = Depends(require_user),
+):
+    """Compute explainable intelligence directly from the dynamic graph."""
+    state = get_research_graph_sync_state(repository, author_id) or {}
+    if state.get("status") != "failed" and research_graph_needs_refresh(
+        repository,
+        author_id,
+    ):
+        _consume_api_quota("profile", user, request)
+        _require_openalex_credential(user)
+        try:
+            enqueue_research_graph_refresh(
+                repository,
+                author_id,
+                requested_by_user_id=user.id,
+                reason="intelligence_view",
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Scholar profile not found",
+            ) from exc
+    result = intelligence_service.analyze(
+        repository,
+        author_id,
+        limit=limit,
+    )
+    if result["discovery"]["status"] in {"enriching", "partial", "ready"}:
+        result["discovery"] = advance_field_discovery(
+            repository,
+            author_id,
+            result_counts={
+                key: len(rows)
+                for key, rows in result["recommendations"].items()
+            },
+        )
+    latest_state = get_research_graph_sync_state(repository, author_id) or {}
+    result["graph_status"] = latest_state.get("status", "never")
+    return result
+
+
+@app.post("/api/authors/{author_id:path}/intelligence/discover")
+def discover_author_field(
+    author_id: str,
+    req: IntelligenceDiscoverRequest,
+    request: Request,
+    user: AuthUser = Depends(require_user),
+):
+    """Idempotently request field discovery and progressive graph enrichment."""
+    _consume_api_quota("profile", user, request)
+    _require_openalex_credential(user)
+    graph_state = get_research_graph_sync_state(repository, author_id) or {}
+    if graph_state.get("status") != "ready":
+        try:
+            graph_job_id = enqueue_research_graph_refresh(
+                repository,
+                author_id,
+                requested_by_user_id=user.id,
+                reason="field_radar_prerequisite",
+            )
+            job_id = enqueue_field_discovery(
+                repository,
+                author_id,
+                requested_by_user_id=user.id,
+                reason="manual_field_radar",
+                force_refresh=req.force_refresh,
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Scholar profile not found",
+            ) from exc
+        return {
+            **get_field_discovery_state(repository, author_id),
+            "job_id": job_id,
+            "graph_status": (
+                get_research_graph_sync_state(repository, author_id) or {}
+            ).get("status", "queued"),
+            "graph_job_id": graph_job_id,
+        }
+    try:
+        job_id = enqueue_field_discovery(
+            repository,
+            author_id,
+            requested_by_user_id=user.id,
+            reason="manual_field_radar",
+            force_refresh=req.force_refresh,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Scholar profile not found",
+        ) from exc
+    return {
+        **get_field_discovery_state(repository, author_id),
+        "job_id": job_id,
+        "graph_status": graph_state.get("status", "ready"),
+    }
+
+
+@app.get("/api/intelligence/field")
+def field_scholar_references(
+    author_id: str = Query(min_length=1, max_length=300),
+    limit: int = Query(10, ge=1, le=20),
+    _user: AuthUser = Depends(require_user),
+):
+    """Return the same non-absolute field reference list used by the page."""
+    result = intelligence_service.analyze(
+        repository,
+        author_id,
+        limit=limit,
+    )
+    return {
+        "analysis_version": result["analysis_version"],
+        "source": result["source"],
+        "field": result["field"],
+        "field_reference_list": result["field_reference_list"],
+        "limitations": result["limitations"],
+    }
+
+
+@app.post("/api/intelligence/compare")
+def intelligence_compare(
+    req: IntelligenceCompareRequest,
+    _user: AuthUser = Depends(require_user),
+):
+    left, right = [value.strip() for value in req.author_ids]
+    if not left or not right or left == right:
+        raise HTTPException(
+            status_code=422,
+            detail="Two different comparison IDs are required",
+        )
+    return intelligence_service.compare(
+        repository,
+        left,
+        right,
+        mode=req.mode,
+    )
+
+
+@app.post("/api/intelligence/feedback")
+def intelligence_feedback(
+    req: IntelligenceFeedbackRequest,
+    user: AuthUser = Depends(require_user),
+):
+    if req.analysis_version != ANALYSIS_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail="Analysis version is no longer current",
+        )
+    if len(json.dumps(req.context, ensure_ascii=False)) > 4000:
+        raise HTTPException(status_code=422, detail="Feedback context is too large")
+    saved = save_intelligence_feedback(
+        repository,
+        user_id=user.id,
+        target_author_id=req.target_author_id,
+        candidate_author_id=req.candidate_author_id,
+        analysis_key=req.analysis_key,
+        verdict=req.verdict,
+        analysis_version=req.analysis_version,
+        context=req.context,
+    )
+    return {
+        "id": saved["id"],
+        "verdict": saved["verdict"],
+        "updated_at": saved["updated_at"],
+    }
 
 
 @app.post("/api/authors/{author_id:path}/research-graph/refresh")

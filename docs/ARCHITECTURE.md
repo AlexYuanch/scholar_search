@@ -9,6 +9,9 @@ flowchart LR
   NGINX -->|"/api 同源代理"| API["FastAPI Web"]
   API -->|"SQLAlchemy + psycopg"| PG["PostgreSQL 17"]
   API -->|"创建/读取持久任务"| JOB["refresh_jobs / search jobs"]
+  API -->|"只读图谱投影"| INTEL["Deterministic intelligence"]
+  INTEL --> PG
+  API -->|"平台 key / 可选用户凭据"| WF["LangGraph"]
   API -->|"搜索缓存/合并任务"| SEARCH["openalex_search_cache / jobs"]
   SEARCH --> PG
   WF --> OA["OpenAlex"]
@@ -28,8 +31,8 @@ flowchart LR
 
 | 层 | 技术 | 责任 |
 |----|------|------|
-| 前端 | Vite + React + TypeScript | 身份确认、三栏画像、证据化对比、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
-| API | FastAPI | 密码登录、Cookie 会话、受保护查询、NDJSON 与 SSE |
+| 前端 | Vite + React + TypeScript | 身份确认、五栏画像、证据化分析/比较、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
+| API | FastAPI | 密码登录、Cookie 会话、受保护查询、确定性智能投影、NDJSON 与 SSE |
 | 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、模型路由、多个学术分析 Agent、确定性证据审查和载荷格式化 |
 | Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、加密用户凭据、持久搜索缓存、按用户额度状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
@@ -44,7 +47,7 @@ flowchart LR
 
 认证后的导航最右侧渲染 `UserMenu` 圆形头像。账户入口和设置共用头像下方的锚定 popover，不再创建遮罩层或全屏 dialog；设置内部按外观与安全切换，并以动态视口高度限制和内部滚动适配小屏。用户偏好由 `app_users.display_name/avatar_key/theme` 保存；选择主题时先在根元素即时替换主题 class，关闭未保存设置则恢复当前用户主题，`PATCH /api/account/profile` 成功后再持久化。主题变量同时驱动基础组件、图表与合作网络。`POST /api/account/password` 在校验当前密码后轮换密码与会话，退出登录也从头像菜单触发。
 
-画像主内容按“学者概览 / 学术成果 / 合作关系 / 研究脉络”四栏组织。概览先展示研究画像，再把研究方向与核心指标合并呈现，随后展示近期变化、时间线和折叠的数据说明；学术成果包含代表论文与全部论文；合作关系包含核心合作者和关系图；研究脉络包含阶段、方向变化、方向活跃度和摘要演进。时间线方向点击会切换到学术成果并应用对应筛选。
+画像主内容按“学者概览 / 学术成果 / 合作关系 / 研究脉络 / 同行与机构”五栏组织。概览先展示研究画像，再把研究方向与核心指标合并呈现，随后展示近期变化、时间线和折叠的数据说明；学术成果使用确定性代表作结果并保留全部论文；合作关系包含核心合作者和关系图；研究脉络包含阶段、方向变化、方向活跃度和摘要演进；同行与机构只展示分析进度、用途导向的相关学者和真实相关机构，不再重复渲染底部通用计算说明。时间线方向点击会切换到学术成果并应用对应筛选。
 
 候选选择页不渲染后端身份聚类的内部术语、分组分数、档案指纹或重复证据框，只使用机构、ORCID、研究方向、论文、引用、h-index 和最近发表年份帮助用户选择。后台仍保留完整 `identity_evidence`、`match_reasons` 与身份分组用于排序、审计和工作流校验。
 
@@ -88,6 +91,11 @@ flowchart LR
 | `timeline_events` | 论文、主题、合作和机构事件；`unique(scholar_id, event_key)` |
 | `research_graph_sync_state` | 最近尝试/成功、水位、指纹、版本、warning 和错误 |
 | `research_graph_refresh_jobs` | 单学者增量/重建任务；每个学者只允许一个活跃任务 |
+| `field_discovery_state` | 目标学者的领域候选覆盖、批次进度、最近成功结果、错误与 7 天刷新水位 |
+| `field_discovery_candidates` | 目标学者—领域候选关系；候选外键指向既有 `scholars`，分组计数只用于发现顺序 |
+| `field_discovery_institutions` | 目标学者—真实机构关系及历史/近四年主题论文窗口统计 |
+| `field_discovery_jobs` | 用户归属的领域发现任务；每个目标学者只允许一个活跃任务 |
+| `scholar_intelligence_feedback` | 用户对指定分析结论的“有帮助/不准确”反馈；不保存或改写学术事实 |
 | `scholar_profiles` | 每位学者一份最新成功 JSONB、warnings、工作流版本和数据指纹 |
 | `profile_status` | 轻量状态、版本和更新时间 |
 | `refresh_jobs` | 画像任务状态、次数、退避、原因、错误、请求用户、首次查询姓名和联合作者 ID |
@@ -147,9 +155,22 @@ flowchart LR
 8. 前端纯函数 view-model 按图谱批次中最多 1000 篇论文—主题关系计算最多五个研究阶段、相邻阶段方向迁移信号和主题强度矩阵；首屏先汇总论文数、年份范围、摘要证据、内部引用和画像身份风险，成功但无有效论文时给出明确空态。计算保持时间正序以保证“新进入/持续/退出”语义，展示层再统一按最新到最早排序。
 9. 对象详情 API 只接受作者、论文、机构和主题 UUID，读取、刷新和对象详情全部经过登录依赖；刷新任务只使用服务器 key 或任务请求用户自己的加密凭据。
 
+### 同行与机构及兼容智能分析
+
+1. `field_discovery.py` 从目标学者的阶段 2 图谱选择最多三个长期主题和三个近四年主题，再通过 OpenAlex works grouping 分别发现作者与机构。分组结果只决定补全顺序，不进入最终推荐评分。
+2. 每次成功发现最多保存 60 位候选关系；首批向既有 `research_graph_refresh_jobs` 排入 8 位，当前批次结束后每批再排 4 位，四类各有 3 个结果时可提前停止，累计最多尝试 20 位。候选任务不会递归发现下一层候选。
+3. `field_discovery_candidates` 只连接既有 `scholars`，候选完成原有 `sync_scholar_research_graph` 后，论文、署名、机构、主题、合作、引用与摘要理解仍写入原阶段 2 表；系统没有第二套论文或作者事实。
+4. `intelligence_repository.py` 把已发现候选关系加入当前领域投影；最终推荐只允许本次发现关系中的作者进入，不把旧图谱中的其他主题相邻作者混入当前样本。`scholar_intelligence.py` 负责主题 Jaccard、研究时间同步、近期问题/方法重合、署名贡献、时间归一化引用、内部后续引用、跨年份主题延续与共同合作者等确定性特征和门槛；`intelligence_recommendations.py` 只把已经计算出的证据转换为差异化中英文解释，不访问数据库、不修改候选数据，也不参与评分。未完成图谱且没有最近成功版本的候选不得进入建议；已有成功版本但正在刷新时仍可读取旧版本并单独显示任务状态。
+5. “学习参考”要求领域重合、持续贡献、代表作/扩散、影响力和近期活跃；“同行动态”要求方向重合与时间同步。“合作人选”要求直接合作不超过一次，并同时存在主题交集、能力互补和共同合作者路径；稳定合作者留在合作关系页。“选题重合”必须同时满足近期方向、问题、方法、时间和低合作门槛，并明确不代表实际竞争关系。
+6. 机构分组保存历史与近四年论文活动；当前学者的主要机构若落在分组上限之外，会按相同主题和时间窗口执行两次定向计数，确保按需比较具有双侧证据。主要机构继续使用最近六年持续覆盖规则，而不是用一次最新关联替代长期机构。读取时再用已分析候选图谱计算当前合作量与覆盖作者数。它只描述真实机构，不推断实验室或团队，不产生机构质量排名。`mode=institution` 仅比较近期论文活动、近四年占历史样本的时间分布、当前图谱内合著和已分析成员；合著结论使用目标学者显示名，零合著仅表示当前已分析范围没有记录。仅当存在具体已分析成员时返回下一步；成员同时返回稳定的 OpenAlex 作者 ID 与显示名，前端复用画像切换入口，不用姓名重新搜索或建立第二套身份映射。
+7. `GET /api/authors/{author_id}/intelligence` 保持旧 dimensions、representative works、recommendations 与 teams 字段，同时增加 `discovery` 和 `institutions`；`POST /api/authors/{author_id}/intelligence/discover` 幂等请求发现任务。旧 scholar/team 比较模式与反馈接口保持兼容。
+8. 前端同行与机构把四类推荐按 OpenAlex 作者 ID 合并为一个列表，复用现有画像、追踪和学者对比入口；只为非空可靠结果生成用途筛选，“全部”视图选择该候选确定性指数最高的实际角色，不再固定优先某一类别。推荐语引用共同方向、候选代表成果及该候选最突出的时间、扩散、关系或问题—方法证据，避免只替换身份文本的模板重复；详细指数仍只保留在折叠依据中。相关机构合并去重后把当前机构和已有可查看学者的机构前置，共同发现主题只在进度区及机构说明中出现，不在每张卡重复。页面不再渲染自我分析、代表作、团队卡、第二套比较组件或底部通用计算说明。确定性代表作改由学术成果栏展示，方向延续和选题特征继续由研究脉络承载。
+9. 发现或部分候选失败时保留最近成功的候选与机构结果，并返回排队、成功、失败和目标数量；OpenAlex 额度保护、任务凭据归属、三次重试和 worker lease 规则继续生效。
+10. `intelligence_service.py` 是 API 与纯计算之间唯一的缓存边界：以分析版本、参数、全局图谱修订和目标学者领域发现修订组成键，保存深拷贝的分析或比较结果，使用每键锁合并并发请求，并以 32 项 LRU 与 5 分钟 TTL 限制内存。`scholar_intelligence.py` 不感知缓存；其主题影响分位对排序池做二分查找，代表作延续使用位集计算不同后续论文，保持原确定性公式但避免二次扫描。领域进度仅在值变化时更新，避免只读请求改写 `updated_at` 并使缓存无效。
+
 ### Worker
 
-Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`research_graph_refresh_jobs` 和 `refresh_jobs`，优先读取服务器 `OPENALEX_API_KEY`；仅在服务端 key 缺失时按 `requested_by_user_id` 解密兼容个人 key。搜索成功发布共享缓存；图谱只有完整上游批次才进入原子 upsert；画像仍须通过质量门槛。三类任务失败最多重试 3 次。每小时维护为追踪/近期访问用户与过期图谱排队，并使用 PostgreSQL advisory lock 避免多 worker 重复调度。
+Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`research_graph_refresh_jobs`、`field_discovery_jobs` 和 `refresh_jobs`，优先读取服务器 `OPENALEX_API_KEY`；仅在服务端 key 缺失时按 `requested_by_user_id` 解密兼容个人 key。搜索成功发布共享缓存；图谱只有完整上游批次才进入原子 upsert；画像仍须通过质量门槛。四类任务失败最多重试 3 次。每小时维护为追踪/近期访问用户、过期图谱和超过 7 天的追踪学者领域候选排队，并使用 PostgreSQL advisory lock 避免多 worker 重复调度。
 
 ## 身份认证
 

@@ -14,6 +14,7 @@ import DataVerification from "@/components/DataVerification"
 import DynamicResearchGraph from "@/components/DynamicResearchGraph"
 import ResearchChanges from "@/components/ResearchChanges"
 import ResearchTimeline, { type TimelinePaperFilter } from "@/components/ResearchTimeline"
+import ScholarIntelligenceAnalysis from "@/components/ScholarIntelligenceAnalysis"
 import ScholarIntroduction from "@/components/ScholarIntroduction"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -32,7 +33,9 @@ interface Props {
   profile: ScholarProfile
   favorite: boolean
   onToggleFavorite: () => void
-  onCompare: () => void
+  onCompare: (candidateAuthorId?: string) => void
+  onViewProfile: (authorId: string, scholarName: string) => void
+  onTrackingChange?: () => void
   onRefresh: () => void
   onEdgeClick?: (data: {
     sourceName: string
@@ -52,7 +55,7 @@ interface Props {
   lang: Lang
 }
 
-type ProfileTab = "overview" | "papers" | "network" | "research-graph"
+type ProfileTab = "overview" | "papers" | "network" | "research-graph" | "intelligence"
 
 function MetricItem({
   icon: Icon,
@@ -93,6 +96,8 @@ export default function ProfileSection({
   favorite,
   onToggleFavorite,
   onCompare,
+  onViewProfile,
+  onTrackingChange,
   onRefresh,
   onEdgeClick,
   onNodeClick,
@@ -195,7 +200,7 @@ export default function ProfileSection({
                   : "profile.refresh_action",
             )}
           </Button>
-          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={onCompare}>
+          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={() => onCompare()}>
             <ArrowLeftRight className="h-3.5 w-3.5" />
             {t("compare.action")}
           </Button>
@@ -213,11 +218,12 @@ export default function ProfileSection({
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as ProfileTab)}
       >
-        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1.5 sm:inline-flex sm:w-auto">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1.5 sm:inline-flex sm:w-auto sm:flex-wrap">
           <TabsTrigger value="overview">{t("tab.overview")}</TabsTrigger>
           <TabsTrigger value="papers">{t("tab.papers")}</TabsTrigger>
           <TabsTrigger value="network">{t("tab.network")}</TabsTrigger>
           <TabsTrigger value="research-graph">{t("tab.research_graph")}</TabsTrigger>
+          <TabsTrigger value="intelligence">{t("tab.intelligence")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
@@ -373,6 +379,25 @@ export default function ProfileSection({
             </Card>
           ) : (
             <DynamicResearchGraph profile={profile} t={t} />
+          )}
+        </TabsContent>
+
+        <TabsContent value="intelligence" className="space-y-4">
+          {analysisUpdating ? (
+            <Card>
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                {t("timeline.updating")}
+              </CardContent>
+            </Card>
+          ) : (
+            <ScholarIntelligenceAnalysis
+              key={profile.authorId}
+              profile={profile}
+              lang={lang}
+              onViewProfile={onViewProfile}
+              onCompare={onCompare}
+              onTrackingChange={onTrackingChange}
+            />
           )}
         </TabsContent>
       </Tabs>

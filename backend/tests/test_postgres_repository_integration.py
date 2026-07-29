@@ -6,6 +6,10 @@ from sqlalchemy import text
 
 from auth import hash_password, verify_password
 from credentials import decrypt_secret, encrypt_secret
+from intelligence_repository import (
+    intelligence_snapshot_token,
+    save_intelligence_feedback,
+)
 from repository import APIQuotaExceeded, PostgresRepository
 from research_graph import build_research_graph_batch
 from research_graph_repository import (
@@ -14,6 +18,7 @@ from research_graph_repository import (
     get_research_graph,
     maintain_research_graph_jobs,
 )
+from scholar_intelligence import build_scholar_intelligence
 from worker import process_one_job, process_one_search_job
 
 
@@ -208,6 +213,29 @@ def test_password_user_session_is_revocable():
             "avatar_key": "initials",
             "theme": "default",
         }
+
+        feedback = save_intelligence_feedback(
+            repository,
+            user_id=user["id"],
+            target_author_id="https://openalex.org/A-FEEDBACK",
+            candidate_author_id=None,
+            analysis_key="academic_quality",
+            verdict="helpful",
+            analysis_version="deterministic-graph-v1",
+            context={"graph_version": 1},
+        )
+        updated_feedback = save_intelligence_feedback(
+            repository,
+            user_id=user["id"],
+            target_author_id="https://openalex.org/A-FEEDBACK",
+            candidate_author_id=None,
+            analysis_key="academic_quality",
+            verdict="inaccurate",
+            analysis_version="deterministic-graph-v1",
+            context={"graph_version": 1},
+        )
+        assert updated_feedback["id"] == feedback["id"]
+        assert updated_feedback["verdict"] == "inaccurate"
 
         repository.revoke_session(session_hash)
         assert repository.get_user_by_session(session_hash) is None
@@ -803,6 +831,7 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             force_rebuild=False,
             warnings=[],
         )
+        first_snapshot = intelligence_snapshot_token(repository, [author_id])
         second_work = work(
             2,
             2024,
@@ -822,6 +851,8 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             force_rebuild=False,
             warnings=[],
         )
+        second_snapshot = intelligence_snapshot_token(repository, [author_id])
+        assert second_snapshot != first_snapshot
         profile_works_after_graph = repository.list_works(
             author_id,
             20,
@@ -854,6 +885,13 @@ def test_dynamic_research_graph_is_incremental_unique_and_queryable():
             if event["event_year"]
         ]
         assert years == sorted(years, reverse=True)
+
+        intelligence = build_scholar_intelligence(repository, author_id)
+        assert intelligence["source"] == "dynamic_research_graph"
+        assert intelligence["subject"]["author_id"] == author_id
+        assert intelligence["confidence"]["level"] == "insufficient"
+        assert intelligence["dimensions"]["academic_quality"]["conclusion"]["zh"] == "无法可靠判断"
+        assert intelligence["teams"]["focus_team"]["name"] == "Graph University"
 
         reloaded_graph = get_research_graph(
             PostgresRepository(DATABASE_URL),

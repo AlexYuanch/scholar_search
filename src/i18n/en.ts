@@ -224,6 +224,7 @@ const en: Record<string, string> = {
   "tab.papers": "Research Output",
   "tab.network": "Collaboration",
   "tab.research_graph": "Research Journey",
+  "tab.intelligence": "Peers & Institutions",
 
   "research_graph.title": "Research Journey",
   "research_graph.description": "Understand how research directions, core questions, and methods evolve over time",
@@ -351,7 +352,7 @@ const en: Record<string, string> = {
   "section.research_directions": "Current Main Research Directions",
   "section.research_desc": "Long-term priorities and recently active directions summarized from public publications",
   "section.repr_papers": "Representative Papers",
-  "section.repr_desc": "Top-cited and recent publications",
+  "section.repr_desc": "Selected from topic relevance, authorship role, and follow-on influence",
   "section.top_cited": "Top Cited Papers",
   "section.top_cited_desc": "Sorted by citation count",
   "section.all_papers": "All Papers",

@@ -271,6 +271,7 @@ export default function App() {
   // 图谱全屏状态
   const [graphFullscreen, setGraphFullscreen] = useState(false)
   const [comparisonOpen, setComparisonOpen] = useState(false)
+  const [comparisonCandidateId, setComparisonCandidateId] = useState<string | null>(null)
   const [workflowStages, setWorkflowStages] = useState<WorkflowStage[]>([])
   const [workflowProgress, setWorkflowProgress] = useState(0)
   const [workflowMessage, setWorkflowMessage] = useState("")
@@ -390,6 +391,7 @@ export default function App() {
     setPanel(null)
     setAccountMode(null)
     setComparisonOpen(false)
+    setComparisonCandidateId(null)
     setLoading(true)
     setError(null)
     setErrorKind(null)
@@ -546,6 +548,7 @@ export default function App() {
     setPanel(null)
     setAccountMode(null)
     setComparisonOpen(false)
+    setComparisonCandidateId(null)
     setSearched(true)
     try {
       const results = await searchAuthors(q, { signal: controller.signal })
@@ -650,6 +653,7 @@ export default function App() {
     setAccountMode(null)
     setAdminOpen(false)
     setComparisonOpen(false)
+    setComparisonCandidateId(null)
     window.scrollTo({ top: 0, behavior: "smooth" })
   }, [])
 
@@ -995,7 +999,14 @@ export default function App() {
           profile={profile}
           favorite={Boolean(user) && favorite}
           onToggleFavorite={() => void handleToggleFavorite()}
-          onCompare={() => setComparisonOpen(true)}
+          onCompare={(candidateAuthorId) => {
+            setComparisonCandidateId(candidateAuthorId || null)
+            setComparisonOpen(true)
+          }}
+          onViewProfile={(authorId, scholarName) => {
+            void handleViewProfile(authorId, scholarName)
+          }}
+          onTrackingChange={() => setTrackingRevision((value) => value + 1)}
           onRefresh={() => void handleRefreshProfile()}
           onEdgeClick={handleEdgeClick}
           onNodeClick={handleNodeClick}
@@ -1006,7 +1017,15 @@ export default function App() {
       )}
 
       {profile && comparisonOpen && (
-        <ScholarComparison profile={profile} onClose={() => setComparisonOpen(false)} t={t} />
+        <ScholarComparison
+          profile={profile}
+          preselectedAuthorId={comparisonCandidateId}
+          onClose={() => {
+            setComparisonOpen(false)
+            setComparisonCandidateId(null)
+          }}
+          t={t}
+        />
       )}
 
       {/* 空状态 */}

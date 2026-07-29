@@ -55,8 +55,8 @@
   --graph-high: #d0ab6d;
   --graph-peak: #d28a7d;
   --graph-edge: rgba(137, 171, 160, 0.34);
-  --graph-label: #dce5df;
-  --graph-label-stroke: #1e2320;
+  --graph-label: #f2f7f4;
+  --graph-label-stroke: #101411;
   color-scheme: dark;
 }
 

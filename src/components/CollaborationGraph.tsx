@@ -55,7 +55,13 @@ interface VisEdge {
   width: number
   label: string
   color: { color: string; highlight: string }
-  font: { size: number; align: "middle"; color: string; strokeWidth: number }
+  font: {
+    size: number
+    align: "middle"
+    color: string
+    strokeWidth: number
+    strokeColor: string
+  }
 }
 
 interface GraphPalette {
@@ -187,7 +193,13 @@ export default function CollaborationGraph({
         width: 1 + Math.sqrt(edge.weight),
         label: edge.weight > 1 ? `${edge.weight}${t("graph.edge_label")}` : "",
         color: { color: palette.edge, highlight: palette.center },
-        font: { size: 11, align: "middle", color: palette.label, strokeWidth: 3 },
+        font: {
+          size: 11,
+          align: "middle",
+          color: palette.label,
+          strokeWidth: 3,
+          strokeColor: palette.labelStroke,
+        },
       })),
     )
 

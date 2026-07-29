@@ -1,8 +1,30 @@
 # ScholarSearch 科研助手
 
-面向教师、学生和科研团队的学者研究助手：把分散的论文、作者、机构、研究方向、合作关系和时间线整理成可理解、可比较、可持续追踪的研究画像。当前版本使用 OpenAlex、Crossref、公开 ORCID 与 PostgreSQL 17 自托管数据层。
+ScholarSearch 面向教师、学生和科研团队，把分散的论文、作者、机构、研究方向、合作关系和时间线整理成可理解、可比较、可持续追踪的学者画像。
 
-## 当前能力
+## 核心功能
+
+- **学者画像**：保守处理同名身份，汇总研究方向、代表成果、影响指标与近期变化。
+- **论文与研究脉络**：分页查看论文，沿时间线理解方向演进、问题、方法和贡献。
+- **合作网络**：查看核心合作者、共同论文，并从节点继续探索相关学者。
+- **同行与机构**：基于动态图谱发现同行、潜在合作对象、选题重合与相关机构，不生成绝对排名。
+- **持续使用**：支持学者对比、查询历史、研究追踪、后台更新和完成提醒。
+
+数据主要来自 OpenAlex、Crossref 与公开 ORCID；DeepSeek Agent 只负责生成可审查的研究解读，最终结果仍需通过确定性证据校验。详细产品与技术说明见 [`docs/PRODUCT.md`](docs/PRODUCT.md) 和 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 界面预览
+
+### 平台首页
+
+![ScholarSearch 平台首页](docs/images/platform-home.jpg)
+
+### 学者查询结果
+
+![ScholarSearch 学者画像查询结果](docs/images/scholar-profile-result.jpg)
+
+<details>
+<summary><strong>详细能力说明</strong></summary>
+
 
 - 中文姓名同时检索原名、姓在前拼音和姓在后拼音；候选使用姓名、ORCID、机构、共同论文、共同合作者和研究主题进行保守身份聚类，不同 ORCID 或证据不足的同名者保持分开。
 - 被判定为同一学者的拆分 OpenAlex 档案联合获取论文并归到主身份；研究方向由 OpenAlex 细粒度 topics、keywords 与标题高频短语交叉提取，宽泛学科标签降权。
@@ -14,14 +36,14 @@
 - 首次画像和后续更新都由 `refresh_jobs` 持久任务驱动：已有画像立即从 PostgreSQL 返回，冷画像先写入查询历史并返回排队状态，由 worker 异步运行 OpenAlex、ORCID、Crossref、身份裁决和全部 Agent；切换页面或刷新浏览器不会中断任务。
 - PostgreSQL 规范化保存学者、机构、论文和署名关系，并保留一份最近成功画像用于质量对比和自动更新。
 - 学者搜索使用 PostgreSQL 持久缓存：相同规范化姓名共享结果，冷请求由 `openalex_search_jobs` 合并为一个上游任务，身份指纹单独缓存 30 天；平台 OpenAlex 免费额度不足或上游限流时，可返回旧缓存或已发布真实学者的本地索引结果。
-- 研究追踪学者每天更新，近 30 天访问学者每 7 天更新；失败不会覆盖最近一次成功画像。
+- 研究追踪学者每天更新画像，并每 7 天更新一次领域候选；近 30 天访问学者每 7 天更新画像。失败不会覆盖最近一次成功画像或领域样本。
 - 研究追踪记录用户上次看过的论文数、引用数和画像版本；后台发现新增论文、引用或可检测的方向变化后提示，查看最新版后自动清除。
 - 追踪面板展示排队、更新中、成功和失败状态，支持立即检查、重试、查看画像和停止追踪；立即检查只排队，不在 Web 请求中同步运行工作流。
 - 匿名访问首先看到简洁产品首页、新手三步指南和匿名标题的完整使用案例，不会自动弹出登录框；用户提交搜索时才要求登录或注册，成功后自动继续刚才的搜索。案例用浏览器原生组件清晰演示身份确认、后台生成、画像概览、合作图节点/连线、查询历史和研究追踪，并说明公开数据遗漏、保守同名消歧、指标和 Agent 解读边界。
 - 前端采用暖黑/米白双主题、低饱和多套强调色、手写感中文字体和克制留白；首页插画随明暗主题平滑切换，英文界面使用稳定的系统字体与独立响应式字号。顶部“首页”和管理员“系统概况”均为一级内容导航；登录用户最右侧显示圆形头像菜单，昵称、头像、主题色和密码都在可关闭、可滚动的锚定下拉面板中修改。主题色选择会即时预览并同步按钮、焦点、图表和合作图色阶，保存后跨页面保留。
 - 管理员可从顶部“系统概况”查看近 5 分钟在线用户与匿名访客、带时间刻度的访问/搜索趋势、热门学者、后台任务和近期异常；看板使用全宽自适应布局，不再重复显示二级页面标题。点击四张概览卡会在原位置平滑跨栏展开在线会话、今日访问、近期注册账号、搜索词或画像查看明细，不再打开遮罩弹窗。普通用户无法读取统计接口。现有 `admin` 账号在迁移后成为受保护的超级管理员，可在看板中授予或撤销其他账号的只读管理员权限。
 - 访问统计使用独立随机访客 Cookie，数据库只保存其 SHA-256 摘要，不保存用于运营统计的原始 IP；访问事件保留 30 天并由维护任务清理。
-- OpenAlex API key 由平台管理员写入服务器 `.env`，普通用户注册登录后即可查询，无需理解或配置数据源密钥。搜索、首次画像和后台追踪统一使用服务端 key；个人 key 接口仅作为未来 HTTPS 能力保留，当前界面不展示。
+- OpenAlex API key 默认由平台管理员写入服务器 `.env`，普通用户无需配置；后端也保留可选的个人 key 加密存储能力。前端、日志和仓库都不返回密钥。
 - 搜索与画像生成按账号和来源 IP 限速，避免公开注册用户短时间重复触发外部数据抓取。
 - PostgreSQL `LISTEN/NOTIFY` 经 FastAPI SSE 推送排队、更新、失败和版本变化，前端同步按钮状态并在成功后自动加载新版画像。
 - Compose 常驻备份服务每天生成 PostgreSQL 自定义格式备份，默认保留 7 天。
@@ -31,8 +53,11 @@
 - 学者简介和依据由结构化画像事实按当前界面语言生成，不再复用后端固定语言文本。OpenAlex `affiliations` 和论文 `raw_affiliation_strings` 继续作为内部消歧与核验证据，但概览不再重复展示机构历史和署名原文。任职与教育字段只有在独立来源明确支持时才展示。
 - 画像按“研究画像 → 研究方向与核心指标 → 近期研究变化 → 研究方向时间线 → 学术成果 → 合作关系 → 研究脉络 → 数据说明”组织，优先回答学术用户关心的问题。
 - 研究方向时间线标签可点击；切换到论文栏完成挂载后再滚动到全部论文，并按该年份和精确方向筛选。研究图谱同步以 JSON 合并方式保留 `analysis_topics`，不会再把筛选依据覆盖为 0 篇。
-- 画像保留“学者概览 / 学术成果 / 合作关系 / 研究脉络”四栏切换；标题链接到当前学者的 OpenAlex 主页，合作姓名和图节点先打开详情侧栏，只有用户点击“查询画像”才切换学者，合作连线用于查看共同论文。
+- 画像保留“学者概览 / 学术成果 / 合作关系 / 研究脉络 / 同行与机构”五栏切换；标题链接到当前学者的 OpenAlex 主页，合作姓名和图节点先打开详情侧栏，只有用户点击“查询画像”才切换学者，合作连线用于查看共同论文。
 - 支持选择第二位学者进行证据化对比，覆盖研究方向、时间线、代表作、论文与引用、影响力、合作者和近期变化；每项均展示统计依据。
+- “同行与机构”只回答应该关注谁、合作谁、哪些研究可能重合以及关注哪些机构。用户主动扩展领域样本后，系统按长期与近四年主题发现最多 60 位候选，先补全 8 位、再按 4 位一批进入既有动态研究图谱，最多分析 20 位；候选发现不直接决定推荐，LLM 不参与评分。
+- 同行与机构用一个去重列表呈现学习参考、同行动态、合作人选和选题重合，可直接查看画像、追踪或预选到现有学者对比；相关机构同时展示主题活动、当前图谱内的合著记录和可继续查看的相关学者，不推断实验室团队或机构质量排名。
+- 同行与机构的时间归一化分位只对每个主题池排序一次；同一图谱快照的分析和比较由进程内有界缓存复用。缓存最多保留 32 项、5 分钟过期，并在研究图谱或领域发现状态变化时自动失效；并发相同请求只执行一次计算。
 - 画像总览按最近发表年份比较连续两个三年阶段，展示论文数量变化、近期开始活跃及研究比重升降，并用六年矩阵呈现方向演化。
 - 动态研究图谱以单个学者为范围，增量保存规范论文、作者/机构/主题、合作、引用与时间线关系；每条关系带来源、更新时间和置信度，数据库唯一键阻止重复关系。
 - “研究图谱”栏不重复论文栏或合作网络，而是提供研究阶段、相邻阶段方向迁移信号、主题—阶段强度矩阵、基于摘要的问题—方法—贡献演进和学者本人论文间的内部引用主线；阶段、迁移、矩阵和摘要证据统一按最新到最早展示。方向标签具有明确的点击、键盘焦点和可访问名称，并读取真实主题详情 API。
@@ -40,6 +65,8 @@
 - 首个图谱批次成功前，读取接口不会把画像表中已有论文或机构冒充为图谱结果；后续批次失败时继续展示最近成功版本。任务按学者去重、最多尝试 3 次，30 分钟 worker lease 超时后重排或失败，最终失败只能由新的人工/访问请求重新排队。
 - 有 OpenAlex 摘要的论文保存抽取式问题、方法、贡献、方向关系和原句证据，并明确标为“基于摘要”；摘要缺失时这些字段保持空值，不生成替代内容。
 - 首次画像页展示持久任务的排队和生成状态；前端区分无结果、网络、超时、限流、登录失效和任务失败并支持重试。全局轮询查询历史，任务完成后在右下角提醒并可直接打开画像；用户离开生成页不会取消 worker 任务。OpenAlex 搜索限流会保留 `Retry-After` 并返回 HTTP 429，不会误报为内部 500。
+
+</details>
 
 ## 技术栈
 
@@ -259,9 +286,10 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 - 学术事实：`scholars`、`scholar_aliases`、`institutions`、`scholar_institutions`、`works`、`work_external_ids`、`authorships`
 - 动态图谱：`research_topics`、`work_topics`、`scholar_topics`、`collaborations`、`collaboration_works`、`work_citations`、`paper_insights`、`timeline_events`
 - 图谱同步：`research_graph_sync_state`、`research_graph_refresh_jobs`
+- 领域发现：`field_discovery_state`、`field_discovery_candidates`、`field_discovery_institutions`、`field_discovery_jobs`；候选与机构外键复用既有图谱实体
 - 画像与任务：`scholar_profiles`、`profile_status`、`refresh_jobs`
 - 上游搜索缓存与保护：`openalex_search_cache`、`openalex_identity_cache`、`openalex_search_jobs`、`upstream_rate_limits`
-- 用户与会话：`app_users`、`user_api_credentials`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`
+- 用户与会话：`app_users`、`user_api_credentials`、`auth_login_attempts`、`auth_registration_attempts`、`api_rate_limit_events`、`user_sessions`、`user_history`、`favorites`、`scholar_intelligence_feedback`
 
 数据库不暴露给浏览器，授权边界由 FastAPI 强制执行。迁移撤销 `PUBLIC` 默认权限，并只向 `scholar_app` 授予所需数据操作权限。
 
@@ -279,6 +307,11 @@ MIGRATION_DATABASE_URL='postgresql://scholar_owner:...@db:5432/scholar_profile' 
 | `GET /api/authors/{author_id}/research-graph` | 必须登录 | 单学者研究阶段、方向迁移、主题矩阵、摘要演进与引用脉络 |
 | `POST /api/authors/{author_id}/research-graph/refresh` | 必须登录、限速 | 仅在缺失、过期或失败时幂等排队；`force_rebuild=true` 只用于失败后的单学者重建 |
 | `GET /api/research-graph/objects/{type}/{id}` | 必须登录 | 返回作者、论文、机构或主题详情 |
+| `GET /api/authors/{author_id}/intelligence` | 必须登录 | 返回兼容分析字段、四类确定性推荐、领域发现覆盖状态和相关机构；打开同行与机构时读取已有结果 |
+| `POST /api/authors/{author_id}/intelligence/discover` | 必须登录、限速 | 幂等请求领域候选发现与渐进补图；返回发现、分析、排队、失败及目标数量 |
+| `GET /api/intelligence/field` | 必须登录 | 兼容返回目标学者的领域参考列表 |
+| `POST /api/intelligence/compare` | 必须登录 | 按同一确定性口径比较学者、兼容团队模式或机构主题活动 |
+| `POST /api/intelligence/feedback` | 必须登录 | 按用户记录“有帮助/不准确”，不改变评分或学术事实 |
 | `POST /api/auth/register` | 公开、限速 | 创建本地账号并自动登录 |
 | `POST /api/auth/login` | 公开、限速 | 用户名密码登录并设置会话 Cookie |
 | `GET /api/auth/me` | 可匿名 | 查询当前会话 |
@@ -305,7 +338,7 @@ npm run build
 npm run test:db
 ```
 
-`npm test` 使用受控工作流与 in-memory Repository 做快速回归，并覆盖 ORCID 身份锚定、无 ORCID 降级、大型冲突簇排除、标题式方向拒绝、Trajectory 论文证据门禁、接口越权和 worker 行为。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、论文筛选在研究图谱同步前后保持一致、会话、跨用户追踪、搜索缓存和图谱持久性。外部 OpenAlex/Crossref/ORCID/DeepSeek 全链路另以真实数据验收。
+`npm test` 使用受控工作流与 in-memory Repository 做快速回归，并覆盖 ORCID 身份锚定、无 ORCID 降级、大型冲突簇排除、标题式方向拒绝、Trajectory 论文证据门禁、接口越权、worker 行为，以及同行与机构的数据不足、新学者、跨领域高引用、同名、弱贡献角色、短期方向变化、稳定合作者排除、合作/竞争区分、渐进 8+4 补图、排名稳定性、缓存隔离/失效/容量/并发复用。`npm run test:db` 启动标准 PostgreSQL，应用 Alembic 迁移，并验证结构、权限、事务发布、论文筛选在研究图谱同步前后保持一致、会话、跨用户追踪、搜索缓存、图谱持久性、领域发现关系复用、快照版本失效和确定性分析。外部 OpenAlex/Crossref/ORCID/DeepSeek 全链路另以真实数据验收。
 
 ## 备份
 
