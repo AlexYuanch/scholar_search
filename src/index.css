@@ -63,6 +63,12 @@
 .theme-green {
   --_primary: #3b8b65;
   --_primary-foreground: #f7fff9;
+  --_secondary: #e4eee7;
+  --_secondary-foreground: #203329;
+  --_accent-blue: #648994;
+  --_accent-gold: #aa8d54;
+  --_accent-plum: #7f758d;
+  --_accent-coral: #ae7467;
   --graph-center: #3b8b65;
   --graph-center-border: #286a4a;
   --graph-low: #8fb49e;
@@ -74,6 +80,12 @@
 :root.dark.theme-green {
   --_primary: #65b88c;
   --_primary-foreground: #102019;
+  --_secondary: #223029;
+  --_secondary-foreground: #dcebe2;
+  --_accent-blue: #82a8b2;
+  --_accent-gold: #cbb071;
+  --_accent-plum: #aa9ab8;
+  --_accent-coral: #d08e7f;
   --graph-center: #65b88c;
   --graph-center-border: #9bd5b5;
   --graph-low: #7fa38c;
@@ -85,6 +97,12 @@
 .theme-purple {
   --_primary: #7e6aa8;
   --_primary-foreground: #ffffff;
+  --_secondary: #ece8f2;
+  --_secondary-foreground: #302940;
+  --_accent-blue: #667f9c;
+  --_accent-gold: #ad8755;
+  --_accent-plum: #8c6fa4;
+  --_accent-coral: #b16e75;
   --graph-center: #7e6aa8;
   --graph-center-border: #5d4a86;
   --graph-low: #a99ab5;
@@ -96,6 +114,12 @@
 :root.dark.theme-purple {
   --_primary: #a894d1;
   --_primary-foreground: #1d1728;
+  --_secondary: #2b2633;
+  --_secondary-foreground: #e7dff3;
+  --_accent-blue: #88a5c0;
+  --_accent-gold: #cfad70;
+  --_accent-plum: #ba9fd0;
+  --_accent-coral: #d58b94;
   --graph-center: #a894d1;
   --graph-center-border: #d1c3ee;
   --graph-low: #9586a7;
@@ -107,6 +131,12 @@
 .theme-orange {
   --_primary: #a66f4d;
   --_primary-foreground: #ffffff;
+  --_secondary: #f1e8e0;
+  --_secondary-foreground: #3a2b21;
+  --_accent-blue: #647f8f;
+  --_accent-gold: #b68b43;
+  --_accent-plum: #8a7084;
+  --_accent-coral: #b76e55;
   --graph-center: #a66f4d;
   --graph-center-border: #805035;
   --graph-low: #9ba98c;
@@ -118,6 +148,12 @@
 :root.dark.theme-orange {
   --_primary: #d19a76;
   --_primary-foreground: #291a12;
+  --_secondary: #322821;
+  --_secondary-foreground: #f0e2d8;
+  --_accent-blue: #89a6b4;
+  --_accent-gold: #d7b36b;
+  --_accent-plum: #b39aac;
+  --_accent-coral: #dd8e74;
   --graph-center: #d19a76;
   --graph-center-border: #ecc2a5;
   --graph-low: #91a58b;
@@ -146,11 +182,11 @@
   --color-border: var(--_border);
   --color-input: var(--_border);
   --color-ring: var(--_primary);
-  --color-chart-1: #4db8a8;
-  --color-chart-2: #8fb4a1;
-  --color-chart-3: #66879a;
-  --color-chart-4: #c2a67e;
-  --color-chart-5: #b77f6e;
+  --color-chart-1: var(--_primary);
+  --color-chart-2: var(--graph-low);
+  --color-chart-3: var(--_accent-blue);
+  --color-chart-4: var(--_accent-gold);
+  --color-chart-5: var(--_accent-coral);
   --radius-sm: calc(var(--radius) - 5px);
   --radius-md: calc(var(--radius) - 3px);
   --radius-lg: var(--radius);
@@ -318,6 +354,15 @@ a {
   animation: scholar-panel-enter 160ms ease-out both;
 }
 
+.scholar-user-popover--settings {
+  display: flex;
+  width: min(23rem, calc(100vw - 1rem));
+  max-height: min(38rem, calc(100dvh - 4.75rem));
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
 .scholar-user-summary {
   display: flex;
   align-items: center;
@@ -367,90 +412,122 @@ a {
   height: 1rem;
 }
 
-.scholar-settings-layer {
-  position: fixed;
-  z-index: 100;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 1rem;
-}
-
-.scholar-settings-backdrop {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  background: color-mix(in srgb, #07100c, transparent 34%);
-  backdrop-filter: blur(6px);
-}
-
-.scholar-settings-dialog {
-  position: relative;
-  width: min(42rem, 100%);
-  max-height: min(48rem, calc(100dvh - 2rem));
-  overflow: auto;
-  border: 1px solid var(--color-border);
-  border-radius: 1.35rem;
-  background: var(--color-card);
-  box-shadow: 0 28px 90px color-mix(in srgb, #000, transparent 64%);
-}
-
-.scholar-settings-dialog > header {
-  position: sticky;
-  z-index: 2;
-  top: 0;
+.scholar-settings-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1.15rem 1.3rem;
+  gap: 0.7rem;
+  padding: 0.85rem;
   border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-card), transparent 3%);
-  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--color-card), transparent 1%);
 }
 
-.scholar-settings-dialog header p,
-.scholar-settings-dialog header h2 {
-  margin: 0;
+.scholar-settings-header > button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--color-foreground);
+  cursor: pointer;
 }
 
-.scholar-settings-dialog header p {
+.scholar-settings-header > button:hover {
+  background: var(--color-muted);
+}
+
+.scholar-settings-header > button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.scholar-settings-header > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+
+.scholar-settings-header span {
   color: var(--color-primary);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
-.scholar-settings-dialog header h2 {
-  font-size: 1.35rem;
+.scholar-settings-header strong {
+  font-size: 1rem;
+}
+
+.scholar-settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem;
+  margin: 0.7rem 0.8rem 0;
+  padding: 0.25rem;
+  border-radius: 0.75rem;
+  background: var(--color-muted);
+}
+
+.scholar-settings-tabs button {
+  min-height: 2.1rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.scholar-settings-tabs button[aria-selected="true"] {
+  background: var(--color-card);
+  color: var(--color-primary);
+  box-shadow: 0 2px 8px color-mix(in srgb, #000, transparent 91%);
 }
 
 .scholar-settings-content {
   display: grid;
-  gap: 1rem;
-  padding: 1.2rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 0;
+  gap: 0.7rem;
+  padding: 0.8rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .scholar-settings-content > section {
   display: grid;
   align-content: start;
-  gap: 0.9rem;
-  padding: 1rem;
-  border: 1px solid var(--color-border);
-  border-radius: 1rem;
-  background: color-mix(in srgb, var(--color-muted), transparent 48%);
+  gap: 0.8rem;
+  padding: 0.1rem;
 }
 
-.scholar-settings-content h3 {
+.scholar-settings-section-title {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin: 0;
-  font-size: 1rem;
+  gap: 0.6rem;
+  padding: 0.65rem;
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--color-primary), transparent 91%);
 }
 
-.scholar-settings-content h3 svg {
-  width: 1rem;
+.scholar-settings-section-title > svg {
+  width: 1.1rem;
+  color: var(--color-primary);
+}
+
+.scholar-settings-section-title > div {
+  display: grid;
+}
+
+.scholar-settings-section-title strong {
+  font-size: 0.82rem;
+}
+
+.scholar-settings-section-title span {
+  color: var(--color-muted-foreground);
+  font-size: 0.68rem;
 }
 
 .scholar-settings-content label {
@@ -539,9 +616,11 @@ a {
 
 .scholar-settings-message {
   margin: 0;
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--color-primary), transparent 91%);
   color: var(--color-primary);
   font-size: 0.82rem;
-  grid-column: 1 / -1;
 }
 
 .scholar-workspace,
@@ -604,6 +683,80 @@ a {
   margin-top: 0.65rem;
   color: var(--color-muted-foreground);
   line-height: 1.7;
+}
+
+.scholar-background-workflow {
+  display: grid;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  gap: 0.55rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  list-style: none;
+}
+
+.scholar-background-workflow li {
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  gap: 0.45rem;
+  padding: 0.75rem 0.45rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--color-muted), transparent 45%);
+  color: var(--color-muted-foreground);
+}
+
+.scholar-background-workflow li > span {
+  display: grid;
+  width: 1.65rem;
+  height: 1.65rem;
+  margin: 0;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.scholar-background-workflow strong {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.scholar-background-workflow.is-running li {
+  animation: scholar-workflow-focus 4.8s ease-in-out infinite;
+  animation-delay: calc(var(--workflow-step) * 1.2s);
+}
+
+.scholar-background-workflow.is-running li > span {
+  animation: scholar-workflow-step 4.8s ease-in-out infinite;
+  animation-delay: calc(var(--workflow-step) * 1.2s);
+}
+
+@keyframes scholar-workflow-focus {
+  0%, 18%, 100% {
+    border-color: var(--color-border);
+    background: color-mix(in srgb, var(--color-muted), transparent 45%);
+    color: var(--color-muted-foreground);
+  }
+  6%, 12% {
+    border-color: color-mix(in srgb, var(--color-primary), transparent 45%);
+    background: color-mix(in srgb, var(--color-primary), transparent 90%);
+    color: var(--color-foreground);
+  }
+}
+
+@keyframes scholar-workflow-step {
+  0%, 18%, 100% {
+    background: var(--color-muted);
+    color: var(--color-muted-foreground);
+  }
+  6%, 12% {
+    background: var(--color-primary);
+    color: var(--color-primary-foreground);
+  }
 }
 
 .scholar-background-job-actions {
@@ -2318,14 +2471,20 @@ html:lang(en) .scholar-section-heading h2 {
 }
 
 @media (max-width: 700px) {
-  .scholar-settings-content {
-    grid-template-columns: 1fr;
+  .scholar-background-workflow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .scholar-user-popover {
     position: fixed;
     top: 3.75rem;
-    right: 0.75rem;
+    right: 0.5rem;
+    width: min(15rem, calc(100vw - 1rem));
+  }
+
+  .scholar-user-popover--settings {
+    width: calc(100vw - 1rem);
+    max-height: calc(100dvh - 4.25rem);
   }
 
   .scholar-completion-toast {

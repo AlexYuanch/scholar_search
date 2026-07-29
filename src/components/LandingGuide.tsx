@@ -53,8 +53,8 @@ function WorkflowDemo({ lang }: { lang: Lang }) {
       <header>
         <Clock3 />
         <div>
-          <strong>{zh ? "画像正在后台生成" : "Profile is building in the background"}</strong>
-          <span>{zh ? "离开此页不会中断任务" : "You can leave without interrupting the job"}</span>
+          <strong>{zh ? "画像分析工作流" : "Profile analysis workflow"}</strong>
+          <span>{zh ? "从身份核验到结论复核" : "From identity checks to evidence review"}</span>
         </div>
         <em>{zh ? "处理中" : "Running"}</em>
       </header>

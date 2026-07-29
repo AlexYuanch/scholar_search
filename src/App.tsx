@@ -867,6 +867,24 @@ export default function App() {
                   : t("background.failed_desc")}
             </span>
           </div>
+          {queuedProfile.status !== "failed" && (
+            <ol
+              className={`scholar-background-workflow${queuedProfile.status === "updating" ? " is-running" : ""}`}
+              aria-label={t("progress.title")}
+            >
+              {[
+                t("progress.stage.verify_identity"),
+                t("progress.stage.aggregate_outputs"),
+                t("progress.stage.analyze_trajectory"),
+                t("progress.stage.verify_evidence"),
+              ].map((label, index) => (
+                <li key={label} style={{ "--workflow-step": index } as React.CSSProperties}>
+                  <span>{index + 1}</span>
+                  <strong>{label}</strong>
+                </li>
+              ))}
+            </ol>
+          )}
           <div className="scholar-background-job-actions">
             <Button variant="outline" onClick={handleReset}>
               <House className="h-4 w-4" />{t("nav.home")}
