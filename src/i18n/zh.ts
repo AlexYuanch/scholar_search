@@ -39,6 +39,7 @@ const zh: Record<string, string> = {
   "profile.refresh_queued": "已排队",
   "profile.refresh_updating": "正在更新",
   "profile.refresh_failed": "暂时无法更新资料",
+  "nav.home": "首页",
   "nav.new_search": "新搜索",
   "admin.nav": "系统概况",
   "admin.title": "系统概况",

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react"
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react"
 import zh from "./zh"
 import en from "./en"
 
@@ -32,6 +32,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     setLangState(l)
     localStorage.setItem("lang", l)
   }, [])
+
+  useEffect(() => {
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en"
+  }, [lang])
 
   const t = useCallback((key: string) => messages[lang][key] ?? key, [lang])
 

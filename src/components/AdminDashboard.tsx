@@ -30,13 +30,11 @@ type DetailView = "online" | "visits" | "users" | "searches"
 
 export default function AdminDashboard({
   open,
-  onClose,
   user,
   t,
   lang,
 }: {
   open: boolean
-  onClose: () => void
   user: AuthUser
   t: (key: string) => string
   lang: "zh" | "en"
@@ -198,33 +196,28 @@ export default function AdminDashboard({
   ] : []
 
   return (
-    <div className="fixed inset-x-0 bottom-0 top-14 z-20 overflow-y-auto bg-background">
-      <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
+    <section className="scholar-admin-page min-h-[calc(100vh-3.5rem)] bg-background">
+      <div className="border-b bg-background/95">
+        <div className="mx-auto flex min-h-20 max-w-6xl items-center justify-between gap-3 px-4 py-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-primary" />
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold sm:text-base">{t("admin.title")}</h1>
-              <p className="hidden text-xs text-muted-foreground sm:block">{t("admin.subtitle")}</p>
+              <h1 className="text-lg font-semibold sm:text-xl">{t("admin.title")}</h1>
+              <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t("admin.subtitle")}</p>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 gap-1"
-              onClick={() => void loadDashboard()}
-              disabled={loading}
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              <span className="hidden sm:inline">{t("admin.refresh")}</span>
-            </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 gap-1.5"
+            onClick={() => void loadDashboard()}
+            disabled={loading}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <span>{t("admin.refresh")}</span>
+          </Button>
         </div>
-      </header>
+      </div>
 
       <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -705,6 +698,6 @@ export default function AdminDashboard({
           </div>
         </div>
       )}
-    </div>
+    </section>
   )
 }

@@ -39,6 +39,7 @@ const en: Record<string, string> = {
   "profile.refresh_queued": "Queued",
   "profile.refresh_updating": "Updating",
   "profile.refresh_failed": "The profile could not be updated right now",
+  "nav.home": "Home",
   "nav.new_search": "New Search",
   "admin.nav": "System Overview",
   "admin.title": "System Overview",

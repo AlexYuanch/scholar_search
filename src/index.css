@@ -112,10 +112,18 @@ body {
   overflow-x: clip;
   background-color: var(--color-background);
   color: var(--color-foreground);
-  font-family: "LXGW WenKai", "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   font-size: 16px;
   line-height: 1.65;
   text-rendering: optimizeLegibility;
+}
+
+html:lang(zh-CN) body {
+  font-family: "LXGW WenKai", "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+}
+
+html:lang(en) body {
+  letter-spacing: -0.006em;
 }
 
 h1,
@@ -205,6 +213,7 @@ a {
 .scholar-hero-copy {
   position: relative;
   z-index: 4;
+  min-width: 0;
 }
 
 .scholar-eyebrow {
@@ -311,14 +320,18 @@ a {
   overflow: hidden;
   min-height: 520px;
   align-items: end;
-  isolation: isolate;
-}
-
-:root:not(.dark) .scholar-hero-visual {
   border: 1px solid color-mix(in srgb, var(--color-primary), transparent 78%);
   border-radius: 1.4rem;
-  background: #151a17;
-  box-shadow: 0 28px 70px rgba(48, 62, 54, 0.15);
+  background: #f5f2eb;
+  box-shadow: 0 28px 70px rgba(48, 62, 54, 0.13);
+  isolation: isolate;
+  animation: scholar-rise 720ms 100ms both;
+}
+
+.dark .scholar-hero-visual {
+  border-color: color-mix(in srgb, var(--color-primary), transparent 82%);
+  background: #101512;
+  box-shadow: 0 28px 76px rgba(0, 0, 0, 0.34);
 }
 
 .scholar-hero-visual::before {
@@ -334,15 +347,31 @@ a {
   filter: blur(12px);
 }
 
-.scholar-hero-visual img {
-  position: relative;
+.scholar-hero-image {
+  position: absolute;
   z-index: 2;
+  bottom: 0;
+  left: 0;
   display: block;
   width: 116%;
   max-width: none;
   margin-left: -8%;
-  filter: saturate(0.78) contrast(0.98);
+  opacity: 0;
+  transition: opacity 520ms ease, filter 520ms ease;
   mask-image: radial-gradient(ellipse 72% 78% at 50% 54%, #000 64%, transparent 100%);
+}
+
+.scholar-hero-image-light {
+  filter: saturate(0.75) contrast(0.98);
+}
+
+.scholar-hero-image-dark {
+  filter: saturate(0.78) contrast(0.98);
+}
+
+.scholar-hero-image.is-visible {
+  opacity: 1;
+  animation: scholar-breathe 9s ease-in-out infinite alternate;
 }
 
 .scholar-orbit {
@@ -358,6 +387,7 @@ a {
   width: 66%;
   height: 54%;
   transform: rotate(-10deg);
+  animation: scholar-orbit-one 18s linear infinite;
 }
 
 .scholar-orbit-two {
@@ -366,6 +396,36 @@ a {
   width: 46%;
   height: 66%;
   transform: rotate(18deg);
+  animation: scholar-orbit-two 22s linear infinite reverse;
+}
+
+.scholar-orbit-dot {
+  position: absolute;
+  z-index: 3;
+  width: 0.42rem;
+  height: 0.42rem;
+  border: 1px solid color-mix(in srgb, var(--color-card), transparent 25%);
+  border-radius: 999px;
+  background: var(--color-primary);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-primary), transparent 88%);
+}
+
+.scholar-orbit-dot-one {
+  top: 21%;
+  left: 31%;
+  animation: scholar-float 5.5s ease-in-out infinite;
+}
+
+.scholar-orbit-dot-two {
+  top: 16%;
+  right: 24%;
+  animation: scholar-float 6.5s 900ms ease-in-out infinite reverse;
+}
+
+.scholar-orbit-dot-three {
+  top: 42%;
+  right: 11%;
+  animation: scholar-float 7s 1.4s ease-in-out infinite;
 }
 
 .scholar-visual-label {
@@ -395,11 +455,13 @@ a {
 .scholar-visual-label-left {
   top: 28%;
   left: 0;
+  animation: scholar-float 5.8s ease-in-out infinite;
 }
 
 .scholar-visual-label-right {
   top: 41%;
   right: 4%;
+  animation: scholar-float 6.6s 650ms ease-in-out infinite reverse;
 }
 
 .scholar-visual-caption {
@@ -497,9 +559,36 @@ a {
 }
 
 @media (min-width: 1001px) {
-  .scholar-hero h1 strong {
+  html:lang(zh-CN) .scholar-hero h1 strong {
     white-space: nowrap;
   }
+
+  html:lang(en) .scholar-hero {
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  }
+}
+
+html:lang(en) .scholar-hero h1 {
+  max-width: 610px;
+  font-size: clamp(2.75rem, 3.55vw, 3.7rem);
+  font-weight: 500;
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+}
+
+html:lang(en) .scholar-hero h1 strong {
+  margin-top: 0.32em;
+  font-weight: 500;
+}
+
+html:lang(en) .scholar-hero-lead {
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+html:lang(en) .scholar-section-heading h2 {
+  font-weight: 500;
+  line-height: 1.16;
 }
 
 .scholar-ability-grid {
@@ -516,6 +605,18 @@ a {
   background: color-mix(in srgb, var(--color-card), transparent 8%);
   box-shadow: 0 16px 46px color-mix(in srgb, #000, transparent 90%);
   transition: border-color 180ms ease, transform 180ms ease;
+}
+
+.scholar-ability-card:nth-child(1) {
+  animation: scholar-rise 620ms 80ms both;
+}
+
+.scholar-ability-card:nth-child(2) {
+  animation: scholar-rise 620ms 160ms both;
+}
+
+.scholar-ability-card:nth-child(3) {
+  animation: scholar-rise 620ms 240ms both;
 }
 
 .scholar-ability-card:hover {
@@ -585,6 +686,58 @@ a {
   box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-primary), transparent 90%);
 }
 
+.scholar-admin-page {
+  animation: scholar-rise 420ms both;
+}
+
+@keyframes scholar-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scholar-breathe {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.018);
+  }
+}
+
+@keyframes scholar-orbit-one {
+  from {
+    transform: rotate(-10deg);
+  }
+  to {
+    transform: rotate(350deg);
+  }
+}
+
+@keyframes scholar-orbit-two {
+  from {
+    transform: rotate(18deg);
+  }
+  to {
+    transform: rotate(378deg);
+  }
+}
+
+@keyframes scholar-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -8px, 0);
+  }
+}
+
 @media (max-width: 1000px) {
   .scholar-hero {
     min-height: auto;
@@ -612,8 +765,7 @@ a {
 
   .scholar-hero-visual img {
     width: min(820px, 112%);
-    margin-inline: auto;
-    transform: translateX(-4%);
+    margin-left: -6%;
   }
 
   .scholar-source-strip > div {
@@ -664,6 +816,10 @@ a {
 
   .scholar-hero h1 {
     font-size: clamp(2.45rem, 12vw, 3.25rem);
+  }
+
+  html:lang(en) .scholar-hero h1 {
+    font-size: clamp(2.35rem, 11vw, 2.9rem);
   }
 
   .scholar-hero-lead {
@@ -738,6 +894,22 @@ a {
 
   .scholar-profile-heading {
     padding: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scholar-hero-visual,
+  .scholar-hero-image.is-visible,
+  .scholar-orbit,
+  .scholar-orbit-dot,
+  .scholar-visual-label,
+  .scholar-ability-card,
+  .scholar-admin-page {
+    animation: none;
+  }
+
+  .scholar-hero-image {
+    transition: opacity 120ms linear;
   }
 }
 

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import {
   Search, BarChart3, Users,
   ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe,
-  Heart, History, LogIn, LogOut, RefreshCw, ShieldCheck,
+  Heart, History, House, LogIn, LogOut, RefreshCw, ShieldCheck,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -565,16 +565,13 @@ export default function App() {
     setAccountMode(mode)
   }, [])
 
-  const toggleAdminDashboard = useCallback(() => {
-    if (adminOpen) {
-      setAdminOpen(false)
-      return
-    }
+  const openAdminDashboard = useCallback(() => {
     setPanel(null)
     setAccountMode(null)
     setComparisonOpen(false)
     setAdminOpen(true)
-  }, [adminOpen])
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
 
   const handleReset = useCallback(() => {
     abortRef.current?.abort()
@@ -594,6 +591,7 @@ export default function App() {
     setAccountMode(null)
     setAdminOpen(false)
     setComparisonOpen(false)
+    window.scrollTo({ top: 0, behavior: "smooth" })
   }, [])
 
   useEffect(() => {
@@ -621,11 +619,23 @@ export default function App() {
           </button>
 
           <div className="scholar-nav-actions flex items-center gap-1">
+            <Button
+              variant={!adminOpen && showLanding ? "secondary" : "ghost"}
+              size="sm"
+              className="h-8 gap-1 px-2 text-xs"
+              title={t("nav.home")}
+              aria-current={!adminOpen && showLanding ? "page" : undefined}
+              onClick={handleReset}
+            >
+              <House className="h-4 w-4" />
+              <span className="hidden md:inline">{t("nav.home")}</span>
+            </Button>
+
             {/* 暗色模式 */}
             <Button
               variant="ghost"
               size="icon"
-              className="scholar-theme-button hidden h-8 w-8 sm:inline-flex"
+              className="scholar-theme-button h-8 w-8"
               onClick={() => setDark(!dark)}
               title={t(dark ? "theme.light" : "theme.dark")}
             >
@@ -633,7 +643,7 @@ export default function App() {
             </Button>
 
             {/* 语言切换 */}
-            <Button variant="ghost" size="sm" className="hidden h-8 gap-1 text-xs sm:inline-flex"
+            <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-xs"
               onClick={() => setLang(lang === "zh" ? "en" : "zh")}
             >
               <Globe className="h-3.5 w-3.5" />
@@ -648,7 +658,8 @@ export default function App() {
                     size="sm"
                     className="h-8 gap-1 px-2 text-xs"
                     title={t("admin.nav")}
-                    onClick={toggleAdminDashboard}
+                    aria-current={adminOpen ? "page" : undefined}
+                    onClick={openAdminDashboard}
                   >
                     <ShieldCheck className="h-4 w-4" />
                     <span className="hidden lg:inline">{t("admin.nav")}</span>
@@ -669,7 +680,7 @@ export default function App() {
                   onClick={() => openAccountPanel("history")}
                 >
                   <History className="h-4 w-4" />
-                  <span>{t("account.history")}</span>
+                  <span className="hidden lg:inline">{t("account.history")}</span>
                 </Button>
                 <Button
                   variant="ghost"
@@ -680,7 +691,7 @@ export default function App() {
                   onClick={() => openAccountPanel("favorites")}
                 >
                   <Heart className="h-4 w-4" />
-                  <span>{t("account.favorites")}</span>
+                  <span className="hidden lg:inline">{t("account.favorites")}</span>
                 </Button>
                 <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => {
                   setFavorite(false)
@@ -706,7 +717,7 @@ export default function App() {
         </div>
       </header>
 
-      <div className={sidePanelOpen ? "lg:grid lg:grid-cols-[minmax(0,1fr)_clamp(22rem,32vw,30rem)]" : ""}>
+      <div className={`${adminOpen ? "hidden" : ""} ${sidePanelOpen ? "lg:grid lg:grid-cols-[minmax(0,1fr)_clamp(22rem,32vw,30rem)]" : ""}`}>
         <main className="min-w-0">
 
       {/* 搜索区 */}
@@ -715,6 +726,7 @@ export default function App() {
           <LandingHero
             query={query}
             loading={loading}
+            dark={dark}
             lang={lang}
             onQueryChange={setQuery}
             onSearch={() => void handleSearch()}
@@ -924,7 +936,6 @@ export default function App() {
       {user?.can_view_admin && (
         <AdminDashboard
           open={adminOpen}
-          onClose={() => setAdminOpen(false)}
           user={user}
           t={t}
           lang={lang}

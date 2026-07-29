@@ -1,11 +1,13 @@
 import { ArrowRight, BookOpen, Network, Search, ShieldCheck } from "lucide-react"
-import researchAssistant from "@/assets/research-assistant.jpg"
+import researchAssistantDark from "@/assets/research-assistant.jpg"
+import researchAssistantLight from "@/assets/research-assistant-light.jpg"
 import { Button } from "@/components/ui/button"
 import type { Lang } from "@/i18n"
 
 interface Props {
   query: string
   loading: boolean
+  dark: boolean
   lang: Lang
   onQueryChange: (value: string) => void
   onSearch: () => void
@@ -15,6 +17,7 @@ interface Props {
 export default function LandingHero({
   query,
   loading,
+  dark,
   lang,
   onQueryChange,
   onSearch,
@@ -92,6 +95,9 @@ export default function LandingHero({
         <div className="scholar-hero-visual" aria-label={t("landing.visual_alt")}>
           <div className="scholar-orbit scholar-orbit-one" />
           <div className="scholar-orbit scholar-orbit-two" />
+          <span className="scholar-orbit-dot scholar-orbit-dot-one" />
+          <span className="scholar-orbit-dot scholar-orbit-dot-two" />
+          <span className="scholar-orbit-dot scholar-orbit-dot-three" />
           <div className="scholar-visual-label scholar-visual-label-left">
             <strong>172</strong>
             <span>{lang === "zh" ? "篇论文" : "papers"}</span>
@@ -100,7 +106,18 @@ export default function LandingHero({
             <strong>56</strong>
             <span>{lang === "zh" ? "位合作者" : "collaborators"}</span>
           </div>
-          <img src={researchAssistant} alt={t("landing.visual_alt")} />
+          <img
+            className={`scholar-hero-image scholar-hero-image-light ${dark ? "" : "is-visible"}`}
+            src={researchAssistantLight}
+            alt={dark ? "" : t("landing.visual_alt")}
+            aria-hidden={dark}
+          />
+          <img
+            className={`scholar-hero-image scholar-hero-image-dark ${dark ? "is-visible" : ""}`}
+            src={researchAssistantDark}
+            alt={dark ? t("landing.visual_alt") : ""}
+            aria-hidden={!dark}
+          />
           <div className="scholar-visual-caption">
             <span>Research map</span>
             <strong>{t("landing.visual_caption")}</strong>
