@@ -256,7 +256,7 @@ export default function UserMenu({ lang }: { lang: Lang }) {
                         <input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
                       </label>
                       <label>
-                        <span>{zh ? "新密码（至少 12 位）" : "New password (12+ characters)"}</span>
+                        <span>{zh ? "新密码（至少 8 位）" : "New password (8+ characters)"}</span>
                         <input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
                       </label>
                       <label>
@@ -266,7 +266,7 @@ export default function UserMenu({ lang }: { lang: Lang }) {
                       <Button
                         variant="outline"
                         onClick={() => void savePassword()}
-                        disabled={saving || currentPassword.length < 12 || newPassword.length < 12}
+                        disabled={saving || currentPassword.length < 8 || newPassword.length < 8}
                       >
                         {zh ? "更新密码" : "Update password"}
                       </Button>

@@ -20,11 +20,12 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from auth import (
     SESSION_COOKIE_NAME,
     AuthUser,
+    MIN_PASSWORD_LENGTH,
     generate_token,
     hash_password,
     hash_token,
@@ -32,6 +33,7 @@ from auth import (
     require_admin,
     require_super_admin,
     require_user,
+    validate_username,
     verify_password,
 )
 from credentials import (
@@ -563,8 +565,13 @@ class FavoriteSeenRequest(BaseModel):
 
 
 class PasswordLoginRequest(BaseModel):
-    username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
-    password: str = Field(min_length=12, max_length=256)
+    username: str
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=256)
+
+    @field_validator("username")
+    @classmethod
+    def clean_username(cls, value: str) -> str:
+        return validate_username(value)
 
 
 class AccountProfileRequest(BaseModel):
@@ -574,8 +581,8 @@ class AccountProfileRequest(BaseModel):
 
 
 class PasswordChangeRequest(BaseModel):
-    current_password: str = Field(min_length=12, max_length=256)
-    new_password: str = Field(min_length=12, max_length=256)
+    current_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=256)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=256)
 
 
 class OpenAlexCredentialRequest(BaseModel):

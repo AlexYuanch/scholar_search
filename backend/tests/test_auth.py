@@ -127,16 +127,40 @@ def test_public_registration_creates_user_and_authenticated_session(monkeypatch)
     with TestClient(app) as client:
         response = client.post(
             "/api/auth/register",
-            json={"username": "new.user", "password": "correct horse battery staple"},
+            json={"username": "Research User", "password": "study123"},
         )
 
         assert response.status_code == 201
-        assert response.json()["user"]["username"] == "new.user"
+        assert response.json()["user"]["username"] == "Research User"
         assert verify_password(
-            "correct horse battery staple",
-            repository.get_user_for_login("NEW.USER")["password_hash"],
+            "study123",
+            repository.get_user_for_login("research user")["password_hash"],
         )
         assert client.get("/api/auth/me").json()["authenticated"] is True
+        assert client.post("/api/auth/logout").status_code == 200
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "RESEARCH USER", "password": "study123"},
+        )
+        assert login.status_code == 200
+        assert login.json()["user"]["username"] == "Research User"
+
+
+def test_public_registration_accepts_unicode_username(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+
+    response = TestClient(app).post(
+        "/api/auth/register",
+        json={"username": "王 小明", "password": "research8"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["user"]["username"] == "王 小明"
 
 
 def test_account_profile_and_password_can_be_updated(monkeypatch):

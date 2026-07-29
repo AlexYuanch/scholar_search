@@ -3,30 +3,27 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import re
 
-from auth import hash_password
+from auth import MIN_PASSWORD_LENGTH, hash_password, validate_username
 from repository import UsernameTaken, create_repository
 
 
-USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
-MIN_PASSWORD_LENGTH = 12
-
-
 def _validated_username(value: str) -> str:
-    username = value.strip()
-    if not USERNAME_PATTERN.fullmatch(username):
-        raise SystemExit("用户名必须为 3-64 位，仅可包含字母、数字、点、下划线和短横线。")
-    return username
+    try:
+        return validate_username(value)
+    except ValueError as exc:
+        raise SystemExit(
+            "用户名必须为 2-64 位，可使用中英文、大小写字母、数字、空格和常用符号。"
+        ) from exc
 
 
 def _prompt_password() -> str:
-    password = getpass.getpass("密码（至少 12 位）：")
+    password = getpass.getpass(f"密码（至少 {MIN_PASSWORD_LENGTH} 位）：")
     confirmation = getpass.getpass("再次输入密码：")
     if password != confirmation:
         raise SystemExit("两次输入的密码不一致。")
     if len(password) < MIN_PASSWORD_LENGTH:
-        raise SystemExit("密码必须至少 12 位。")
+        raise SystemExit(f"密码必须至少 {MIN_PASSWORD_LENGTH} 位。")
     return password
 
 

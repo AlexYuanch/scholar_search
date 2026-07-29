@@ -180,7 +180,7 @@ def test_password_user_session_is_revocable():
     repository = PostgresRepository(DATABASE_URL)
     unique = os.urandom(8).hex()
     session_hash = ((unique[::-1]) * 8)[:64]
-    username = f"integration-{unique}"
+    username = f"integration user-{unique}"
     registration_ip = f"192.0.2.{int(unique[:2], 16) % 254 + 1}"
     try:
         repository.enforce_registration_rate_limit(registration_ip)

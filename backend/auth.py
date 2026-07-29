@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import unicodedata
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
 from dataclasses import dataclass
@@ -18,6 +19,20 @@ PASSWORD_N = 2 ** 14
 PASSWORD_R = 8
 PASSWORD_P = 1
 PASSWORD_KEY_LENGTH = 32
+MIN_USERNAME_LENGTH = 2
+MAX_USERNAME_LENGTH = 64
+MIN_PASSWORD_LENGTH = 8
+
+
+def validate_username(value: str) -> str:
+    username = value.strip()
+    if not MIN_USERNAME_LENGTH <= len(username) <= MAX_USERNAME_LENGTH:
+        raise ValueError(
+            f"Username must be {MIN_USERNAME_LENGTH}-{MAX_USERNAME_LENGTH} characters"
+        )
+    if any(unicodedata.category(character).startswith("C") for character in username):
+        raise ValueError("Username contains unsupported control characters")
+    return username
 
 
 def generate_token() -> str:

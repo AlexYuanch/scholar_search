@@ -36,8 +36,8 @@ export function AuthDialog({ open, required = false, onClose, onAuthenticated, t
   const registering = mode === "register"
   const canSubmit = Boolean(
     username.trim()
-    && password.length >= 12
-    && (!registering || passwordConfirmation.length >= 12),
+    && password.length >= 8
+    && (!registering || passwordConfirmation.length >= 8),
   )
   if (!open) return null
 

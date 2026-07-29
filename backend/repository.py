@@ -790,7 +790,7 @@ class InMemoryRepository:
                 "password_hash": password_hash,
                 "is_active": True,
                 "role": role,
-                "display_name": username.strip(),
+                "display_name": username.strip()[:40],
                 "avatar_key": "initials",
                 "theme": "default",
                 "created_at": _now(),
@@ -2481,7 +2481,7 @@ class PostgresRepository:
                     insert into public.app_users (
                         username, normalized_username, password_hash, role, display_name
                     ) values (
-                        :username, :normalized_username, :password_hash, :role, :username
+                        :username, :normalized_username, :password_hash, :role, :display_name
                     )
                     returning id, username, normalized_username, password_hash, is_active, role,
                               coalesce(display_name, username) as display_name, avatar_key, theme
@@ -2490,6 +2490,7 @@ class PostgresRepository:
                     "normalized_username": normalized_username,
                     "password_hash": password_hash,
                     "role": role,
+                    "display_name": username.strip()[:40],
                 }).mappings().one()
         except IntegrityError as exc:
             if "app_users_normalized_username" in str(exc):

@@ -174,7 +174,7 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`re
 
 ## 身份认证
 
-1. `POST /api/auth/register` 校验用户名和密码，按来源 IP 限制每小时 10 次尝试，保存随机盐 scrypt 摘要。
+1. `POST /api/auth/register` 接受 2–64 位中英文用户名、大小写字母、内部空格和常用符号，密码至少 8 位；按来源 IP 限制每小时 10 次尝试，并保存随机盐 scrypt 摘要。
 2. 注册成功后自动创建会话；用户名冲突返回 409，不覆盖已有账号。
 3. `POST /api/auth/login` 先按规范化用户名和请求 IP 检查 15 分钟失败次数，再以恒定路径校验密码。
 4. 成功后生成高熵随机会话 token；浏览器收到 `HttpOnly`、`SameSite=Lax` Cookie，数据库只保存 SHA-256 摘要。
