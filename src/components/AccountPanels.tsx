@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { AlertCircle, Bell, BookOpen, CheckCircle2, Eye, Loader2, LogIn, RefreshCw, X } from "lucide-react"
 import { useAuth } from "@/auth"
-import { ApiError, getHistory, getTracking, refreshTracking, removeTracking, type ScholarListItem } from "@/api"
+import { ApiError, getHistory, getTracking, refreshTracking, removeTracking, startProfileJob, type ScholarListItem } from "@/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -170,7 +170,7 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
   }, [loadItems, mode, trackingRevision])
 
   useEffect(() => {
-    if (mode !== "favorites" || !items.some((item) => item.refresh_status === "queued" || item.refresh_status === "updating")) {
+    if (!items.some((item) => item.refresh_status === "queued" || item.refresh_status === "updating")) {
       return
     }
     const timer = window.setTimeout(() => void loadItems(true), 3000)
@@ -201,6 +201,22 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
       const result = await refreshTracking(item.author_id)
       setItems((current) => current.map((row) => row.author_id === item.author_id
         ? { ...row, refresh_status: result.status ?? "queued", refresh_error: "" }
+        : row))
+    } catch (reason: unknown) {
+      setError(localizedError(reason))
+      if (reason instanceof ApiError && reason.kind === "auth") void refreshUser()
+    } finally {
+      setActingOn("")
+    }
+  }
+
+  const retryHistory = async (item: ScholarListItem) => {
+    setActingOn(item.author_id)
+    setError("")
+    try {
+      const result = await startProfileJob(item.author_id, [item.author_id], item.name)
+      setItems((current) => current.map((row) => row.author_id === item.author_id
+        ? { ...row, refresh_status: result.status, refresh_error: "" }
         : row))
     } catch (reason: unknown) {
       setError(localizedError(reason))
@@ -270,6 +286,17 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
                         <span className="font-medium text-emerald-700 dark:text-emerald-400">+{item.new_citations?.toLocaleString()} {t("tracking.citations")}</span>
                       )}
                     </div>
+                    {mode === "history" && (
+                      <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
+                        {item.refresh_status === "queued" || item.refresh_status === "updating" ? (
+                          <><RefreshCw className="h-3 w-3 animate-spin" />{t(`tracking.status_${item.refresh_status}`)}</>
+                        ) : item.refresh_status === "failed" ? (
+                          <><AlertCircle className="h-3 w-3 text-destructive" />{t("tracking.status_failed")}</>
+                        ) : (
+                          <><CheckCircle2 className="h-3 w-3" />{t("tracking.status_ready")}</>
+                        )}
+                      </p>
+                    )}
                     {mode === "favorites" && (
                       <>
                         {(item.research_changes?.length ?? 0) > 0 && (
@@ -300,9 +327,26 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
                   </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => onSelect(item.author_id, item.name)}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={item.refresh_status === "queued" || item.refresh_status === "updating" || item.refresh_status === "failed"}
+                      onClick={() => onSelect(item.author_id, item.name)}
+                    >
                       <Eye className="h-3.5 w-3.5" />{t("tracking.view_profile")}
                     </Button>
+                    {mode === "history" && item.refresh_status === "failed" && (
+                      <Button
+                        size="sm"
+                        disabled={actingOn === item.author_id}
+                        onClick={() => void retryHistory(item)}
+                      >
+                        {actingOn === item.author_id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <RefreshCw className="h-3.5 w-3.5" />}
+                        {t("tracking.retry")}
+                      </Button>
+                    )}
                     {mode === "favorites" && (
                       <>
                         <Button

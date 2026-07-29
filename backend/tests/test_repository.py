@@ -101,6 +101,25 @@ def test_history_and_favorites_are_isolated_by_user():
     assert repository.list_favorites("user-2") == []
 
 
+def test_initial_profile_job_is_visible_in_history_and_keeps_identity_inputs():
+    repository = InMemoryRepository()
+
+    job_id = repository.enqueue_initial_profile(
+        "A1",
+        "Ada Lovelace",
+        "user-1",
+        ["A1", "A2"],
+    )
+    history = repository.list_history("user-1", limit=20)
+    claimed = repository.claim_refresh_job()
+
+    assert history[0]["name"] == "Ada Lovelace"
+    assert history[0]["refresh_status"] == "queued"
+    assert claimed["id"] == job_id
+    assert claimed["query_name"] == "Ada Lovelace"
+    assert claimed["author_ids"] == ["A1", "A2"]
+
+
 def test_favorite_reports_profile_changes_until_user_marks_them_seen():
     repository = InMemoryRepository()
     repository.publish_profile(_workflow_state(2), query_name="Ada")
@@ -170,6 +189,22 @@ def test_password_reset_revokes_existing_sessions():
 
     assert repository.set_password("ALICE", "new-password-hash")
     assert repository.get_user_by_session("session-hash") is None
+
+
+def test_user_preferences_are_persisted_in_account_record():
+    repository = InMemoryRepository()
+    user = repository.create_password_user("alice", "password-hash")
+
+    updated = repository.update_user_preferences(
+        user["id"],
+        "Alice Chen",
+        "ocean",
+        "purple",
+    )
+
+    assert updated["display_name"] == "Alice Chen"
+    assert repository.get_user_for_login("alice")["avatar_key"] == "ocean"
+    assert repository.get_user_for_login("alice")["theme"] == "purple"
 
 
 def test_api_quota_limits_each_user_within_time_window():

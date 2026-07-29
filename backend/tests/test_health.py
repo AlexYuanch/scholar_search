@@ -410,6 +410,32 @@ def test_cold_profile_publishes_valid_workflow_result(monkeypatch, authenticated
     assert repository.get_profile("A1")["profile_version"] == 1
 
 
+def test_cold_profile_job_returns_immediately_and_appears_in_history(
+    monkeypatch,
+    authenticated_client,
+):
+    import main
+
+    repository = InMemoryRepository()
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
+
+    response = authenticated_client.post(
+        "/api/profile/jobs",
+        json={
+            "author_id": "A1",
+            "author_ids": ["A1", "A2"],
+            "query_name": "Ada Lovelace",
+        },
+    )
+    history = authenticated_client.get("/api/history").json()["items"]
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert history[0]["name"] == "Ada Lovelace"
+    assert history[0]["refresh_status"] == "queued"
+
+
 def test_profile_stream_returns_cached_profile_without_running_workflow(
     monkeypatch, authenticated_client
 ):

@@ -101,9 +101,12 @@ def test_password_login_creates_revocable_session(monkeypatch):
         assert me.json() == {
             "authenticated": True,
             "user": {
-                "id": login.json()["user"]["id"],
-                "username": "Research.Admin",
-                "role": "user",
+                    "id": login.json()["user"]["id"],
+                    "username": "Research.Admin",
+                    "display_name": "Research.Admin",
+                    "avatar_key": "initials",
+                    "theme": "default",
+                    "role": "user",
                 "can_view_admin": False,
                 "can_manage_admins": False,
             },
@@ -134,6 +137,46 @@ def test_public_registration_creates_user_and_authenticated_session(monkeypatch)
             repository.get_user_for_login("NEW.USER")["password_hash"],
         )
         assert client.get("/api/auth/me").json()["authenticated"] is True
+
+
+def test_account_profile_and_password_can_be_updated(monkeypatch):
+    import main
+
+    repository = InMemoryRepository()
+    repository.create_password_user("alice", hash_password("correct horse battery staple"))
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "correct horse battery staple"},
+        ).status_code == 200
+        profile = client.patch(
+            "/api/account/profile",
+            json={
+                "display_name": "Alice Chen",
+                "avatar_key": "ocean",
+                "theme": "purple",
+            },
+        )
+        assert profile.status_code == 200
+        assert profile.json()["user"]["display_name"] == "Alice Chen"
+        assert profile.json()["user"]["avatar_key"] == "ocean"
+        password = client.post(
+            "/api/account/password",
+            json={
+                "current_password": "correct horse battery staple",
+                "new_password": "an even safer password",
+            },
+        )
+        assert password.status_code == 200
+        assert client.get("/api/auth/me").json()["user"]["theme"] == "purple"
+        assert verify_password(
+            "an even safer password",
+            repository.get_user_for_login("alice")["password_hash"],
+        )
 
 
 def test_public_registration_rejects_duplicate_username(monkeypatch):

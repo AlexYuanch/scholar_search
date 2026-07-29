@@ -204,6 +204,9 @@ def test_password_user_session_is_revocable():
             "id": user["id"],
             "username": username,
             "role": "user",
+            "display_name": username,
+            "avatar_key": "initials",
+            "theme": "default",
         }
 
         repository.revoke_session(session_hash)
@@ -439,6 +442,52 @@ def test_postgres_refresh_job_is_persisted_and_processed_by_worker():
         assert job_status == "succeeded"
     finally:
         with repository.engine.begin() as conn:
+            conn.execute(text("delete from public.scholars where source_author_id = :author_id"), {"author_id": author_id})
+
+
+def test_postgres_initial_profile_job_is_visible_before_worker_completion(monkeypatch):
+    repository = PostgresRepository(DATABASE_URL)
+    unique = os.urandom(6).hex()
+    author_id = f"https://openalex.org/A-INITIAL-{unique}"
+    user = repository.create_password_user(
+        f"initial-{unique}",
+        hash_password("integration password"),
+    )
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
+
+    class DeterministicWorkflowGraph:
+        def invoke(self, state):
+            assert state["target_author_ids"] == [author_id, f"{author_id}-MERGED"]
+            result = _state(1)
+            result["target_author_id"] = author_id
+            result["target_author_profile"]["id"] = author_id
+            result["target_author_profile"]["display_name"] = "Queued Scholar"
+            result["deduped_works"][0]["authorships"][0]["author"]["id"] = author_id
+            result["web_payload"]["name"] = "Queued Scholar"
+            return result
+
+    try:
+        job_id = repository.enqueue_initial_profile(
+            author_id,
+            "Queued Scholar",
+            user["id"],
+            [author_id, f"{author_id}-MERGED"],
+        )
+        queued = repository.list_history(user["id"], limit=20)[0]
+        assert queued["refresh_status"] == "queued"
+        assert queued["profile_version"] == 0
+
+        assert process_one_job(repository, DeterministicWorkflowGraph()) is True
+        ready = repository.list_history(user["id"], limit=20)[0]
+        assert ready["refresh_status"] == "ready"
+        assert ready["profile_version"] == 1
+        with repository.engine.connect() as conn:
+            assert conn.execute(text("""
+                select status from public.refresh_jobs where id = cast(:job_id as uuid)
+            """), {"job_id": job_id}).scalar_one() == "succeeded"
+    finally:
+        with repository.engine.begin() as conn:
+            conn.execute(text("delete from public.app_users where id = cast(:user_id as uuid)"), {"user_id": user["id"]})
             conn.execute(text("delete from public.scholars where source_author_id = :author_id"), {"author_id": author_id})
 
 

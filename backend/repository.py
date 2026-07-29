@@ -327,7 +327,40 @@ class InMemoryRepository:
 
     def list_history(self, user_id: str, limit: int) -> list[dict]:
         rows = [deepcopy(v) for (uid, _), v in self.history.items() if uid == user_id]
-        return sorted(rows, key=lambda row: row["last_viewed_at"], reverse=True)[:limit]
+        result = []
+        for row in sorted(rows, key=lambda item: item["last_viewed_at"], reverse=True)[:limit]:
+            profile = self.profiles.get(row["author_id"]) or {}
+            payload = profile.get("payload") or {}
+            latest_job = next(
+                (
+                    job for job in sorted(
+                        self.jobs.values(),
+                        key=lambda item: item.get("scheduled_at", ""),
+                        reverse=True,
+                    )
+                    if job["author_id"] == row["author_id"]
+                    and job.get("requested_by_user_id") == user_id
+                ),
+                {},
+            )
+            job_status = latest_job.get("status")
+            row.update({
+                "institution": payload.get("institution", ""),
+                "total_papers": payload.get("totalPapers", 0),
+                "total_citations": payload.get("totalCitations", 0),
+                "h_index": payload.get("hIndex", 0),
+                "updated_at": profile.get("updated_at"),
+                "profile_version": int(profile.get("profile_version", 0)),
+                "refresh_status": (
+                    profile.get("refresh_status")
+                    or ("updating" if job_status == "running" else None)
+                    or ("queued" if job_status == "pending" else None)
+                    or ("failed" if job_status == "failed" else "ready")
+                ),
+                "refresh_error": latest_job.get("last_error"),
+            })
+            result.append(row)
+        return result
 
     def add_favorite(self, user_id: str, author_id: str) -> dict:
         with self._lock:
@@ -420,6 +453,8 @@ class InMemoryRepository:
         author_id: str,
         reason: str,
         requested_by_user_id: str | None = None,
+        query_name: str = "",
+        author_ids: list[str] | None = None,
     ) -> str:
         with self._lock:
             scholar = self._scholar(author_id)
@@ -439,6 +474,8 @@ class InMemoryRepository:
                 "author_id": author_id,
                 "reason": reason,
                 "requested_by_user_id": requested_by_user_id,
+                "query_name": query_name,
+                "author_ids": list(dict.fromkeys(author_ids or [author_id]))[:8],
                 "status": "pending",
                 "attempts": 0,
                 "scheduled_at": _iso(),
@@ -447,6 +484,23 @@ class InMemoryRepository:
                 self.profiles[author_id]["refresh_status"] = "queued"
                 self.profiles[author_id]["payload"]["refreshStatus"] = "queued"
             return job_id
+
+    def enqueue_initial_profile(
+        self,
+        author_id: str,
+        query_name: str,
+        requested_by_user_id: str,
+        author_ids: list[str] | None = None,
+    ) -> str:
+        self._scholar(author_id, query_name)
+        self.record_history(requested_by_user_id, author_id, query_name)
+        return self.enqueue_refresh(
+            author_id,
+            "initial_profile",
+            requested_by_user_id=requested_by_user_id,
+            query_name=query_name,
+            author_ids=author_ids,
+        )
 
     def claim_refresh_job(self) -> dict | None:
         with self._lock:
@@ -736,6 +790,9 @@ class InMemoryRepository:
                 "password_hash": password_hash,
                 "is_active": True,
                 "role": role,
+                "display_name": username.strip(),
+                "avatar_key": "initials",
+                "theme": "default",
                 "created_at": _now(),
             }
             self.users[normalized_username] = user
@@ -750,6 +807,24 @@ class InMemoryRepository:
             if session["user_id"] == user["id"] and not session["revoked_at"]:
                 session["revoked_at"] = _now()
         return True
+
+    def update_user_preferences(
+        self,
+        user_id: str,
+        display_name: str,
+        avatar_key: str,
+        theme: str,
+    ) -> dict:
+        with self._lock:
+            user = next((item for item in self.users.values() if item["id"] == user_id), None)
+            if not user:
+                raise KeyError("user not found")
+            user.update(
+                display_name=display_name,
+                avatar_key=avatar_key,
+                theme=theme,
+            )
+            return deepcopy(user)
 
     def list_users(self) -> list[dict]:
         return [
@@ -1641,16 +1716,39 @@ class PostgresRepository:
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
                 select s.id as scholar_id, s.source_author_id as author_id, s.display_name,
-                       p.payload, p.generated_at as updated_at, h.last_viewed_at, h.view_count
+                       p.payload, p.generated_at as updated_at, h.last_viewed_at, h.view_count,
+                       coalesce(ps.version, 0) as profile_version,
+                       coalesce(
+                           ps.status,
+                           case latest_job.status
+                               when 'pending' then 'queued'
+                               when 'running' then 'updating'
+                               when 'failed' then 'failed'
+                               else 'ready'
+                           end
+                       ) as refresh_status,
+                       latest_job.last_error as refresh_error
                 from public.user_history h
                 join public.scholars s on s.id = h.scholar_id
                 left join public.scholar_profiles p on p.scholar_id = s.id
+                left join public.profile_status ps on ps.scholar_id = s.id
+                left join lateral (
+                    select j.status, j.last_error
+                    from public.refresh_jobs j
+                    where j.scholar_id = s.id
+                      and j.requested_by_user_id = h.user_id
+                    order by j.created_at desc
+                    limit 1
+                ) latest_job on true
                 where h.user_id = cast(:user_id as uuid)
                 order by h.last_viewed_at desc limit :limit
             """), {"user_id": user_id, "limit": limit}).mappings().all()
         return [self._scholar_summary(dict(row)) | {
             "last_viewed_at": _iso(row["last_viewed_at"]),
             "view_count": row["view_count"],
+            "profile_version": int(row["profile_version"] or 0),
+            "refresh_status": row["refresh_status"],
+            "refresh_error": row["refresh_error"],
         } for row in rows]
 
     def add_favorite(self, user_id: str, author_id: str) -> dict:
@@ -1788,6 +1886,8 @@ class PostgresRepository:
         author_id: str,
         reason: str,
         requested_by_user_id: str | None = None,
+        query_name: str = "",
+        author_ids: list[str] | None = None,
     ) -> str:
         with self.engine.begin() as conn:
             scholar_id = conn.execute(text("""
@@ -1797,10 +1897,12 @@ class PostgresRepository:
                 raise KeyError("scholar not found")
             job_id = conn.execute(text("""
                 insert into public.refresh_jobs (
-                    scholar_id, reason, requested_by_user_id, status, scheduled_at
+                    scholar_id, reason, requested_by_user_id, query_name,
+                    author_ids, status, scheduled_at
                 )
                 values (
-                    :scholar_id, :reason, cast(:requested_by_user_id as uuid), 'pending', now()
+                    :scholar_id, :reason, cast(:requested_by_user_id as uuid), :query_name,
+                    cast(:author_ids as jsonb), 'pending', now()
                 )
                 on conflict do nothing
                 returning id
@@ -1808,6 +1910,8 @@ class PostgresRepository:
                 "scholar_id": scholar_id,
                 "reason": reason,
                 "requested_by_user_id": requested_by_user_id,
+                "query_name": query_name,
+                "author_ids": _json(list(dict.fromkeys(author_ids or [author_id]))[:8]),
             }).scalar_one_or_none()
             if not job_id:
                 job_id = conn.execute(text("""
@@ -1829,6 +1933,91 @@ class PostgresRepository:
             """), {"scholar_id": scholar_id})
             return str(job_id)
 
+    def enqueue_initial_profile(
+        self,
+        author_id: str,
+        query_name: str,
+        requested_by_user_id: str,
+        author_ids: list[str] | None = None,
+    ) -> str:
+        normalized_ids = list(dict.fromkeys(author_ids or [author_id]))[:8]
+        with self.engine.begin() as conn:
+            scholar_id = conn.execute(text("""
+                insert into public.scholars (
+                    source, source_author_id, display_name, raw_json,
+                    last_accessed_at, updated_at
+                ) values (
+                    'openalex', :author_id, :display_name,
+                    jsonb_build_object('pending_author_ids', cast(:author_ids as jsonb)),
+                    now(), now()
+                )
+                on conflict (source, source_author_id) do update set
+                    display_name = case
+                        when public.scholars.display_name = '' then excluded.display_name
+                        else public.scholars.display_name
+                    end,
+                    raw_json = coalesce(public.scholars.raw_json, '{}'::jsonb)
+                        || jsonb_build_object('pending_author_ids', cast(:author_ids as jsonb)),
+                    last_accessed_at = now(),
+                    updated_at = now()
+                returning id
+            """), {
+                "author_id": author_id,
+                "display_name": query_name or author_id,
+                "author_ids": _json(normalized_ids),
+            }).scalar_one()
+            conn.execute(text("""
+                insert into public.profile_status (scholar_id, version, status, updated_at)
+                values (:scholar_id, 0, 'queued', now())
+                on conflict (scholar_id) do update set
+                    status = case
+                        when public.profile_status.status = 'updating' then 'updating'
+                        else 'queued'
+                    end,
+                    updated_at = now()
+            """), {"scholar_id": scholar_id})
+            conn.execute(text("""
+                insert into public.user_history (
+                    user_id, scholar_id, query_name, view_count, last_viewed_at
+                ) values (
+                    cast(:user_id as uuid), :scholar_id, :query_name, 1, now()
+                )
+                on conflict (user_id, scholar_id) do update set
+                    query_name = excluded.query_name,
+                    view_count = public.user_history.view_count + 1,
+                    last_viewed_at = now()
+            """), {
+                "user_id": requested_by_user_id,
+                "scholar_id": scholar_id,
+                "query_name": query_name,
+            })
+            job_id = conn.execute(text("""
+                insert into public.refresh_jobs (
+                    scholar_id, reason, requested_by_user_id, query_name,
+                    author_ids, status, scheduled_at
+                ) values (
+                    :scholar_id, 'initial_profile', cast(:user_id as uuid), :query_name,
+                    cast(:author_ids as jsonb), 'pending', now()
+                )
+                on conflict do nothing
+                returning id
+            """), {
+                "scholar_id": scholar_id,
+                "user_id": requested_by_user_id,
+                "query_name": query_name,
+                "author_ids": _json(normalized_ids),
+            }).scalar_one_or_none()
+            if not job_id:
+                job_id = conn.execute(text("""
+                    select id
+                    from public.refresh_jobs
+                    where scholar_id = :scholar_id
+                      and status in ('pending', 'running')
+                    order by created_at desc
+                    limit 1
+                """), {"scholar_id": scholar_id}).scalar_one()
+            return str(job_id)
+
     def claim_refresh_job(self) -> dict | None:
         with self.engine.begin() as conn:
             row = conn.execute(text("""
@@ -1843,7 +2032,8 @@ class PostgresRepository:
                 from candidate c, public.scholars s
                 where j.id = c.id and s.id = j.scholar_id
                 returning j.id, j.scholar_id, s.source_author_id as author_id,
-                          j.reason, j.attempts, j.status, j.requested_by_user_id
+                          j.reason, j.attempts, j.status, j.requested_by_user_id,
+                          j.query_name, j.author_ids
             """
             )).mappings().first()
             if row:
@@ -2289,11 +2479,12 @@ class PostgresRepository:
             with self.engine.begin() as conn:
                 row = conn.execute(text("""
                     insert into public.app_users (
-                        username, normalized_username, password_hash, role
+                        username, normalized_username, password_hash, role, display_name
                     ) values (
-                        :username, :normalized_username, :password_hash, :role
+                        :username, :normalized_username, :password_hash, :role, :username
                     )
-                    returning id, username, normalized_username, password_hash, is_active, role
+                    returning id, username, normalized_username, password_hash, is_active, role,
+                              coalesce(display_name, username) as display_name, avatar_key, theme
                 """), {
                     "username": username.strip(),
                     "normalized_username": normalized_username,
@@ -2325,6 +2516,32 @@ class PostgresRepository:
                 """), {"user_id": user_id})
         return user_id is not None
 
+    def update_user_preferences(
+        self,
+        user_id: str,
+        display_name: str,
+        avatar_key: str,
+        theme: str,
+    ) -> dict:
+        with self.engine.begin() as conn:
+            row = conn.execute(text("""
+                update public.app_users
+                set display_name = :display_name,
+                    avatar_key = :avatar_key,
+                    theme = :theme,
+                    updated_at = now()
+                where id = cast(:user_id as uuid)
+                returning id, username, role, display_name, avatar_key, theme
+            """), {
+                "user_id": user_id,
+                "display_name": display_name,
+                "avatar_key": avatar_key,
+                "theme": theme,
+            }).mappings().first()
+        if not row:
+            raise KeyError("user not found")
+        return {**dict(row), "id": str(row["id"])}
+
     def list_users(self) -> list[dict]:
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
@@ -2345,7 +2562,8 @@ class PostgresRepository:
     def get_user_for_login(self, username: str) -> dict | None:
         with self.engine.connect() as conn:
             row = conn.execute(text("""
-                select id, username, normalized_username, password_hash, is_active, role
+                select id, username, normalized_username, password_hash, is_active, role,
+                       coalesce(display_name, username) as display_name, avatar_key, theme
                 from public.app_users
                 where normalized_username = :normalized_username
             """), {"normalized_username": username.strip().casefold()}).mappings().first()
@@ -2478,7 +2696,9 @@ class PostgresRepository:
     def get_user_by_session(self, session_hash: str) -> dict | None:
         with self.engine.begin() as conn:
             row = conn.execute(text("""
-                select u.id, u.username, u.role
+                select u.id, u.username, u.role,
+                       coalesce(u.display_name, u.username) as display_name,
+                       u.avatar_key, u.theme
                 from public.user_sessions s
                 join public.app_users u on u.id = s.user_id
                 where s.token_hash = :token_hash
@@ -2497,6 +2717,9 @@ class PostgresRepository:
             "id": str(row["id"]),
             "username": row["username"],
             "role": row["role"],
+            "display_name": row["display_name"],
+            "avatar_key": row["avatar_key"],
+            "theme": row["theme"],
         } if row else None
 
     def touch_analytics_activity(self, visitor_hash: str, user_id: str | None) -> None:

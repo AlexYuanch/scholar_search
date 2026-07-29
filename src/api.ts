@@ -238,6 +238,32 @@ export async function getProfile(authorId: string, options: { signal?: AbortSign
   return data.data
 }
 
+export interface ProfileJobResult {
+  status: "ready" | "queued" | "updating" | "failed"
+  job_id: string | null
+  scholar_id: string
+  profile_version: number
+  name?: string
+  data?: ScholarProfile
+}
+
+export async function startProfileJob(
+  authorId: string,
+  authorIds: string[] = [authorId],
+  queryName = "",
+): Promise<ProfileJobResult> {
+  const response = await authenticatedFetch("/profile/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      author_id: authorId,
+      author_ids: authorIds,
+      query_name: queryName,
+    }),
+  })
+  return response.json()
+}
+
 export async function refreshProfile(authorId: string): Promise<{
   status: ScholarProfile["refreshStatus"]
   job_id: string

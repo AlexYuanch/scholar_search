@@ -83,6 +83,7 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
         state["openalex_budget_provider"] = budget_provider
         state["target_author_ids"] = list(dict.fromkeys([
             author_id,
+            *(job.get("author_ids") or []),
             *(
                 ((((cached or {}).get("payload") or {}).get("identityAudit") or {}).get("mergedAuthorIds"))
                 or []
@@ -96,7 +97,7 @@ def process_one_job(repository, workflow_graph=graph) -> bool:
             return False
         repository.publish_profile(
             result,
-            query_name=(cached or {}).get("query_name", ""),
+            query_name=job.get("query_name") or (cached or {}).get("query_name", ""),
             quality_flags=assessment.flags,
         )
         repository.complete_refresh_job(job_id)

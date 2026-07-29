@@ -44,6 +44,26 @@ def test_worker_publishes_valid_result_and_completes_job():
     assert repository.get_profile("A1")["profile_version"] == 2
 
 
+def test_worker_builds_first_profile_from_durable_job_metadata(monkeypatch):
+    repository = InMemoryRepository()
+    job_id = repository.enqueue_initial_profile(
+        "A1",
+        "Ada Lovelace",
+        "user-a",
+        ["A1", "A2"],
+    )
+    monkeypatch.setenv("OPENALEX_API_KEY", "server-openalex-key")
+
+    class MetadataGraph(FakeGraph):
+        def invoke(self, state):
+            assert state["target_author_ids"] == ["A1", "A2"]
+            return super().invoke(state)
+
+    assert process_one_job(repository, MetadataGraph()) is True
+    assert repository.jobs[job_id]["status"] == "succeeded"
+    assert repository.get_profile("A1")["query_name"] == "Ada Lovelace"
+
+
 def test_worker_keeps_latest_profile_when_quality_gate_fails():
     repository = InMemoryRepository()
     _seed(repository)

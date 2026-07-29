@@ -76,6 +76,9 @@ class AuthUser:
     id: str
     username: str
     role: str = "user"
+    display_name: str = ""
+    avatar_key: str = "initials"
+    theme: str = "default"
 
     @property
     def can_view_admin(self) -> bool:
@@ -101,6 +104,9 @@ def optional_user(
         id=str(user["id"]),
         username=str(user["username"]),
         role=str(user.get("role") or "user"),
+        display_name=str(user.get("display_name") or user["username"]),
+        avatar_key=str(user.get("avatar_key") or "initials"),
+        theme=str(user.get("theme") or "default"),
     )
     request.state.auth_user = auth_user
     return auth_user

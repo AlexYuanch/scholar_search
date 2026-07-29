@@ -8,7 +8,7 @@ flowchart LR
   CADDY --> NGINX["React static + Nginx"]
   NGINX -->|"/api 同源代理"| API["FastAPI Web"]
   API -->|"SQLAlchemy + psycopg"| PG["PostgreSQL 17"]
-  API -->|"服务端 OpenAlex key + 首次画像"| WF["LangGraph"]
+  API -->|"创建/读取持久任务"| JOB["refresh_jobs / search jobs"]
   API -->|"搜索缓存/合并任务"| SEARCH["openalex_search_cache / jobs"]
   SEARCH --> PG
   WF --> OA["OpenAlex"]
@@ -17,7 +17,7 @@ flowchart LR
   WF --> ROUTER["DeepSeek router agent"]
   ROUTER --> FLASH["DeepSeek V4 Flash"]
   ROUTER --> PRO["DeepSeek V4 Pro"]
-  MAINT["Worker 每小时维护"] --> JOB["refresh_jobs / search jobs"]
+  MAINT["Worker 每小时维护"] --> JOB
   WORKER["Refresh worker"] -->|"SKIP LOCKED"| JOB
   WORKER --> OA
   WORKER --> WF
@@ -36,11 +36,13 @@ flowchart LR
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
 | 公网入口 | Caddy + Nginx | 自动 HTTPS、静态资源、同源 API 代理和日志 |
 
-匿名前端先展示 Hero 搜索、原创科研插画、三项核心能力和数据可信说明，不自动打开登录框。`LandingGuide` 在其后提供三步使用指南、匿名标题的真实候选/工作流/概览/合作网络截图和能力边界；截图以高分辨率 PNG 静态资源随构建发布，不包含账号、密钥或私有数据。`LandingHero` 使用 `IntersectionObserver` 切换内容显隐类，提供可逆的滚动淡入淡出，并通过 `prefers-reduced-motion` 关闭动态效果。`LandingHero` 只编排现有搜索状态，不新增匿名 API：匿名搜索把姓名保存在 `App` 组件状态并打开可关闭的认证弹窗；注册或登录成功后直接执行该姓名，关闭则取消本次动作但保留输入。后端查询路由没有开放匿名权限。
+匿名前端先展示 Hero 搜索、原创科研插画、三项核心能力和数据可信说明，不自动打开登录框。`LandingGuide` 在其后用浏览器原生组件提供三步指南和六段匿名案例，覆盖候选确认、后台工作流、画像概览、合作网络节点/连线、查询历史、研究追踪和能力边界；不依赖截图缩放，因此在高分屏与移动端保持清晰。`LandingHero` 使用 `IntersectionObserver` 切换内容显隐类，并通过 `prefers-reduced-motion` 关闭动态效果。匿名搜索把姓名保存在 `App` 状态并打开可关闭的认证弹窗；注册或登录成功后继续原搜索，后端查询路由没有开放匿名权限。
 
 全局视觉变量集中在 `src/index.css`，暖黑/米白主题共同使用低饱和青绿语义色；`Button`、`Card`、`Tabs` 等基础组件负责圆角、边框、焦点和阴影一致性，业务组件不保存独立主题状态。首屏的明暗两套插画均以压缩 JPEG 随前端构建发布，不从第三方站点热链；React 只根据全局主题切换可见图层，CSS 负责淡入、轨道和浮动动画，并通过 `prefers-reduced-motion` 关闭非必要动态效果。`I18nProvider` 同步维护根元素 `lang`，CSS 据此选择中文与英文的字体和响应式排版。管理员看板作为应用一级内容视图渲染，不再以覆盖业务页面的固定定位层实现。
 
-前端将文章详情、查询历史和研究追踪作为同一类响应式面板：`1280px` 及以上进入页面网格的独立列，主内容同步收缩；较窄视口改为从固定导航下方展开的完整焦点面板和遮罩，内部内容保持可滚动。面板使用动态视口高度，长标题、机构名和论文信息允许换行，避免侧栏把主页面压成不可读窄列或产生水平溢出。
+前端将文章详情、查询历史和研究追踪作为同一类响应式面板：`1280px` 及以上进入页面网格的独立列，主内容同步收缩；主页面宽度使用父网格列的百分比而不是 `100vw`，确保侧栏出现后不会继续按完整视口扩张。较窄视口改为从固定导航下方展开的完整焦点面板和遮罩，内部内容保持可滚动。面板使用动态视口高度，长标题、机构名和论文信息允许换行，避免遮挡、裁切或水平溢出。
+
+认证后的导航最右侧渲染 `UserMenu` 圆形头像。用户偏好由 `app_users.display_name/avatar_key/theme` 保存；`PATCH /api/account/profile` 更新昵称、预设头像和主题色，`POST /api/account/password` 在校验当前密码后轮换密码与会话。退出登录也从头像菜单触发，主导航不再占用独立退出按钮。
 
 画像主内容按“学者概览 / 学术成果 / 合作关系 / 研究脉络”四栏组织。概览先展示研究画像，再把研究方向与核心指标合并呈现，随后展示近期变化、时间线和折叠的数据说明；学术成果包含代表论文与全部论文；合作关系包含核心合作者和关系图；研究脉络包含阶段、方向变化、方向活跃度和摘要演进。时间线方向点击会切换到学术成果并应用对应筛选。
 
@@ -88,12 +90,12 @@ flowchart LR
 | `research_graph_refresh_jobs` | 单学者增量/重建任务；每个学者只允许一个活跃任务 |
 | `scholar_profiles` | 每位学者一份最新成功 JSONB、warnings、工作流版本和数据指纹 |
 | `profile_status` | 轻量状态、版本和更新时间 |
-| `refresh_jobs` | 任务状态、次数、退避、原因、错误和请求用户 |
+| `refresh_jobs` | 画像任务状态、次数、退避、原因、错误、请求用户、首次查询姓名和联合作者 ID |
 | `openalex_search_cache` | 规范化姓名的候选 JSONB、抓取时间和过期时间 |
 | `openalex_identity_cache` | OpenAlex 作者身份指纹，按作者 ID 去重并独立设置 TTL |
 | `openalex_search_jobs` | 冷搜索/过期搜索刷新队列；保存请求用户，同一 `query_key` 只允许一个活跃任务 |
 | `upstream_rate_limits` | `openalex:server` 平台额度及兼容个人 provider 的恢复时间和最近响应状态 |
-| `app_users` | 应用用户；规范化用户名唯一、scrypt 密码摘要、启停状态和 `user/admin/super_admin` 角色 |
+| `app_users` | 应用用户；规范化用户名唯一、scrypt 密码摘要、昵称、预设头像、主题偏好、启停状态和角色 |
 | `analytics_visitors` | 随机访客令牌的 SHA-256 摘要、可选用户和最近活动时间；不保存原始 IP |
 | `analytics_events` | 页面访问、搜索、画像查看和异常分类；只保留必要动作、用户/学者引用与非敏感元数据 |
 | `user_api_credentials` | 用户上游凭据；Fernet 密文、末四位提示和验证时间，复合主键隔离用户/provider |
@@ -110,19 +112,20 @@ flowchart LR
 
 ### 交互式查询
 
-1. `POST /api/profile/stream` 先读取最近成功画像：已有画像立即以 NDJSON `result` 返回，超过阈值时只幂等排队；仅首次画像同步运行 LangGraph 并输出四阶段进度。
-2. 对候选身份组再次验证；仅联合获取通过身份阈值的 OpenAlex 作者详情和论文，游标分页必须完整结束。
+1. 主画像调用 `POST /api/profile/jobs`。已有画像立即返回；首次画像在同一事务写入学者占位、用户历史和 `profile_status=queued`，再幂等创建保存查询姓名与联合作者 ID 的 `refresh_jobs`，Web 请求随即结束。
+2. Worker 领取任务后对候选身份组再次验证；仅联合获取通过身份阈值的 OpenAlex 作者详情和论文，游标分页必须完整结束。
 3. 对有 DOI 的论文查询 Crossref，并记录已核验、未找到、失败和核验上限。
 4. 数据裁决节点按 DOI 合并来源，保留字段来源与冲突；身份节点再以 ORCID、机构和合作者裁定准确优先的主论文集。
 5. 引用、细粒度方向、演化和合作节点只消费身份裁决后的论文集；总结生成后执行证据审查。
 6. 质量检查比较 `works_count`、本次数量、上一成功数量和证据审查结果。
 7. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
-8. `profile_status.version + 1` 并设为 `ready`；触发器发送轻量 PostgreSQL 通知。
+8. `profile_status.version + 1` 并设为 `ready`；触发器发送 PostgreSQL 通知。前端也轮询带任务状态的查询历史，使用户离开生成页后仍能收到右下角完成提醒。
+9. `POST /api/profile/stream` 保留为对比画像等兼容流程，不再作为主画像首次生成入口。
 
 ### 最近成功画像与后台更新
 
 - PostgreSQL 只保留每位学者最近一次通过质量检查的画像，供质量对比、论文分页和自动换版使用。
-- `POST /api/profile` 读取最近成功画像；前端候选确认统一使用 `/api/profile/stream`，已有画像走缓存结果、首次画像走工作流。
+- `POST /api/profile` 读取最近成功画像；前端候选确认使用 `/api/profile/jobs`，已有画像走缓存，首次画像只创建持久任务。
 - `POST /api/authors/{author_id}/profile/refresh` 对任意已发布画像幂等插入 `manual_profile` 任务，完整重跑多来源和 Agent；同一学者只有一个活跃任务，当前成功画像继续可读。
 - `profile_status` 的 queued/updating/failed 和版本发布均通过 LISTEN/NOTIFY 进入 SSE；同版本状态变化不再被过滤，前端只在更高版本 ready 后重新读取画像。
 - 研究追踪学者使用 24 小时阈值；最近 30 天访问者使用 7 天阈值。
@@ -160,6 +163,7 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`re
 8. 搜索和画像生成在 PostgreSQL 事务内按用户与 IP 消费额度，多 Web 实例共享同一限制。
 9. 当前前端不展示个人 OpenAlex 设置；兼容的 `GET/PUT/DELETE /api/settings/openalex` 仍只操作当前会话用户，PUT 在生产环境继续要求 HTTPS，并在配置 `CREDENTIAL_ENCRYPTION_KEY` 后加密保存。
 10. `require_admin` 只允许 `admin/super_admin` 访问统计；`require_super_admin` 只允许受保护的 `admin` 超级管理员修改其他账号角色。普通管理员不能转授权，超级管理员不能被网页撤销。
+11. 用户可通过头像菜单修改昵称、预设头像和主题偏好；修改密码必须提交当前密码，成功后撤销旧会话并签发新会话。
 
 ## 访问统计
 
@@ -174,9 +178,9 @@ Worker 使用 `FOR UPDATE SKIP LOCKED` 依次领取 `openalex_search_jobs`、`re
 
 ## 进度与错误边界
 
-- NDJSON 仍由既有 LangGraph 节点驱动，但 API 只向前端暴露四个稳定阶段：`verify_identity`、`aggregate_outputs`、`analyze_trajectory`、`verify_evidence`，并附带稳定 `message_code`；前端按当前语言翻译阶段、进度和错误，不直接显示后端中文文案。
-- 搜索使用 30 秒总超时；同一冷查询最多等待共享任务 25 秒，超时返回可重试 503。画像流在 120 秒没有收到任何数据时判定为空闲超时。网络、超时、429、401、数据源未配置和工作流/worker 失败分别映射为独立前端状态。OpenAlex 客户端显式接收服务端 key，在重试耗尽后保留上游状态码和 `Retry-After`，但不会把 key 写入异常；每次上游响应把平台额度写入 PostgreSQL，达到保留线后阻止新的上游请求并优先返回缓存。
-- 外部数据错误仍通过流式 `error` 事件结束；搜索与流式画像共享当前请求序号，全部论文分页及 SSE 触发的最新版读取也使用 `AbortController`，前端不会把中断或旧请求结果覆盖到新选择的学者。
+- 主画像以 `queued/updating/failed/ready` 四种持久状态对外；查询历史轮询和 SSE 都只传递稳定状态、版本与用户可理解的错误，不暴露工作流内部提示词或模型响应。兼容 NDJSON 接口仍把 LangGraph 节点映射为四个稳定阶段。
+- 搜索使用 30 秒总超时；同一冷查询最多等待共享任务 25 秒，超时返回可重试 503。网络、超时、429、401、数据源未配置和 worker 失败分别映射为独立前端状态。OpenAlex 客户端显式接收服务端 key，在重试耗尽后保留上游状态码和 `Retry-After`，但不会把 key 写入异常；每次上游响应把平台额度写入 PostgreSQL，达到保留线后阻止新的上游请求并优先返回缓存。
+- 流式兼容接口的外部数据错误仍通过 `error` 事件结束；搜索与流式对比共享当前请求序号，全部论文分页及 SSE 触发的最新版读取也使用 `AbortController`，前端不会把中断或旧请求结果覆盖到新选择的学者。
 - 追踪/历史和全部论文面板分别提供 loading、empty、error 与 retry 状态；错误态不会同时渲染为空态。
 
 ## 实时更新

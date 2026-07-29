@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import {
   Search, BarChart3, Users,
   ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe,
-  Heart, History, House, LogIn, LogOut, RefreshCw, ShieldCheck,
+  Heart, History, House, LogIn, RefreshCw, ShieldCheck,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -13,6 +13,7 @@ import type { Candidate, ScholarProfile } from "./types"
 import {
   ApiError,
   addTracking,
+  getHistory,
   getProfile,
   getTracking,
   markTrackingSeen,
@@ -21,7 +22,8 @@ import {
   refreshProfile,
   removeTracking,
   searchAuthors,
-  streamProfile,
+  startProfileJob,
+  type ScholarListItem,
   type ApiErrorKind,
 } from "./api"
 import { useAuth } from "./auth"
@@ -31,6 +33,7 @@ import ScholarComparison from "@/components/ScholarComparison"
 import ProfileSection from "@/components/ProfileSection"
 import AdminDashboard from "@/components/AdminDashboard"
 import LandingHero from "@/components/LandingHero"
+import UserMenu from "@/components/UserMenu"
 
 interface WorkflowStage {
   node: string
@@ -240,7 +243,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
 
 export default function App() {
   const { t, lang, setLang } = useTranslation()
-  const { user, refreshUser, signOut } = useAuth()
+  const { user, refreshUser } = useAuth()
 
   // 搜索状态
   const [query, setQuery] = useState("")
@@ -258,6 +261,12 @@ export default function App() {
   const [adminOpen, setAdminOpen] = useState(false)
   const [favorite, setFavorite] = useState(false)
   const [liveUpdateMessage, setLiveUpdateMessage] = useState("")
+  const [queuedProfile, setQueuedProfile] = useState<{
+    authorId: string
+    name: string
+    status: "queued" | "updating" | "failed"
+  } | null>(null)
+  const [completionNotice, setCompletionNotice] = useState<ScholarListItem | null>(null)
 
   // 图谱全屏状态
   const [graphFullscreen, setGraphFullscreen] = useState(false)
@@ -268,6 +277,9 @@ export default function App() {
   const [trackingRevision, setTrackingRevision] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const requestSeqRef = useRef(0)
+  const historyStatusesRef = useRef<Map<string, ScholarListItem["refresh_status"]>>(new Map())
+  const historyInitializedRef = useRef(false)
+  const queuedProfileRef = useRef<typeof queuedProfile>(null)
 
   const reportError = useCallback((message: string, kind: ApiErrorKind = "server") => {
     setError(lang === "en" ? t(`error.detail.${kind}`) : message)
@@ -295,16 +307,86 @@ export default function App() {
   }, [dark])
 
   useEffect(() => {
+    const root = document.documentElement
+    root.classList.remove("theme-green", "theme-purple", "theme-orange")
+    const selectedTheme = user?.theme ?? "default"
+    if (selectedTheme !== "default") root.classList.add(`theme-${selectedTheme}`)
+  }, [user?.theme])
+
+  useEffect(() => {
+    queuedProfileRef.current = queuedProfile
+  }, [queuedProfile])
+
+  useEffect(() => {
     void recordPageVisit().catch(() => undefined)
   }, [])
 
-  const loadProfile = useCallback(async (authorId: string, authorIds?: string[]) => {
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
+  useEffect(() => {
+    if (!user) {
+      historyInitializedRef.current = false
+      historyStatusesRef.current.clear()
+      return
+    }
+    let active = true
+    const poll = async () => {
+      try {
+        const items = await getHistory()
+        if (!active) return
+        const previous = historyStatusesRef.current
+        if (historyInitializedRef.current) {
+          for (const item of items) {
+            const before = previous.get(item.author_id)
+            if (
+              (before === "queued" || before === "updating")
+              && item.refresh_status === "ready"
+            ) {
+              setCompletionNotice(item)
+              if (queuedProfileRef.current?.authorId === item.author_id) {
+                setQueuedProfile(null)
+                void getProfile(item.author_id).then((latest) => {
+                  if (!active) return
+                  setProfile(latest)
+                  setSearched(true)
+                }).catch(() => undefined)
+              }
+            }
+            if (item.refresh_status === "failed") {
+              setQueuedProfile((current) => current?.authorId === item.author_id
+                ? { ...current, status: "failed" }
+                : current
+              )
+            } else if (item.refresh_status === "updating") {
+              setQueuedProfile((current) => current?.authorId === item.author_id
+                ? { ...current, status: "updating" }
+                : current
+              )
+            }
+          }
+        }
+        historyStatusesRef.current = new Map(
+          items.map((item) => [item.author_id, item.refresh_status]),
+        )
+        historyInitializedRef.current = true
+      } catch {
+        // Account polling is best-effort and never interrupts the current page.
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 4000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [user])
+
+  const loadProfile = useCallback(async (
+    authorId: string,
+    authorIds?: string[],
+    scholarName = query,
+  ) => {
     const requestId = requestSeqRef.current + 1
     requestSeqRef.current = requestId
-    const isCurrent = () => requestSeqRef.current === requestId && !controller.signal.aborted
+    const isCurrent = () => requestSeqRef.current === requestId
     setPanel(null)
     setAccountMode(null)
     setComparisonOpen(false)
@@ -313,65 +395,41 @@ export default function App() {
     setErrorKind(null)
     setNoResults(false)
     setProfile(null)
+    setQueuedProfile(null)
     setFavorite(false)
     setCandidates([])
-    setWorkflowStages([])
-    setWorkflowProgress(0)
-    setWorkflowMessage("")
-    await streamProfile(authorId, {
-      onInit: (stages) => {
-        if (!isCurrent()) return
-        setWorkflowStages(stages.map((s, i) => ({
-          node: s, label: t(`progress.stage.${s}`),
-          status: i === 0 ? 'running' as const : 'pending' as const,
-        })))
-        setWorkflowProgress(1)
-        setWorkflowMessage(t(`progress.message.${stages[0]}`))
-      },
-      onStage: (node, status) => {
-        if (!isCurrent()) return
-        setWorkflowStages(prev => {
-          const idx = prev.findIndex(s => s.node === node)
-          if (idx < 0) return prev
-          const next = prev.map(s => ({ ...s }))
-          next[idx] = { ...next[idx], status: status === 'running' ? 'running' : 'completed' }
-          if (status === 'completed' && idx + 1 < next.length && next[idx + 1].status === 'pending') {
-            next[idx + 1] = { ...next[idx + 1], status: 'running' }
-          }
-          return next
-        })
-        setWorkflowMessage(t(`progress.message.${node}`))
-      },
-      onProgress: (progress, _message, node, messageCode) => {
-        if (!isCurrent()) return
-        setWorkflowProgress(prev => Math.max(prev, Math.min(progress, 100)))
-        setWorkflowMessage(t(`progress.message.${messageCode ?? node ?? "default"}`))
-        if (node) {
-          setWorkflowStages(prev => prev.map(stage =>
-            stage.node === node && stage.status === "pending"
-              ? { ...stage, status: "running" }
-              : stage
-          ))
-        }
-      },
-      onResult: (data, meta) => {
-        if (!isCurrent()) return
-        setProfile({
-          ...data,
-          profileVersion: meta.profileVersion ?? data.profileVersion,
-          refreshStatus: (meta.refreshStatus as ScholarProfile["refreshStatus"]) ?? data.refreshStatus,
-        })
+    try {
+      const result = await startProfileJob(
+        authorId,
+        authorIds?.length ? authorIds : [authorId],
+        scholarName,
+      )
+      if (!isCurrent()) return
+      if (result.status === "ready" && result.data) {
+        setProfile(result.data)
         setLoading(false)
-        setTimeout(() => setWorkflowStages([]), 600)
-      },
-      onError: (err, kind) => {
-        if (!isCurrent()) return
-        reportError(err, kind ?? "worker")
-        setLoading(false)
-        setWorkflowMessage("")
-      },
-    }, { signal: controller.signal, authorIds })
-  }, [reportError, t])
+        return
+      }
+      setQueuedProfile({
+        authorId,
+        name: result.name || scholarName || authorId,
+        status: result.status === "updating" ? "updating" : "queued",
+      })
+      historyStatusesRef.current.set(
+        authorId,
+        result.status === "updating" ? "updating" : "queued",
+      )
+      historyInitializedRef.current = true
+      setLoading(false)
+    } catch (reason: unknown) {
+      if (!isCurrent()) return
+      reportError(
+        reason instanceof Error ? reason.message : t("error.detail.worker"),
+        reason instanceof ApiError ? reason.kind : "worker",
+      )
+      setLoading(false)
+    }
+  }, [query, reportError, t])
 
   useEffect(() => {
     if (!user || !profile) return
@@ -545,18 +603,18 @@ export default function App() {
 
   const handleCandidateSelect = useCallback((candidate: Candidate) => {
     setQuery(candidate.name)
-    void loadProfile(candidate.id, candidate.merged_ids)
+    void loadProfile(candidate.id, candidate.merged_ids, candidate.name)
   }, [loadProfile])
 
   const handleViewProfile = useCallback(async (authorId: string, scholarName: string) => {
     setQuery(scholarName)
-    await loadProfile(authorId)
+    await loadProfile(authorId, undefined, scholarName)
   }, [loadProfile])
 
   const handleAccountSelect = useCallback((authorId: string, scholarName: string) => {
     setAccountMode(null)
     setQuery(scholarName)
-    void loadProfile(authorId)
+    void loadProfile(authorId, undefined, scholarName)
   }, [loadProfile])
 
   const openAccountPanel = useCallback((mode: "history" | "favorites") => {
@@ -579,6 +637,7 @@ export default function App() {
     setQuery("")
     setCandidates([])
     setProfile(null)
+    setQueuedProfile(null)
     setError(null)
     setErrorKind(null)
     setNoResults(false)
@@ -600,6 +659,7 @@ export default function App() {
 
   const sidePanelOpen = Boolean((panel || accountMode) && !graphFullscreen)
   const showLanding = !profile
+    && !queuedProfile
     && !searched
     && !loading
     && !error
@@ -687,13 +747,6 @@ export default function App() {
                   <Heart className="h-4 w-4" />
                   <span className="hidden lg:inline">{t("account.favorites")}</span>
                 </Button>
-                <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => {
-                  setFavorite(false)
-                  setAdminOpen(false)
-                  void signOut()
-                }}>
-                  <LogOut className="h-3.5 w-3.5" /><span className="hidden md:inline">{t("auth.sign_out")}</span>
-                </Button>
               </>
             ) : (
               <Button variant="outline" size="sm" className="h-8 gap-1 text-xs" onClick={() => setAuthDialogOpen(true)}>
@@ -707,14 +760,7 @@ export default function App() {
                 <span className="hidden md:inline">{t("nav.new_search")}</span>
               </Button>
             )}
-            {user && (
-              <span
-                className="scholar-user-chip hidden max-w-32 truncate sm:inline"
-                title={user.username}
-              >
-                {user.username}
-              </span>
-            )}
+            {user && <UserMenu lang={lang} />}
           </div>
         </div>
       </header>
@@ -783,6 +829,62 @@ export default function App() {
         <div className="fixed bottom-4 left-1/2 z-[80] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 rounded-md border bg-background px-4 py-3 text-center text-sm shadow-lg sm:bottom-5">
           {liveUpdateMessage}
         </div>
+      )}
+
+      {completionNotice && (
+        <div className="scholar-completion-toast" role="status">
+          <div>
+            <strong>{t("background.completed")}</strong>
+            <span>{completionNotice.name}</span>
+          </div>
+          <Button size="sm" onClick={() => {
+            const item = completionNotice
+            setCompletionNotice(null)
+            setQuery(item.name)
+            void loadProfile(item.author_id, undefined, item.name)
+          }}>
+            {t("background.view")}
+          </Button>
+          <button type="button" aria-label={t("panel.close")} onClick={() => setCompletionNotice(null)}>×</button>
+        </div>
+      )}
+
+      {queuedProfile && !profile && !error && (
+        <section className="scholar-background-job">
+          <div className="scholar-background-job-icon">
+            {queuedProfile.status === "failed"
+              ? <AlertCircle />
+              : <Loader2 className="animate-spin" />}
+          </div>
+          <div>
+            <p>{queuedProfile.status === "failed" ? t("background.failed") : t("background.title")}</p>
+            <h2>{queuedProfile.name}</h2>
+            <span>
+              {queuedProfile.status === "queued"
+                ? t("background.queued")
+                : queuedProfile.status === "updating"
+                  ? t("background.running")
+                  : t("background.failed_desc")}
+            </span>
+          </div>
+          <div className="scholar-background-job-actions">
+            <Button variant="outline" onClick={handleReset}>
+              <House className="h-4 w-4" />{t("nav.home")}
+            </Button>
+            <Button variant="ghost" onClick={() => openAccountPanel("history")}>
+              <History className="h-4 w-4" />{t("account.history")}
+            </Button>
+            {queuedProfile.status === "failed" && (
+              <Button onClick={() => void loadProfile(
+                queuedProfile.authorId,
+                undefined,
+                queuedProfile.name,
+              )}>
+                <RefreshCw className="h-4 w-4" />{t("error.retry")}
+              </Button>
+            )}
+          </div>
+        </section>
       )}
 
       {/* 用户可理解的四阶段画像进度 */}

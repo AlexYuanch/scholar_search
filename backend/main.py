@@ -278,10 +278,24 @@ def _record_access(author_id: str, query_name: str, user: AuthUser | None) -> No
 
 def _auth_user_payload(user: AuthUser | dict) -> dict:
     role = str(user.role if isinstance(user, AuthUser) else user.get("role") or "user")
+    username = str(user.username if isinstance(user, AuthUser) else user["username"])
     return {
         "id": str(user.id if isinstance(user, AuthUser) else user["id"]),
-        "username": str(
-            user.username if isinstance(user, AuthUser) else user["username"]
+        "username": username,
+        "display_name": str(
+            user.display_name
+            if isinstance(user, AuthUser)
+            else user.get("display_name") or username
+        ),
+        "avatar_key": str(
+            user.avatar_key
+            if isinstance(user, AuthUser)
+            else user.get("avatar_key") or "initials"
+        ),
+        "theme": str(
+            user.theme
+            if isinstance(user, AuthUser)
+            else user.get("theme") or "default"
         ),
         "role": role,
         "can_view_admin": role in {"admin", "super_admin"},
@@ -544,6 +558,17 @@ class PasswordLoginRequest(BaseModel):
     password: str = Field(min_length=12, max_length=256)
 
 
+class AccountProfileRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=40)
+    avatar_key: str = Field(pattern="^(initials|sage|ocean|sunset|plum|gold)$")
+    theme: str = Field(pattern="^(default|green|purple|orange)$")
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=12, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
 class OpenAlexCredentialRequest(BaseModel):
     api_key: str = Field(min_length=8, max_length=512)
 
@@ -602,6 +627,9 @@ def _authenticated_response(user: dict, request: Request, status_code: int = 200
         id=str(user["id"]),
         username=str(user["username"]),
         role=str(user.get("role") or "user"),
+        display_name=str(user.get("display_name") or user["username"]),
+        avatar_key=str(user.get("avatar_key") or "initials"),
+        theme=str(user.get("theme") or "default"),
     )
     request.state.auth_user = auth_user
     response = JSONResponse({
@@ -686,6 +714,38 @@ def auth_logout(request: Request):
         samesite="lax",
     )
     return response
+
+
+@app.patch("/api/account/profile")
+def account_profile(
+    req: AccountProfileRequest,
+    user: AuthUser = Depends(require_user),
+):
+    updated = repository.update_user_preferences(
+        user.id,
+        req.display_name.strip(),
+        req.avatar_key,
+        req.theme,
+    )
+    return {"status": "success", "user": _auth_user_payload(updated)}
+
+
+@app.post("/api/account/password")
+def account_password(
+    req: PasswordChangeRequest,
+    request: Request,
+    user: AuthUser = Depends(require_user),
+):
+    stored = repository.get_user_for_login(user.username)
+    if not stored or not verify_password(req.current_password, stored["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if req.current_password == req.new_password:
+        raise HTTPException(status_code=400, detail="New password must be different")
+    repository.set_password(user.username, hash_password(req.new_password))
+    updated = repository.get_user_for_login(user.username)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _authenticated_response(updated, request)
 
 
 @app.post("/api/analytics/visit", status_code=204)
@@ -849,6 +909,75 @@ def search(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/profile/jobs")
+def queue_profile(
+    req: ProfileRequest,
+    request: Request,
+    user: AuthUser = Depends(require_user),
+):
+    """Return cached data immediately or enqueue a durable first-time profile job."""
+    cached = repository.get_profile(req.author_id)
+    if cached:
+        refresh_status = _queue_stale_profile(req.author_id, cached, user.id)
+        _record_access(req.author_id, req.query_name or cached.get("query_name", ""), user)
+        data = _payload_with_defaults(req.author_id, cached["payload"], cached)
+        data["refreshStatus"] = refresh_status
+        _record_usage_event(
+            request,
+            "profile_view",
+            user,
+            scholar_id=cached.get("scholar_id"),
+        )
+        return {
+            "status": "ready",
+            "source": "cache",
+            "job_id": None,
+            "scholar_id": cached.get("scholar_id", ""),
+            "profile_version": cached.get("profile_version", 0),
+            "refresh_status": refresh_status,
+            "data": data,
+        }
+
+    current_history = repository.list_history(user.id, limit=100)
+    active = next(
+        (
+            item for item in current_history
+            if item.get("author_id") == req.author_id
+            and item.get("refresh_status") in {"queued", "updating"}
+        ),
+        None,
+    )
+    if not active:
+        _require_openalex_credential(user)
+        _consume_api_quota("profile", user, request)
+    job_id = repository.enqueue_initial_profile(
+        req.author_id,
+        req.query_name.strip(),
+        user.id,
+        _requested_author_ids(req),
+    )
+    history_item = next(
+        (
+            item for item in repository.list_history(user.id, limit=100)
+            if item.get("author_id") == req.author_id
+        ),
+        {},
+    )
+    _record_usage_event(
+        request,
+        "profile_queued",
+        user,
+        scholar_id=history_item.get("scholar_id"),
+    )
+    return {
+        "status": history_item.get("refresh_status") or "queued",
+        "job_id": job_id,
+        "scholar_id": history_item.get("scholar_id", ""),
+        "profile_version": int(history_item.get("profile_version") or 0),
+        "name": history_item.get("name") or req.query_name,
+    }
 
 
 @app.post("/api/profile")

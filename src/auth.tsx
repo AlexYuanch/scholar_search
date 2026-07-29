@@ -5,6 +5,9 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api"
 export interface AuthUser {
   id: string
   username: string
+  display_name: string
+  avatar_key: "initials" | "sage" | "ocean" | "sunset" | "plum" | "gold"
+  theme: "default" | "green" | "purple" | "orange"
   role: "user" | "admin" | "super_admin"
   can_view_admin: boolean
   can_manage_admins: boolean
@@ -17,6 +20,8 @@ interface AuthContextValue {
   register: (username: string, password: string) => Promise<void>
   signOut: () => Promise<void>
   refreshUser: () => Promise<void>
+  updateProfile: (preferences: Pick<AuthUser, "display_name" | "avatar_key" | "theme">) => Promise<void>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -64,6 +69,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     user,
     refreshUser,
+    updateProfile: async (preferences) => {
+      const response = await request("/account/profile", {
+        method: "PATCH",
+        body: JSON.stringify(preferences),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.detail ?? `Profile update failed (${response.status})`)
+      setUser(payload.user)
+    },
+    changePassword: async (currentPassword, newPassword) => {
+      const response = await request("/account/password", {
+        method: "POST",
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.detail ?? `Password update failed (${response.status})`)
+      setUser(payload.user)
+    },
     signIn: async (username: string, password: string) => {
       const response = await request("/auth/login", {
         method: "POST",
