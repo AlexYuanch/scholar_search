@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Maximize2, Minimize2 } from "lucide-react"
+import { LocateFixed, Maximize2, Minimize2 } from "lucide-react"
 import { DataSet } from "vis-data"
 import { Network } from "vis-network"
 import { Button } from "@/components/ui/button"
@@ -38,7 +38,13 @@ interface VisNode {
     border: string
     highlight: { background: string; border: string }
   }
-  font: { size: number; color: string; vadjust?: number }
+  font: {
+    size: number
+    color: string
+    vadjust?: number
+    strokeWidth?: number
+    strokeColor?: string
+  }
   borderWidth?: number
 }
 
@@ -52,13 +58,28 @@ interface VisEdge {
   font: { size: number; align: "middle"; color: string; strokeWidth: number }
 }
 
-function heatColor(weight: number, maxWeight: number) {
+interface GraphPalette {
+  center: string
+  centerBorder: string
+  low: string
+  medium: string
+  high: string
+  peak: string
+  edge: string
+  label: string
+  labelStroke: string
+}
+
+function themeColor(styles: CSSStyleDeclaration, name: string, fallback: string) {
+  return styles.getPropertyValue(name).trim() || fallback
+}
+
+function heatColor(weight: number, maxWeight: number, palette: GraphPalette) {
   const ratio = maxWeight <= 1 ? 0 : weight / maxWeight
-  if (ratio > 0.8) return "#ef4444"
-  if (ratio > 0.6) return "#f97316"
-  if (ratio > 0.4) return "#eab308"
-  if (ratio > 0.2) return "#22c55e"
-  return "#3b82f6"
+  if (ratio > 0.78) return palette.peak
+  if (ratio > 0.5) return palette.high
+  if (ratio > 0.25) return palette.medium
+  return palette.low
 }
 
 export default function CollaborationGraph({
@@ -73,6 +94,7 @@ export default function CollaborationGraph({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const networkRef = useRef<Network | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
+  const [themeRevision, setThemeRevision] = useState(0)
 
   const nameById = useMemo(
     () => new Map(graphNodes.map((node) => [node.id, node.name])),
@@ -97,16 +119,34 @@ export default function CollaborationGraph({
   }, [fullscreen, onFullscreenChange])
 
   useEffect(() => {
+    const observer = new MutationObserver(() => setThemeRevision((value) => value + 1))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] })
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
     const container = containerRef.current
     if (!container || !graphNodes.length) return
 
     networkRef.current?.destroy()
+    const styles = window.getComputedStyle(document.documentElement)
+    const palette: GraphPalette = {
+      center: themeColor(styles, "--graph-center", "#287f73"),
+      centerBorder: themeColor(styles, "--graph-center-border", "#185f57"),
+      low: themeColor(styles, "--graph-low", "#8aaca0"),
+      medium: themeColor(styles, "--graph-medium", "#66869a"),
+      high: themeColor(styles, "--graph-high", "#b38a4c"),
+      peak: themeColor(styles, "--graph-peak", "#b56f62"),
+      edge: themeColor(styles, "--graph-edge", "rgba(86, 113, 105, 0.36)"),
+      label: themeColor(styles, "--graph-label", "#34443d"),
+      labelStroke: themeColor(styles, "--graph-label-stroke", "#faf9f5"),
+    }
 
     const nodes = new DataSet(
       graphNodes.map((node): VisNode => {
         const isCenter = node.type === "center"
         const weight = weightByNode.get(node.id) ?? 1
-        const color = isCenter ? "#2563eb" : heatColor(weight, maxWeight)
+        const color = isCenter ? palette.center : heatColor(weight, maxWeight, palette)
         const shortId = node.id.split("/").filter(Boolean).at(-1) ?? node.id
         const publicationAffiliation = node.institution?.trim()
         const identity = publicationAffiliation || shortId
@@ -124,13 +164,15 @@ export default function CollaborationGraph({
           size: isCenter ? 32 : 16 + Math.log2(weight + 1) * 4,
           color: {
             background: color,
-            border: isCenter ? "#1d4ed8" : color,
-            highlight: { background: color, border: "#111827" },
+            border: isCenter ? palette.centerBorder : color,
+            highlight: { background: color, border: palette.label },
           },
           font: {
             size: isCenter ? 16 : 13,
-            color: "#334155",
+            color: palette.label,
             vadjust: isCenter ? -4 : 0,
+            strokeWidth: 3,
+            strokeColor: palette.labelStroke,
           },
           borderWidth: isCenter ? 3 : 1,
         }
@@ -144,8 +186,8 @@ export default function CollaborationGraph({
         to: edge.target,
         width: 1 + Math.sqrt(edge.weight),
         label: edge.weight > 1 ? `${edge.weight}${t("graph.edge_label")}` : "",
-        color: { color: "rgba(100, 116, 139, 0.45)", highlight: "#2563eb" },
-        font: { size: 11, align: "middle", color: "#64748b", strokeWidth: 3 },
+        color: { color: palette.edge, highlight: palette.center },
+        font: { size: 11, align: "middle", color: palette.label, strokeWidth: 3 },
       })),
     )
 
@@ -154,10 +196,12 @@ export default function CollaborationGraph({
       interaction: {
         dragNodes: true,
         dragView: true,
-        hover: false,
+        hover: true,
+        hoverConnectedEdges: true,
         multiselect: false,
         navigationButtons: true,
         selectConnectedEdges: false,
+        tooltipDelay: 180,
         zoomSpeed: 0.15,
       },
       physics: {
@@ -179,6 +223,28 @@ export default function CollaborationGraph({
     })
 
     networkRef.current = network
+    let resizeTimer: number | undefined
+    const resizeObserver = new ResizeObserver(() => {
+      window.clearTimeout(resizeTimer)
+      resizeTimer = window.setTimeout(() => {
+        network.redraw()
+        network.fit({ animation: false })
+      }, 120)
+    })
+    resizeObserver.observe(container)
+
+    network.on("hoverNode", () => {
+      container.style.cursor = "pointer"
+    })
+    network.on("hoverEdge", () => {
+      container.style.cursor = "pointer"
+    })
+    network.on("blurNode", () => {
+      container.style.cursor = ""
+    })
+    network.on("blurEdge", () => {
+      container.style.cursor = ""
+    })
 
     network.on("click", (params: GraphClickParams) => {
       const clickedEdge = params.edges[0]
@@ -222,10 +288,12 @@ export default function CollaborationGraph({
     })
 
     return () => {
+      window.clearTimeout(resizeTimer)
+      resizeObserver.disconnect()
       network.destroy()
       networkRef.current = null
     }
-  }, [graphNodes, graphEdges, maxWeight, name, nameById, onEdgeClick, onNodeClick, t, weightByNode])
+  }, [graphNodes, graphEdges, maxWeight, name, nameById, onEdgeClick, onNodeClick, t, themeRevision, weightByNode])
 
   if (!graphNodes.length) {
     return <p className="text-sm text-muted-foreground">{t("panel.no_papers")}</p>
@@ -234,25 +302,58 @@ export default function CollaborationGraph({
   return (
     <div className={fullscreen ? "fixed inset-0 z-50 bg-background p-4" : "relative"}>
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
           <span className="inline-flex items-center gap-1">
-            <span className="h-3 w-3 rounded-full bg-primary" />
+            <span className="h-3 w-3 rounded-full bg-[var(--graph-center)]" />
             <span className="text-muted-foreground">{t("graph.center_author")}</span>
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="h-3 w-3 rounded-full bg-[#22c55e]" />
-            <span className="text-muted-foreground">{t("graph.coauthor")}</span>
+            <span className="h-3 w-3 rounded-full bg-[var(--graph-low)]" />
+            <span className="text-muted-foreground">{t("graph.strength_low")}</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-3 w-3 rounded-full bg-[var(--graph-medium)]" />
+            <span className="text-muted-foreground">{t("graph.strength_medium")}</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-3 w-3 rounded-full bg-[var(--graph-high)]" />
+            <span className="text-muted-foreground">{t("graph.strength_high")}</span>
           </span>
           <span className="text-muted-foreground">{t("graph.width_hint")}</span>
         </div>
-        <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => setFullscreen((value) => !value)}>
-          {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            title={t("graph.reset_view")}
+            aria-label={t("graph.reset_view")}
+            onClick={() => networkRef.current?.fit({
+              animation: { duration: 350, easingFunction: "easeInOutQuad" },
+            })}
+          >
+            <LocateFixed className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            title={fullscreen ? t("graph.exit_fullscreen") : t("graph.fullscreen")}
+            aria-label={fullscreen ? t("graph.exit_fullscreen") : t("graph.fullscreen")}
+            onClick={() => setFullscreen((value) => !value)}
+          >
+            {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
+        </div>
       </div>
 
       <div
         ref={containerRef}
-        className={fullscreen ? "h-[calc(100dvh-5rem)] rounded-md border bg-card" : "h-[clamp(22rem,58dvh,32.5rem)] rounded-md border bg-card"}
+        className={`scholar-collaboration-canvas ${
+          fullscreen
+            ? "h-[calc(100dvh-5rem)] rounded-md border"
+            : "h-[clamp(22rem,58dvh,32.5rem)] rounded-md border"
+        }`}
       />
 
       <p className="mt-2 text-xs text-muted-foreground">{t("graph.operate_hint")}</p>

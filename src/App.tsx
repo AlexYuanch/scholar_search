@@ -611,7 +611,7 @@ export default function App() {
 
       {/* Navbar */}
       <header className={`scholar-header sticky top-0 z-30 border-b ${graphFullscreen ? "hidden" : ""}`}>
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-2 px-3 sm:px-6">
+        <div className="flex h-14 w-full items-center justify-between gap-2 px-3 sm:px-6 lg:px-8">
           <button type="button" className="scholar-brand" onClick={handleReset}>
             <BarChart3 className="h-5 w-5" />
             <span className={user ? "hidden sm:inline" : ""}>ScholarSearch</span>
@@ -665,12 +665,6 @@ export default function App() {
                     <span className="hidden lg:inline">{t("admin.nav")}</span>
                   </Button>
                 )}
-                <span
-                  className="hidden max-w-24 truncate rounded-md bg-muted px-2 py-1 text-xs font-medium text-foreground sm:inline"
-                  title={user.username}
-                >
-                  {user.username}
-                </span>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -713,12 +707,20 @@ export default function App() {
                 <span className="hidden md:inline">{t("nav.new_search")}</span>
               </Button>
             )}
+            {user && (
+              <span
+                className="scholar-user-chip hidden max-w-32 truncate sm:inline"
+                title={user.username}
+              >
+                {user.username}
+              </span>
+            )}
           </div>
         </div>
       </header>
 
-      <div className={`${adminOpen ? "hidden" : ""} ${sidePanelOpen ? "lg:grid lg:grid-cols-[minmax(0,1fr)_clamp(22rem,32vw,30rem)]" : ""}`}>
-        <main className="min-w-0">
+      <div className={`${adminOpen ? "hidden" : ""} scholar-workspace ${sidePanelOpen ? "scholar-workspace--panel" : ""}`}>
+        <main className="scholar-workspace-main min-w-0">
 
       {/* 搜索区 */}
       {!graphFullscreen && (

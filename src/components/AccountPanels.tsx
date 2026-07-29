@@ -215,10 +215,11 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
       <button
         type="button"
         aria-label={t("panel.close")}
-        className="fixed inset-x-0 bottom-0 top-14 z-40 bg-black/30 lg:hidden"
+        className="scholar-panel-backdrop"
         onClick={onClose}
       />
-      <aside className="fixed right-0 top-14 z-50 flex h-[calc(100dvh-3.5rem)] w-full max-w-md flex-col border-l bg-background shadow-xl lg:sticky lg:right-auto lg:z-20 lg:max-w-none lg:self-start lg:shadow-none">
+      <aside className="scholar-side-panel scholar-side-panel--responsive">
+        <div className="scholar-panel-surface flex h-full flex-col">
         <div className="flex shrink-0 items-center justify-between border-b p-5">
           <h2 className="flex items-center gap-2 font-semibold">
             {mode === "history" ? <BookOpen className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
@@ -330,6 +331,7 @@ export function AccountPanel({ mode, onClose, onSelect, onTrackingChange, tracki
               </Card>
             ))}
           </div>
+        </div>
         </div>
       </aside>
     </>
