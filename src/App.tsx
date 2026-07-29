@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import {
   Search, BarChart3, Users,
   ArrowRight, Loader2, AlertCircle, Check, ChevronRight, Sun, Moon, Globe,
-  Heart, History, LogIn, LogOut, RefreshCw, BookOpen, Network, ShieldCheck,
+  Heart, History, LogIn, LogOut, RefreshCw, ShieldCheck,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -30,13 +30,13 @@ import { AccountPanel, AuthDialog } from "@/components/AccountPanels"
 import ScholarComparison from "@/components/ScholarComparison"
 import ProfileSection from "@/components/ProfileSection"
 import AdminDashboard from "@/components/AdminDashboard"
+import LandingHero from "@/components/LandingHero"
 
 interface WorkflowStage {
   node: string
   label: string
   status: "pending" | "running" | "completed"
 }
-type Accent = "blue" | "green" | "purple" | "orange"
 type PanelPaper = string | { title: string; id?: string; topics?: string[] }
 type CandidateSortKey = "recommended" | "papers" | "citations" | "hIndex" | "latest"
 type CandidateIdentityGroup = "high" | "medium" | "review"
@@ -110,7 +110,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
   }
 
   return (
-    <section className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+    <section className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
       <h2 className="text-lg font-semibold">
         {t("candidate.result_count").replace("{count}", String(candidates.length))}
       </h2>
@@ -118,7 +118,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
         {t("candidate.confirm_prompt")}
       </p>
       {candidates.length > 1 && (
-        <div className="my-5 space-y-3 rounded-xl border bg-muted/20 p-3 sm:p-4">
+        <div className="my-5 space-y-3 rounded-2xl border bg-card/70 p-3 shadow-sm sm:p-4">
           <div className="grid gap-2 sm:grid-cols-2">
             <input
               value={institutionQuery}
@@ -168,7 +168,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
       <div className="mt-5 space-y-3">
         {filteredCandidates.map((c) => (
           <Card key={c.id}
-            className="overflow-hidden transition-colors hover:border-primary/30"
+            className="overflow-hidden transition-all hover:-translate-y-0.5 hover:border-primary/35"
           >
             <CardContent className="min-w-0 p-5">
               <div className="flex min-w-0 items-start gap-4">
@@ -276,11 +276,7 @@ export default function App() {
   }, [lang, refreshUser, t])
 
   // 主题状态
-  const [dark, setDark] = useState(() => localStorage.getItem("dark") === "true")
-  const [accent, setAccent] = useState<Accent>(() =>
-    (localStorage.getItem("accent") as Accent) ?? "blue"
-  )
-
+  const [dark, setDark] = useState(() => localStorage.getItem("dark") !== "false")
   // 侧面板状态
   const [panel, setPanel] = useState<{
     type: "edge" | "coauthor" | "center"
@@ -301,13 +297,6 @@ export default function App() {
   useEffect(() => {
     void recordPageVisit().catch(() => undefined)
   }, [])
-
-  useEffect(() => {
-    const root = document.documentElement
-    root.className = root.className.replace(/theme-\w+/g, "").trim()
-    if (accent !== "blue") root.classList.add(`theme-${accent}`)
-    localStorage.setItem("accent", accent)
-  }, [accent])
 
   const loadProfile = useCallback(async (authorId: string, authorIds?: string[]) => {
     abortRef.current?.abort()
@@ -611,42 +600,35 @@ export default function App() {
     return () => abortRef.current?.abort()
   }, [])
 
-  const accents: { key: Accent; label: string; color: string }[] = [
-    { key: "blue", label: t("theme.blue"), color: "bg-[#3b82f6]" },
-    { key: "green", label: t("theme.green"), color: "bg-[#22c55e]" },
-    { key: "purple", label: t("theme.purple"), color: "bg-[#a855f7]" },
-    { key: "orange", label: t("theme.orange"), color: "bg-[#f97316]" },
-  ]
   const sidePanelOpen = Boolean((panel || accountMode) && !graphFullscreen)
+  const showLanding = !profile
+    && !searched
+    && !loading
+    && !error
+    && !candidates.length
+    && workflowStages.length === 0
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="scholar-app min-h-screen bg-background">
 
       {/* Navbar */}
-      <header className={`sticky top-0 z-30 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 ${graphFullscreen ? "hidden" : ""}`}>
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-2 px-3 sm:px-6">
-          <div className="flex items-center gap-2 font-semibold cursor-pointer" onClick={handleReset}>
-            <BarChart3 className="h-5 w-5 text-primary" />
-            <span className="hidden sm:inline">ScholarSearch</span>
-          </div>
+      <header className={`scholar-header sticky top-0 z-30 border-b ${graphFullscreen ? "hidden" : ""}`}>
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-2 px-3 sm:px-6">
+          <button type="button" className="scholar-brand" onClick={handleReset}>
+            <BarChart3 className="h-5 w-5" />
+            <span className={user ? "hidden sm:inline" : ""}>ScholarSearch</span>
+            <small className="hidden sm:inline">{lang === "zh" ? "科研助手" : "Research assistant"}</small>
+          </button>
 
-          <div className="flex items-center gap-1">
-            {/* 强调色切换 */}
-            <div className="mr-1 hidden items-center gap-0.5 rounded-md border p-0.5 xl:flex">
-              {accents.map(a => (
-                <button
-                  key={a.key}
-                  onClick={() => setAccent(a.key)}
-                  className={`h-5 w-5 rounded-sm ${a.color} transition-transform hover:scale-125 ${
-                    accent === a.key ? "ring-2 ring-ring ring-offset-1" : "opacity-50"
-                  }`}
-                  title={a.label}
-                />
-              ))}
-            </div>
-
+          <div className="scholar-nav-actions flex items-center gap-1">
             {/* 暗色模式 */}
-            <Button variant="ghost" size="icon" className="hidden h-8 w-8 sm:inline-flex" onClick={() => setDark(!dark)}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="scholar-theme-button hidden h-8 w-8 sm:inline-flex"
+              onClick={() => setDark(!dark)}
+              title={t(dark ? "theme.light" : "theme.dark")}
+            >
               {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
 
@@ -709,7 +691,7 @@ export default function App() {
                 </Button>
               </>
             ) : (
-              <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={() => setAuthDialogOpen(true)}>
+              <Button variant="outline" size="sm" className="h-8 gap-1 text-xs" onClick={() => setAuthDialogOpen(true)}>
                 <LogIn className="h-3.5 w-3.5" />{t("auth.sign_in")}
               </Button>
             )}
@@ -728,58 +710,38 @@ export default function App() {
         <main className="min-w-0">
 
       {/* 搜索区 */}
-      <section className={`relative overflow-hidden border-b bg-gradient-to-b from-background to-muted/30 ${graphFullscreen ? "hidden" : ""}`}>
-        <div className="mx-auto max-w-5xl px-4 py-10 text-center sm:px-6 sm:py-16">
-          {!profile && (
-            <>
-              <h1 className="mb-4 text-3xl font-bold tracking-tight sm:text-5xl">
-                {t("app.title")}
-              </h1>
-              <p className="mx-auto mb-8 max-w-2xl text-base text-muted-foreground sm:text-lg">
-                {t("app.subtitle")}
-              </p>
-            </>
-          )}
-          <div className="mx-auto flex max-w-2xl flex-col gap-2 sm:flex-row">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                placeholder={t("search.placeholder")}
-                className="h-11 w-full rounded-md border bg-background pl-9 pr-4 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-              />
+      {!graphFullscreen && (
+        showLanding ? (
+          <LandingHero
+            query={query}
+            loading={loading}
+            lang={lang}
+            onQueryChange={setQuery}
+            onSearch={() => void handleSearch()}
+            t={t}
+          />
+        ) : (
+          <section className="scholar-search-strip border-b">
+            <div className="mx-auto flex max-w-4xl flex-col gap-2 px-4 py-6 sm:flex-row sm:px-6">
+              <div className="relative flex-1">
+                <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => event.key === "Enter" && void handleSearch()}
+                  placeholder={t("search.placeholder")}
+                  className="h-12 w-full rounded-xl border bg-background pl-11 pr-4 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                />
+              </div>
+              <Button size="lg" className="h-12 w-full rounded-xl px-6 sm:w-auto" onClick={() => void handleSearch()} disabled={!query.trim()}>
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                {loading ? t("search.loading") : t("search.button")}
+              </Button>
             </div>
-            <Button size="lg" className="h-11 w-full sm:w-auto" onClick={handleSearch} disabled={!query.trim()}>
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
-              {loading ? t("search.loading") : t("search.button")}
-            </Button>
-          </div>
-          {!user && !searched && !profile && (
-            <div className="mx-auto mt-12 grid max-w-4xl gap-3 text-left sm:grid-cols-3">
-              {[
-                { icon: ShieldCheck, title: t("landing.identity_title"), text: t("landing.identity_desc") },
-                { icon: BookOpen, title: t("landing.research_title"), text: t("landing.research_desc") },
-                { icon: Network, title: t("landing.network_title"), text: t("landing.network_desc") },
-              ].map(({ icon: Icon, title, text }) => (
-                <div key={title} className="rounded-xl border bg-background/80 p-5 shadow-sm">
-                  <Icon className="h-5 w-5 text-primary" />
-                  <h2 className="mt-3 text-sm font-semibold">{title}</h2>
-                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{text}</p>
-                </div>
-              ))}
-            </div>
-          )}
-          {!user && !searched && !profile && (
-            <div className="mx-auto mt-5 flex max-w-4xl items-start gap-3 rounded-xl border border-primary/15 bg-primary/5 p-4 text-left">
-              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-              <p className="text-xs leading-relaxed text-muted-foreground">{t("landing.trust_note")}</p>
-            </div>
-          )}
-        </div>
-      </section>
+          </section>
+        )
+      )}
 
       {/* 错误提示 */}
       {error && (
@@ -914,7 +876,7 @@ export default function App() {
       )}
 
       {/* 空状态 */}
-      {user && !searched && !loading && !error && !profile && !candidates.length && (
+      {user && !showLanding && !searched && !loading && !error && !profile && !candidates.length && (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <Users className="h-12 w-12 mb-4 opacity-30" />
           <p className="text-sm">{t("search.empty")}</p>

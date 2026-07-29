@@ -140,10 +140,11 @@ export default function ProfileSection({
   }
 
   return (
-    <section className="mx-auto max-w-5xl px-6 py-10">
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+    <section className="scholar-profile-page mx-auto px-0 py-8 sm:px-0 sm:py-10">
+      <div className="scholar-profile-heading">
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 items-start gap-4">
-          <Avatar className="h-16 w-16 shrink-0 border-2 sm:h-20 sm:w-20">
+          <Avatar className="profile-avatar h-16 w-16 shrink-0 border-2 border-primary/25 sm:h-20 sm:w-20">
             <AvatarFallback className="bg-primary/10 text-2xl font-semibold text-primary">
               {profile.name.split(" ").map((name) => name[0]).join("")}
             </AvatarFallback>
@@ -203,15 +204,16 @@ export default function ProfileSection({
             {t(favorite ? "favorite.remove" : "favorite.add")}
           </Button>
         </div>
+        </div>
+        <Separator className="mt-6" />
       </div>
 
-      <Separator className="my-6" />
-
       <Tabs
+        className="mt-6"
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as ProfileTab)}
       >
-        <TabsList className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1.5 sm:inline-flex sm:w-auto">
           <TabsTrigger value="overview">{t("tab.overview")}</TabsTrigger>
           <TabsTrigger value="papers">{t("tab.papers")}</TabsTrigger>
           <TabsTrigger value="network">{t("tab.network")}</TabsTrigger>
