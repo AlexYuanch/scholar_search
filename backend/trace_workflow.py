@@ -234,7 +234,10 @@ def run(author_id: str, output: Path, budget_provider: str) -> dict[str, Any]:
         "failed_node_count": sum(event["status"] == "failed" for event in events),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    output.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
     print(f"report={output}", flush=True)
     return report
 
