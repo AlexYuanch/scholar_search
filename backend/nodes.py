@@ -237,11 +237,38 @@ def dedup_authors(candidates):
 
 def fetch_author_profile(state: ScholarProfileState) -> dict:
     """获取并验证候选身份组，合并基础信息但保留主 OpenAlex ID。"""
-    from openalex import enrich_authors_for_disambiguation, get_author
+    from openalex import (
+        enrich_authors_for_disambiguation,
+        get_author,
+        get_provisional_author_bundle,
+        is_provisional_author_id,
+    )
 
     primary_id = state["target_author_id"]
     api_key = state["openalex_api_key"]
     budget_provider = state["openalex_budget_provider"]
+    if is_provisional_author_id(primary_id):
+        profile, provisional_works = get_provisional_author_bundle(
+            primary_id,
+            api_key=api_key,
+            budget_provider=budget_provider,
+        )
+        profile["merged_author_ids"] = [primary_id]
+        return {
+            "target_author_ids": [primary_id],
+            "target_author_profile": profile,
+            "provisional_works": provisional_works,
+            "identity_audit": {
+                "primaryAuthorId": primary_id,
+                "requestedAuthorIds": [primary_id],
+                "mergedAuthorIds": [primary_id],
+                "rejectedAuthorIds": [],
+                "mergedCount": 1,
+                "resolutionMethod": "publication_anchor",
+                "provisional": True,
+                "anchor": profile.get("provisional_anchor") or {},
+            },
+        }
     requested_ids = list(dict.fromkeys([primary_id, *(state.get("target_author_ids") or [])]))[:8]
     profiles = [
         get_author(
@@ -538,7 +565,7 @@ def collect_orcid_identity(state: ScholarProfileState) -> dict:
 
 def collect_works(state: ScholarProfileState) -> dict:
     """并发获取同一身份组的全部论文，并把中心作者统一到主 ID。"""
-    from openalex import get_works
+    from openalex import get_works, is_provisional_author_id
     warnings = []
     works_complete = True
     primary_id = state["target_author_id"]
@@ -546,6 +573,18 @@ def collect_works(state: ScholarProfileState) -> dict:
     budget_provider = state["openalex_budget_provider"]
     author_ids = state.get("target_author_ids") or [primary_id]
     works = []
+    if is_provisional_author_id(primary_id):
+        works = deepcopy(state.get("provisional_works") or [])
+        return {
+            "raw_works": works,
+            "source_works": {"openalex": works},
+            "works_complete": bool(works),
+            "warnings": (
+                []
+                if works
+                else ["论文锚点候选暂未取得可用于画像的论文记录"]
+            ),
+        }
     with ThreadPoolExecutor(max_workers=min(6, len(author_ids))) as executor:
         futures = {
             executor.submit(
@@ -1709,6 +1748,139 @@ def build_collaboration_graph(state: ScholarProfileState) -> dict:
     return {"graph_nodes": nodes, "graph_edges": edges}
 
 
+def orchestrate_analysis_workers(state: ScholarProfileState) -> dict:
+    """Let an orchestrator choose specialist analyses supported by current evidence."""
+    from llm import orchestrate_workers
+
+    profile = state.get("target_author_profile") or {}
+    institutions = [
+        str(item.get("display_name") or "").strip()
+        for item in profile.get("last_known_institutions") or []
+        if item.get("display_name")
+    ]
+    institution_name = institutions[0] if institutions else "未知机构"
+    evidence = _build_profile_evidence(state, institution_name)
+    years = {
+        int(work.get("publication_year") or 0)
+        for work in _analysis_works(state)
+        if work.get("publication_year")
+    }
+    context = {
+        "paper_count": len(_analysis_works(state)),
+        "representative_paper_count": len(
+            _flatten_representative_papers(state.get("representative_papers") or {})
+        ),
+        "coauthor_count": len(state.get("coauthors") or []),
+        "institution_count": len(set(institutions)),
+        "active_years": len(years),
+        "source_conflicts": int((state.get("data_audit") or {}).get("conflictCount") or 0),
+        "identity_risk": bool(
+            (state.get("identity_audit") or {}).get("possibleConflatedIdentity")
+            or (state.get("identity_audit") or {}).get("provisional")
+        ),
+        "evidence_types": sorted({str(item.get("type")) for item in evidence}),
+    }
+    plan, trace = orchestrate_workers(context)
+    worker_context = {
+        "scholar": {
+            "name": profile.get("display_name", ""),
+            "publication_affiliations": institutions,
+        },
+        "metrics": state.get("citation_summary") or {},
+        "topics": [
+            {
+                "name": topic.get("topic", ""),
+                "weight": topic.get("weight", 0),
+            }
+            for topic in (state.get("topic_clusters") or [])[:8]
+        ],
+        "representative_papers": _flatten_representative_papers(
+            state.get("representative_papers") or {}
+        )[:8],
+        "coauthors": [
+            {
+                "name": coauthor.get("name", ""),
+                "institution": coauthor.get("institution", ""),
+                "papers": coauthor.get("papers", 0),
+            }
+            for coauthor in (state.get("coauthors") or [])[:10]
+        ],
+        "trajectory": state.get("trajectory_analysis") or {},
+        "evidence": evidence,
+    }
+    return {
+        "orchestrator_tasks": [task.model_dump() for task in plan.tasks],
+        "worker_context": worker_context,
+        "profile_evidence": evidence,
+        "orchestrator_analysis": {
+            "rationale": plan.rationale,
+            "taskCount": len(plan.tasks),
+            "tasks": [task.model_dump() for task in plan.tasks],
+            "findings": [],
+        },
+        "agent_runs": [trace],
+    }
+
+
+def dispatch_analysis_workers(state: ScholarProfileState):
+    """Fan out dynamically selected tasks as LangGraph Send messages."""
+    from langgraph.types import Send
+
+    tasks = state.get("orchestrator_tasks") or []
+    if not tasks:
+        return "aggregate_workers"
+    return [
+        Send("analysis_worker", {
+            "worker_task": task,
+            "worker_context": state.get("worker_context") or {},
+        })
+        for task in tasks
+    ]
+
+
+def run_analysis_worker(state: ScholarProfileState) -> dict:
+    """Run one specialist worker and retain only evidence-traceable findings."""
+    from llm import OrchestratorTask, run_academic_worker
+
+    task = OrchestratorTask.model_validate(state.get("worker_task") or {})
+    output, trace = run_academic_worker(task, state.get("worker_context") or {})
+    if not output:
+        return {"worker_outputs": [], "agent_runs": [trace]}
+    return {
+        "worker_outputs": [{
+            "taskId": output.task_id,
+            "kind": output.kind,
+            "findingZh": output.finding_zh.strip(),
+            "findingEn": output.finding_en.strip(),
+            "evidenceIds": output.evidence_ids,
+            "confidence": output.confidence,
+            "limitationsZh": output.limitations_zh.strip(),
+            "limitationsEn": output.limitations_en.strip(),
+        }],
+        "agent_runs": [trace],
+    }
+
+
+def aggregate_analysis_workers(state: ScholarProfileState) -> dict:
+    """Join specialist findings in the order selected by the orchestrator."""
+    tasks = state.get("orchestrator_tasks") or []
+    order = {
+        str(task.get("id") or ""): index
+        for index, task in enumerate(tasks)
+    }
+    findings = sorted(
+        state.get("worker_outputs") or [],
+        key=lambda item: (
+            order.get(str(item.get("taskId") or ""), len(order)),
+            str(item.get("taskId") or ""),
+        ),
+    )
+    analysis = dict(state.get("orchestrator_analysis") or {})
+    analysis["findings"] = findings
+    analysis["completedTaskCount"] = len(findings)
+    return {"orchestrator_analysis": analysis}
+
+
 # ── 阶段七: 最终输出 ────────────────────────────────────────
 
 def _flatten_representative_papers(representative_papers: dict) -> list[dict]:
@@ -1747,6 +1919,24 @@ def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[
             "type": "topic",
             "text": "核心研究方向来自裁决后论文标题与 OpenAlex topics、keywords 交叉聚合: " + "、".join(topics) + "。",
             "sources": sources,
+        })
+        next_id += 1
+    profile = state.get("target_author_profile") or {}
+    publication_affiliations = list(dict.fromkeys(
+        str(item.get("display_name") or "").strip()
+        for item in profile.get("last_known_institutions") or []
+        if item.get("display_name")
+    ))
+    if publication_affiliations:
+        evidence.append({
+            "id": str(next_id),
+            "type": "institution",
+            "text": (
+                "论文署名与 OpenAlex 作者记录关联的机构包括 "
+                + "、".join(publication_affiliations[:6])
+                + "；该信息仅用于研究网络与机构主题交集分析。"
+            ),
+            "sources": ["OpenAlex"],
         })
         next_id += 1
     for paper in _flatten_representative_papers(state["representative_papers"])[:3]:
@@ -1802,7 +1992,7 @@ def generate_profile_report(state: ScholarProfileState) -> dict:
     cs = state["citation_summary"]
     topic_names = [t["topic"] for t in state["topic_clusters"][:5]]
     top_coauthors = [{"name": c["name"], "papers": c["papers"]} for c in state["coauthors"][:5]]
-    evidence = _build_profile_evidence(state, inst_name)
+    evidence = state.get("profile_evidence") or _build_profile_evidence(state, inst_name)
     representative = _flatten_representative_papers(state["representative_papers"])[:5]
     valid_ids = {item["id"] for item in evidence}
     report_input = {
@@ -1817,6 +2007,9 @@ def generate_profile_report(state: ScholarProfileState) -> dict:
         "top_coauthors": top_coauthors,
         "representative_papers": [p.get("title", "") for p in representative],
         "trajectory": state.get("trajectory_analysis") or {},
+        "specialist_findings": (
+            state.get("orchestrator_analysis") or {}
+        ).get("findings") or [],
         "evidence": evidence,
     }
 
@@ -1888,6 +2081,10 @@ def agent_review_profile(state: ScholarProfileState) -> dict:
             "summaries": summaries,
             "evidence": state.get("profile_evidence") or [],
             "trajectory": state.get("trajectory_analysis") or {},
+            "specialist_findings": (
+                state.get("orchestrator_analysis") or {}
+            ).get("findings") or [],
+            "review_iteration": int(state.get("review_iteration") or 0),
         },
         schema=EvidenceReviewOutput,
         validate=validate,
@@ -1896,15 +2093,94 @@ def agent_review_profile(state: ScholarProfileState) -> dict:
     )
     if not output:
         return {"agent_review": {}, "agent_runs": [trace]}
+    review = {
+        "summarySupported": output.summary_supported,
+        "approvedEvidenceIds": output.approved_evidence_ids,
+        "flags": output.flags,
+        "confidence": output.confidence,
+        "noteZh": output.note_zh.strip(),
+        "noteEn": output.note_en.strip(),
+        "iteration": int(state.get("review_iteration") or 0),
+    }
     return {
-        "agent_review": {
-            "summarySupported": output.summary_supported,
-            "approvedEvidenceIds": output.approved_evidence_ids,
-            "flags": output.flags,
-            "confidence": output.confidence,
-            "noteZh": output.note_zh.strip(),
-            "noteEn": output.note_en.strip(),
+        "agent_review": review,
+        "review_history": [review],
+        "agent_runs": [trace],
+    }
+
+
+MAX_REVIEW_REVISIONS = 2
+
+
+def route_after_agent_review(state: ScholarProfileState) -> str:
+    """Send rejected reports back for revision, bounded by a deterministic limit."""
+    review = state.get("agent_review") or {}
+    if not review:
+        return "review_evidence"
+    summaries = state.get("profile_summary_i18n") or {
+        "zh": state.get("profile_summary") or "",
+    }
+    cited = set(re.findall(r"\[(\d+)\]", " ".join(summaries.values())))
+    approved = set(review.get("approvedEvidenceIds") or [])
+    supported = bool(review.get("summarySupported")) and cited <= approved
+    if supported or int(state.get("review_iteration") or 0) >= MAX_REVIEW_REVISIONS:
+        return "review_evidence"
+    return "optimize_report"
+
+
+def optimize_profile_report(state: ScholarProfileState) -> dict:
+    """Revise a rejected report using explicit reviewer feedback, then re-review it."""
+    from llm import ProfileReportOutput, run_structured_agent
+    from prompts import AGENT_OPTIMIZE_REPORT
+
+    evidence = state.get("profile_evidence") or []
+    valid_ids = {str(item.get("id")) for item in evidence}
+    current_summaries = state.get("profile_summary_i18n") or {
+        "zh": state.get("profile_summary") or "",
+    }
+    review = state.get("agent_review") or {}
+
+    def validate(output: ProfileReportOutput) -> list[str]:
+        issues = []
+        cited = set(re.findall(r"\[(\d+)\]", output.summary_zh + " " + output.summary_en))
+        declared = set(output.evidence_ids)
+        if not cited or not cited <= valid_ids or not declared <= valid_ids or not cited <= declared:
+            issues.append("invalid_optimizer_citations")
+        if len(output.summary_zh.strip()) < 60 or len(output.summary_en.split()) < 35:
+            issues.append("optimized_report_too_short")
+        return issues
+
+    planned_tier = (state.get("agent_plan") or {}).get("report_tier", "fast")
+    output, trace = run_structured_agent(
+        "optimizer_agent",
+        planned_tier=planned_tier,
+        system_prompt=AGENT_OPTIMIZE_REPORT,
+        payload={
+            "current_summaries": current_summaries,
+            "review": review,
+            "evidence": evidence,
+            "specialist_findings": (
+                state.get("orchestrator_analysis") or {}
+            ).get("findings") or [],
         },
+        schema=ProfileReportOutput,
+        validate=validate,
+        temperature=0.15,
+        max_tokens=1800,
+    )
+    next_iteration = int(state.get("review_iteration") or 0) + 1
+    if not output:
+        return {
+            "review_iteration": MAX_REVIEW_REVISIONS,
+            "agent_runs": [trace],
+        }
+    return {
+        "profile_summary": output.summary_zh.strip(),
+        "profile_summary_i18n": {
+            "zh": output.summary_zh.strip(),
+            "en": output.summary_en.strip(),
+        },
+        "review_iteration": next_iteration,
         "agent_runs": [trace],
     }
 
@@ -1946,6 +2222,12 @@ def review_profile_evidence(state: ScholarProfileState) -> dict:
             valid = bool(state.get("topic_clusters"))
         elif evidence_type == "coauthor":
             valid = bool(state.get("coauthors"))
+        elif evidence_type == "institution":
+            valid = bool(
+                (state.get("target_author_profile") or {}).get(
+                    "last_known_institutions"
+                )
+            )
         elif evidence_type == "metric":
             valid = int((state.get("citation_summary") or {}).get("total_papers") or 0) == len(works)
             if not valid:
@@ -2111,8 +2393,11 @@ def format_web_payload(state: ScholarProfileState) -> dict:
             "status": agent_status,
             "plan": state.get("agent_plan") or {},
             "runs": agent_runs,
+            "orchestrator": state.get("orchestrator_analysis") or {},
             "trajectory": state.get("trajectory_analysis") or {},
             "review": state.get("agent_review") or {},
+            "reviewHistory": state.get("review_history") or [],
+            "reviewIterations": int(state.get("review_iteration") or 0),
         },
     }
     return {"web_payload": payload}

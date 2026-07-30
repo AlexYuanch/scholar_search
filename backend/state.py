@@ -11,6 +11,7 @@ class ScholarProfileState(TypedDict):
     target_author_ids: List[str]
     target_author_profile: Optional[Dict[str, Any]]
     identity_audit: Dict[str, Any]
+    provisional_works: List[Dict[str, Any]]
     orcid_works: List[Dict[str, Any]]
     orcid_audit: Dict[str, Any]
 
@@ -30,6 +31,11 @@ class ScholarProfileState(TypedDict):
     topic_clusters: List[Dict[str, Any]]
     agent_plan: Dict[str, Any]
     agent_runs: Annotated[List[Dict[str, Any]], operator.add]
+    orchestrator_tasks: List[Dict[str, Any]]
+    worker_task: Dict[str, Any]
+    worker_context: Dict[str, Any]
+    worker_outputs: Annotated[List[Dict[str, Any]], operator.add]
+    orchestrator_analysis: Dict[str, Any]
 
     # ── 兴趣演化 ──
     interest_timeline: List[Dict[str, Any]]
@@ -49,6 +55,8 @@ class ScholarProfileState(TypedDict):
     profile_evidence: List[Dict[str, Any]]
     analysis_claims: List[Dict[str, Any]]
     agent_review: Dict[str, Any]
+    review_iteration: int
+    review_history: Annotated[List[Dict[str, Any]], operator.add]
     evidence_review: Dict[str, Any]
     web_payload: Dict[str, Any]
 
@@ -66,6 +74,7 @@ def default_state() -> Dict[str, Any]:
         "target_author_ids": [],
         "target_author_profile": None,
         "identity_audit": {},
+        "provisional_works": [],
         "orcid_works": [],
         "orcid_audit": {},
         "raw_works": [],
@@ -79,6 +88,11 @@ def default_state() -> Dict[str, Any]:
         "topic_clusters": [],
         "agent_plan": {},
         "agent_runs": [],
+        "orchestrator_tasks": [],
+        "worker_task": {},
+        "worker_context": {},
+        "worker_outputs": [],
+        "orchestrator_analysis": {},
         "interest_timeline": [],
         "trajectory_analysis": {},
         "representative_papers": {},
@@ -90,6 +104,8 @@ def default_state() -> Dict[str, Any]:
         "profile_evidence": [],
         "analysis_claims": [],
         "agent_review": {},
+        "review_iteration": 0,
+        "review_history": [],
         "evidence_review": {},
         "web_payload": {},
         "openalex_api_key": "",

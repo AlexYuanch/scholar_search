@@ -7,6 +7,7 @@ from nodes import (
     agent_analyze_topics,
     agent_analyze_trajectory,
     analyze_coauthors,
+    agent_review_profile,
     build_collaboration_graph,
     collect_crossref_records,
     collect_dblp_records,
@@ -16,6 +17,10 @@ from nodes import (
     fetch_author_profile,
     format_web_payload,
     generate_profile_report,
+    optimize_profile_report,
+    orchestrate_analysis_workers,
+    route_after_agent_review,
+    run_analysis_worker,
     review_profile_evidence,
 )
 from state import default_state
@@ -339,6 +344,43 @@ def test_fetch_profile_and_collect_works_join_merged_author_ids(monkeypatch):
         for authorship in work["authorships"]
     } == {"A1"}
     assert result["works_complete"] is True
+
+
+def test_fetch_profile_and_collect_works_support_provisional_paper_candidate(monkeypatch):
+    import openalex
+
+    provisional_id = "provisional:W1:0"
+    work = {
+        "id": "https://openalex.org/W1",
+        "title": "Exact Paper",
+        "publication_year": 2025,
+        "authorships": [
+            {
+                "author": {"id": provisional_id, "display_name": "Jiaqing Shi"},
+                "institutions": [{"display_name": "Example University"}],
+            },
+            {"author": {"id": "A2", "display_name": "Yao Chen"}, "institutions": []},
+        ],
+    }
+    monkeypatch.setattr(openalex, "get_provisional_author_bundle", lambda *_args, **_kwargs: ({
+        "id": provisional_id,
+        "display_name": "Jiaqing Shi",
+        "works_count": 1,
+        "last_known_institutions": [{"display_name": "Example University"}],
+        "affiliations": [],
+        "merged_author_ids": [provisional_id],
+        "provisional": True,
+    }, [work]))
+
+    state = default_state()
+    state["target_author_id"] = provisional_id
+    state.update(fetch_author_profile(state))
+    state.update(collect_works(state))
+
+    assert state["target_author_profile"]["provisional"] is True
+    assert state["identity_audit"]["resolutionMethod"] == "publication_anchor"
+    assert state["raw_works"][0]["id"] == "https://openalex.org/W1"
+    assert state["raw_works"][0]["authorships"][0]["author"]["id"] == provisional_id
 
 
 def test_fetch_profile_rejects_client_supplied_namesake_without_identity_evidence(monkeypatch):
@@ -1021,6 +1063,116 @@ def test_agent_evidence_rejection_rebuilds_summary():
     assert result["evidence_review"]["agentReviewed"] is True
 
 
+def test_orchestrator_dispatches_dynamic_worker_with_traceable_evidence(monkeypatch):
+    import llm
+
+    state = default_state()
+    state["target_author_profile"] = {
+        "display_name": "Ada Lovelace",
+        "last_known_institutions": [{"display_name": "Analytical Engine Lab"}],
+    }
+    state["citation_summary"] = {"total_papers": 1, "total_citations": 42, "h_index": 1}
+    state["topic_clusters"] = [{"topic": "Analytical Engines", "paper_indices": [0], "weight": 1}]
+    state["representative_papers"] = {
+        "Analytical Engines": [{
+            "id": "https://openalex.org/W1",
+            "title": "Notes on the Analytical Engine",
+            "year": 1843,
+            "citations": 42,
+        }],
+    }
+    state["coauthors"] = [{"id": "A2", "name": "Charles Babbage", "papers": 1}]
+    state["adjudicated_works"] = [{
+        "id": "https://openalex.org/W1",
+        "title": "Notes on the Analytical Engine",
+        "publication_year": 1843,
+    }]
+    task = llm.OrchestratorTask(
+        id="representative",
+        kind="representative_works",
+        objective="分析代表作",
+        rationale="存在代表论文",
+        tier="fast",
+    )
+    monkeypatch.setattr(llm, "orchestrate_workers", lambda _context: (
+        llm.OrchestratorPlan(tasks=[task], rationale="dynamic"),
+        {"agent": "orchestrator_agent", "status": "success"},
+    ))
+    monkeypatch.setattr(llm, "run_academic_worker", lambda worker_task, _context: (
+        llm.AcademicWorkerOutput(
+            task_id=worker_task.id,
+            kind=worker_task.kind,
+            finding_zh="代表作体现了分析机研究方向。",
+            finding_en="The representative work reflects analytical engine research.",
+            evidence_ids=["2"],
+            confidence="high",
+        ),
+        {"agent": "representative_works_worker", "status": "success"},
+    ))
+
+    planned = orchestrate_analysis_workers(state)
+    worker_state = {
+        **state,
+        **planned,
+        "worker_task": planned["orchestrator_tasks"][0],
+    }
+    result = run_analysis_worker(worker_state)
+
+    assert planned["orchestrator_tasks"][0]["kind"] == "representative_works"
+    assert result["worker_outputs"][0]["evidenceIds"] == ["2"]
+    assert result["agent_runs"][0]["agent"] == "representative_works_worker"
+
+
+def test_evaluator_optimizer_returns_feedback_for_second_review(monkeypatch):
+    import llm
+
+    state = default_state()
+    state["target_author_profile"] = {"display_name": "Ada Lovelace"}
+    state["profile_summary"] = "不受支持的总结 [1]"
+    state["profile_summary_i18n"] = {
+        "zh": "不受支持的总结 [1]",
+        "en": "Unsupported summary [1]",
+    }
+    state["profile_evidence"] = [{"id": "1", "type": "metric", "text": "One paper."}]
+    state["agent_review"] = {
+        "summarySupported": False,
+        "approvedEvidenceIds": ["1"],
+        "flags": ["unsupported_claim"],
+        "confidence": "low",
+        "noteZh": "删除没有证据的任职判断。",
+        "noteEn": "Remove unsupported employment claims.",
+    }
+    state["review_iteration"] = 0
+    monkeypatch.setattr(llm, "run_structured_agent", lambda *_args, **_kwargs: (
+        llm.ProfileReportOutput(
+            summary_zh="修订后的总结仅保留可核验事实，并引用现有证据 [1]，避免没有依据的任职或质量判断。",
+            summary_en="The revised summary retains only verifiable facts supported by the supplied evidence [1] and removes unsupported employment or quality claims.",
+            evidence_ids=["1"],
+            confidence="high",
+        ),
+        {"agent": "optimizer_agent", "status": "success"},
+    ))
+
+    assert route_after_agent_review(state) == "optimize_report"
+    optimized = optimize_profile_report(state)
+
+    assert optimized["review_iteration"] == 1
+    assert "[1]" in optimized["profile_summary"]
+    assert optimized["agent_runs"][0]["agent"] == "optimizer_agent"
+
+
+def test_evaluator_optimizer_loop_is_bounded_after_two_revisions():
+    state = default_state()
+    state["review_iteration"] = 2
+    state["agent_review"] = {
+        "summarySupported": False,
+        "approvedEvidenceIds": [],
+        "flags": ["unsupported_claim"],
+    }
+
+    assert route_after_agent_review(state) == "review_evidence"
+
+
 def test_generate_profile_report_falls_back_to_evidence_when_llm_lacks_citations(monkeypatch):
     import llm
 
@@ -1190,7 +1342,11 @@ def test_workflow_uses_multi_source_adjudication_and_review_nodes():
     assert "resolve_work_identity" in node_names
     assert "plan_agents" in node_names
     assert "agent_analyze_trajectory" in node_names
+    assert "orchestrate_workers" in node_names
+    assert "analysis_worker" in node_names
+    assert "aggregate_workers" in node_names
     assert "agent_review_report" in node_names
+    assert "optimize_report" in node_names
     assert "review_evidence" in node_names
     assert node_names.index("adjudicate_sources") < node_names.index("plan_agents")
     assert node_names.index("collect_crossref") < node_names.index("collect_dblp")
@@ -1199,6 +1355,9 @@ def test_workflow_uses_multi_source_adjudication_and_review_nodes():
     assert node_names.index("adjudicate_sources") < node_names.index("resolve_work_identity")
     assert node_names.index("resolve_work_identity") < node_names.index("plan_agents")
     assert node_names.index("plan_agents") < node_names.index("analyze_citations")
+    assert node_names.index("build_graph") < node_names.index("orchestrate_workers")
+    assert node_names.index("orchestrate_workers") < node_names.index("analysis_worker")
+    assert node_names.index("aggregate_workers") < node_names.index("generate_report")
     assert node_names.index("generate_report") < node_names.index("agent_review_report")
     assert node_names.index("review_evidence") < node_names.index("format_payload")
 
@@ -1229,6 +1388,80 @@ def test_workflow_parallel_analysis_branches_join_before_report(monkeypatch):
     assert result["web_payload"]["name"] == "Empty Scholar"
     assert result["evidence_review"]["publishable"] is True
     assert result["profile_evidence"][0]["type"] == "metric"
+
+
+def test_workflow_revises_rejected_report_and_reviews_again(monkeypatch):
+    import crossref
+    import llm
+    import openalex
+    from workflow import graph
+
+    monkeypatch.setattr(openalex, "get_author", lambda _author_id, **_kwargs: {
+        "id": "A0",
+        "display_name": "Ada Lovelace",
+        "works_count": 0,
+        "last_known_institutions": [],
+    })
+    monkeypatch.setattr(openalex, "get_works", lambda _author_id, **_kwargs: ([], []))
+    monkeypatch.setattr(crossref, "verify_dois", lambda _dois: ({}, {
+        "requested": 0,
+        "verified": 0,
+        "missing": 0,
+        "failed": 0,
+    }))
+    monkeypatch.setattr(llm, "orchestrate_workers", lambda _context: (
+        llm.OrchestratorPlan(tasks=[], rationale="no specialist evidence"),
+        {"agent": "orchestrator_agent", "status": "success"},
+    ))
+    reviews = iter([
+        llm.EvidenceReviewOutput(
+            summary_supported=False,
+            approved_evidence_ids=["1"],
+            flags=["unsupported_claim"],
+            confidence="low",
+            note_zh="删除不受支持的判断。",
+            note_en="Remove the unsupported claim.",
+        ),
+        llm.EvidenceReviewOutput(
+            summary_supported=True,
+            approved_evidence_ids=["1"],
+            flags=[],
+            confidence="high",
+            note_zh="修订后可由证据支持。",
+            note_en="The revision is supported.",
+        ),
+    ])
+
+    def fake_agent(agent, **_kwargs):
+        trace = {"agent": agent, "status": "success"}
+        if agent == "report_agent":
+            return llm.ProfileReportOutput(
+                summary_zh="初稿总结仅用于触发证据审查，并引用现有统计依据 [1]；其中包含需要审查者指出并修改的表达。",
+                summary_en="This initial profile draft cites the supplied metric evidence [1] but intentionally contains wording that the evidence reviewer must request to revise before publication.",
+                evidence_ids=["1"],
+                confidence="medium",
+            ), trace
+        if agent == "optimizer_agent":
+            return llm.ProfileReportOutput(
+                summary_zh="修订后的总结只保留本次论文集可核验的统计信息 [1]，不再推断任职、学术质量、意图或因果关系。",
+                summary_en="The revised profile retains only verifiable statistics from the current publication set [1] and removes unsupported employment, quality, intent, and causal claims.",
+                evidence_ids=["1"],
+                confidence="high",
+            ), trace
+        if agent == "evidence_agent":
+            return next(reviews), trace
+        return None, trace
+
+    monkeypatch.setattr(llm, "run_structured_agent", fake_agent)
+    state = default_state()
+    state["target_author_id"] = "A0"
+
+    result = graph.invoke(state)
+
+    assert result["review_iteration"] == 1
+    assert len(result["review_history"]) == 2
+    assert result["agent_review"]["summarySupported"] is True
+    assert result["profile_summary"].startswith("修订后的总结")
 
 
 def test_default_state_has_multi_source_fields_without_semantic_scholar():

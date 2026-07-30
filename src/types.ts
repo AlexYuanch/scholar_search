@@ -57,8 +57,18 @@ export interface Candidate {
   }>
   latest_publication_year?: number | null
   research_topics?: string[]
+  provisional?: boolean
+  provisional_anchor?: {
+    work_id?: string
+    title?: string
+    doi?: string
+    year?: number | null
+    authorship_index?: number
+    coauthors?: string[]
+    institutions?: string[]
+  }
   identity_evidence?: Array<{
-    type: "orcid" | "primary_institution" | "merged_profile" | "published_profile" | "independent_profile"
+    type: "orcid" | "primary_institution" | "merged_profile" | "published_profile" | "independent_profile" | "paper_anchor"
     value?: string
     reason?: string
     shared_works?: number
@@ -69,6 +79,11 @@ export interface Candidate {
     coauthor_count?: number
     topic_count?: number
     merged_count?: number
+    work_id?: string
+    title?: string
+    doi?: string
+    coauthors?: string[]
+    institutions?: string[]
   }>
 }
 
@@ -120,7 +135,7 @@ export interface ScholarProfile {
   profileSummaryI18n?: { zh?: string; en?: string }
   profileEvidence: Array<{
     id: string
-    type: "metric" | "paper" | "topic" | "coauthor"
+    type: "metric" | "paper" | "topic" | "coauthor" | "institution"
     text: string
     url?: string
     sources?: string[]
@@ -212,6 +227,38 @@ export interface ScholarProfile {
       noteZh?: string
       noteEn?: string
     }
+    orchestrator?: {
+      rationale?: string
+      taskCount?: number
+      completedTaskCount?: number
+      tasks?: Array<{
+        id: string
+        kind: "representative_works" | "collaboration_opportunities" | "institution_positioning" | "research_continuity"
+        objective: string
+        rationale?: string
+        tier: "fast" | "strong"
+      }>
+      findings?: Array<{
+        taskId: string
+        kind: "representative_works" | "collaboration_opportunities" | "institution_positioning" | "research_continuity"
+        findingZh: string
+        findingEn: string
+        evidenceIds: string[]
+        confidence: "high" | "medium" | "low"
+        limitationsZh?: string
+        limitationsEn?: string
+      }>
+    }
+    reviewHistory?: Array<{
+      summarySupported?: boolean
+      approvedEvidenceIds?: string[]
+      flags?: string[]
+      confidence?: "high" | "medium" | "low"
+      noteZh?: string
+      noteEn?: string
+      iteration?: number
+    }>
+    reviewIterations?: number
   }
   identityAudit?: {
     primaryAuthorId: string
@@ -224,7 +271,16 @@ export interface ScholarProfile {
     excludedWorkIds?: string[]
     largeConflictWorks?: number
     possibleConflatedIdentity?: boolean
-    resolutionMethod?: "orcid_anchor" | "institution_collaborator_cluster" | "insufficient_evidence"
+    resolutionMethod?: "orcid_anchor" | "institution_collaborator_cluster" | "insufficient_evidence" | "publication_anchor"
+    provisional?: boolean
+    anchor?: {
+      work_id?: string
+      title?: string
+      doi?: string
+      year?: number | null
+      coauthors?: string[]
+      institutions?: string[]
+    }
     orcidMatchedWorks?: number
     orcidStatus?: "available" | "unavailable"
     excludedClusters?: Array<{

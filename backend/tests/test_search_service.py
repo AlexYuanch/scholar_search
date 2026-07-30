@@ -235,6 +235,96 @@ def test_candidate_payload_exposes_identity_sorting_and_topic_filters():
     }
 
 
+def test_live_candidates_include_publication_discovered_provisional_author():
+    repository = InMemoryRepository()
+    provisional = {
+        "id": "provisional:W1:0",
+        "display_name": "Jiaqing Shi",
+        "provisional": True,
+        "provisional_anchor": {
+            "work_id": "https://openalex.org/W1",
+            "title": "Exact Matching Paper",
+            "doi": "https://doi.org/10.1000/exact",
+            "year": 2025,
+            "coauthors": ["Yao Chen"],
+            "institutions": ["Example University"],
+        },
+        "last_known_institutions": [{"display_name": "Example University"}],
+        "affiliations": [{
+            "institution": {"display_name": "Example University"},
+            "years": [2025],
+        }],
+        "works_count": 1,
+        "cited_by_count": 2,
+        "summary_stats": {"h_index": 1},
+        "identity_fingerprint": {
+            "version": search_service.IDENTITY_FINGERPRINT_VERSION,
+            "sampled_works": 1,
+            "work_ids": ["W1"],
+            "coauthor_ids": ["A2"],
+            "topic_ids": ["T1"],
+            "topic_names": ["Relation Extraction"],
+            "publication_years": [2025],
+            "affiliations": [{
+                "name": "Example University",
+                "years": [2025],
+                "work_count": 1,
+            }],
+        },
+    }
+
+    candidates, complete = search_service.build_live_candidate_payload(
+        repository,
+        "shi jiaqing",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+        search_fn=lambda _query: [],
+        enrich_fn=lambda candidates: candidates,
+        provisional_fn=lambda _query: [provisional],
+    )
+
+    assert complete is True
+    assert candidates[0]["id"] == "provisional:W1:0"
+    assert candidates[0]["provisional"] is True
+    assert candidates[0]["identity_group"] == "review"
+    assert candidates[0]["provisional_anchor"]["doi"] == "https://doi.org/10.1000/exact"
+    assert candidates[0]["match_reasons"][0]["code"] == "publication_anchor"
+
+
+def test_publication_discovery_failure_keeps_regular_author_candidates():
+    repository = InMemoryRepository()
+
+    def unavailable(_query):
+        raise OpenAlexError("temporary", status_code=503)
+
+    candidates, complete = search_service.build_live_candidate_payload(
+        repository,
+        "Ada",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+        search_fn=lambda _query: [{
+            "id": "A1",
+            "display_name": "Ada",
+            "last_known_institutions": [],
+            "affiliations": [],
+        }],
+        enrich_fn=lambda values: [{
+            **values[0],
+            "identity_fingerprint": {
+                "version": search_service.IDENTITY_FINGERPRINT_VERSION,
+                "sampled_works": 0,
+                "work_ids": [],
+                "coauthor_ids": [],
+                "topic_ids": [],
+            },
+        }],
+        provisional_fn=unavailable,
+    )
+
+    assert candidates[0]["id"] == "A1"
+    assert complete is False
+
+
 def test_candidate_primary_affiliation_requires_two_works_or_consecutive_years():
     candidate = search_service._candidate_payload({
         "id": "A1",

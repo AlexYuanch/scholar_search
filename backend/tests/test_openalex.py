@@ -312,6 +312,110 @@ def test_search_authors_combines_variants_and_deduplicates_by_id(monkeypatch):
     assert [author["id"] for author in authors] == ["A3", "A1", "A2"]
 
 
+def test_discover_provisional_authors_from_exact_paper_authorship(monkeypatch):
+    import openalex
+
+    target_work = {
+        "id": "https://openalex.org/W4411522382",
+        "doi": "https://doi.org/10.1007/978-981-96-8725-1_34",
+        "title": "Adaptive Feature Fusion Enhanced Cascade Pointer Network for Chinese Relation Extraction",
+        "publication_year": 2025,
+        "cited_by_count": 2,
+        "authorships": [
+            {
+                "author": {"id": None, "display_name": "Jiaqing Shi"},
+                "raw_author_name": "Jiaqing Shi",
+                "institutions": [{
+                    "id": "https://openalex.org/I4210127317",
+                    "display_name": "Zhejiang Normal University",
+                }],
+            },
+            {
+                "author": {"id": "https://openalex.org/A501", "display_name": "Yao Chen"},
+                "raw_author_name": "Yao Chen",
+                "institutions": [],
+            },
+        ],
+        "topics": [{"id": "T1", "display_name": "Relation Extraction"}],
+        "primary_topic": {"id": "T1", "display_name": "Relation Extraction"},
+    }
+    monkeypatch.setattr(
+        openalex,
+        "_search_works_by_raw_author",
+        lambda *_args, **_kwargs: [target_work],
+    )
+
+    candidates = openalex.discover_provisional_authors(
+        "shi jiaqing",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate["id"] == "provisional:W4411522382:0"
+    assert candidate["display_name"] == "Jiaqing Shi"
+    assert candidate["provisional"] is True
+    assert candidate["works_count"] == 1
+    assert candidate["last_known_institutions"][0]["display_name"] == "Zhejiang Normal University"
+    assert candidate["provisional_anchor"]["doi"] == target_work["doi"]
+    assert candidate["provisional_anchor"]["coauthors"] == ["Yao Chen"]
+
+
+def test_provisional_author_clusters_require_more_than_shared_institution(monkeypatch):
+    import openalex
+
+    def work(work_id, coauthor_id, topic_id):
+        return {
+            "id": f"https://openalex.org/{work_id}",
+            "doi": f"https://doi.org/10.1000/{work_id.casefold()}",
+            "title": f"Paper {work_id}",
+            "publication_year": 2025,
+            "cited_by_count": 1,
+            "authorships": [
+                {
+                    "author": {"id": None, "display_name": "Jiaqing Shi"},
+                    "raw_author_name": "Jiaqing Shi",
+                    "institutions": [{
+                        "id": "https://openalex.org/I1",
+                        "display_name": "Example University",
+                    }],
+                },
+                {
+                    "author": {
+                        "id": f"https://openalex.org/{coauthor_id}",
+                        "display_name": coauthor_id,
+                    },
+                    "raw_author_name": coauthor_id,
+                    "institutions": [],
+                },
+            ],
+            "topics": [{"id": topic_id, "display_name": topic_id}],
+            "primary_topic": {"id": topic_id, "display_name": topic_id},
+        }
+
+    monkeypatch.setattr(
+        openalex,
+        "_search_works_by_raw_author",
+        lambda *_args, **_kwargs: [
+            work("W1", "A101", "T1"),
+            work("W2", "A202", "T2"),
+        ],
+    )
+
+    candidates = openalex.discover_provisional_authors(
+        "Jiaqing Shi",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+    )
+
+    assert len(candidates) == 2
+    assert {candidate["id"] for candidate in candidates} == {
+        "provisional:W1:0",
+        "provisional:W2:0",
+    }
+
+
 def test_author_identity_fingerprint_uses_works_coauthors_and_topics(monkeypatch):
     import openalex
 

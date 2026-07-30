@@ -141,7 +141,13 @@ def build_affiliation_evidence(
         author_ids.add(primary_author_id)
 
     source_links = []
-    if primary_author_id:
+    provisional_anchor = author_profile.get("provisional_anchor") or {}
+    if author_profile.get("provisional") and provisional_anchor.get("work_id"):
+        source_links.append({
+            "label": "OpenAlex Paper",
+            "url": provisional_anchor["work_id"],
+        })
+    elif primary_author_id:
         source_links.append({"label": "OpenAlex", "url": primary_author_id})
     orcid = _clean_text(author_profile.get("orcid"))
     if orcid:

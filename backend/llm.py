@@ -11,7 +11,7 @@ from typing import Callable, Literal, TypeVar
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from prompts import AGENT_ROUTER
+from prompts import AGENT_ORCHESTRATOR, AGENT_ROUTER, AGENT_WORKER
 
 
 AgentTier = Literal["fast", "strong"]
@@ -72,6 +72,38 @@ class EvidenceReviewOutput(BaseModel):
     confidence: Literal["high", "medium", "low"] = "medium"
     note_zh: str = ""
     note_en: str = ""
+
+
+WorkerKind = Literal[
+    "representative_works",
+    "collaboration_opportunities",
+    "institution_positioning",
+    "research_continuity",
+]
+
+
+class OrchestratorTask(BaseModel):
+    id: str
+    kind: WorkerKind
+    objective: str
+    rationale: str = ""
+    tier: AgentTier = "fast"
+
+
+class OrchestratorPlan(BaseModel):
+    tasks: list[OrchestratorTask] = Field(default_factory=list, max_length=4)
+    rationale: str = ""
+
+
+class AcademicWorkerOutput(BaseModel):
+    task_id: str
+    kind: WorkerKind
+    finding_zh: str
+    finding_en: str
+    evidence_ids: list[str]
+    confidence: Literal["high", "medium", "low"] = "medium"
+    limitations_zh: str = ""
+    limitations_en: str = ""
 
 
 _usage_lock = threading.Lock()
@@ -339,6 +371,128 @@ def plan_agents(context: dict) -> tuple[AgentPlan, dict]:
         attempted_models=attempted_models,
         attempted_providers=attempted_providers,
         reasons=reasons + [fallback.rationale],
+    )
+
+
+def _fallback_orchestrator_plan(context: dict) -> OrchestratorPlan:
+    tasks = []
+    default_tier: AgentTier = (
+        "strong"
+        if bool(context.get("identity_risk")) or int(context.get("source_conflicts") or 0) >= 5
+        else "fast"
+    )
+
+    def add(kind: WorkerKind, objective: str, rationale: str) -> None:
+        tasks.append(OrchestratorTask(
+            id=kind,
+            kind=kind,
+            objective=objective,
+            rationale=rationale,
+            tier=default_tier,
+        ))
+
+    if int(context.get("representative_paper_count") or 0) > 0:
+        add("representative_works", "分析代表作解决的问题与贡献", "存在可追溯代表论文")
+    if int(context.get("coauthor_count") or 0) >= 2:
+        add("collaboration_opportunities", "分析稳定合作关系与潜在合作对象", "合作证据足够")
+    if int(context.get("institution_count") or 0) >= 2:
+        add("institution_positioning", "分析论文关联机构与研究主题交集", "存在多个机构证据")
+    if int(context.get("active_years") or 0) >= 4:
+        add("research_continuity", "分析研究延续性与阶段变化", "时间跨度足够")
+    return OrchestratorPlan(tasks=tasks[:4], rationale="deterministic_evidence_coverage")
+
+
+def orchestrate_workers(context: dict) -> tuple[OrchestratorPlan, dict]:
+    """Dynamically choose evidence-backed specialist workers for this scholar."""
+    fallback = _fallback_orchestrator_plan(context)
+    mode = _router_mode()
+    if not _configured() or mode == "off":
+        return fallback, _trace(
+            "orchestrator_agent",
+            status="disabled",
+            planned_tier="fast",
+            reasons=["llm_not_configured" if not _configured() else "router_off"],
+        )
+
+    attempted_models = []
+    attempted_providers = []
+    reasons = []
+    for attempt in _router_attempts():
+        attempted_models.append(attempt.model)
+        attempted_providers.append(attempt.provider)
+        try:
+            plan = OrchestratorPlan.model_validate(_invoke_json(
+                attempt.model,
+                AGENT_ORCHESTRATOR,
+                context,
+                provider=attempt.provider,
+                temperature=0,
+                max_tokens=900,
+            ))
+            task_ids = [task.id for task in plan.tasks]
+            task_kinds = [task.kind for task in plan.tasks]
+            if len(task_ids) != len(set(task_ids)):
+                reasons.append("duplicate_worker_task_id")
+                continue
+            if len(task_kinds) != len(set(task_kinds)):
+                reasons.append("duplicate_worker_kind")
+                continue
+            return plan, _trace(
+                "orchestrator_agent",
+                status="success",
+                model=attempt.model,
+                provider=attempt.provider,
+                tier="fast",
+                planned_tier="fast",
+                attempted_models=attempted_models,
+                attempted_providers=attempted_providers,
+                reasons=reasons + ([plan.rationale] if plan.rationale else []),
+            )
+        except Exception as exc:
+            reasons.append(f"{attempt.provider}_orchestrator_error:{type(exc).__name__}")
+    return fallback, _trace(
+        "orchestrator_agent",
+        status="fallback",
+        planned_tier="fast",
+        attempted_models=attempted_models,
+        attempted_providers=attempted_providers,
+        reasons=reasons + [fallback.rationale],
+    )
+
+
+def run_academic_worker(
+    task: OrchestratorTask,
+    context: dict,
+) -> tuple[AcademicWorkerOutput | None, dict]:
+    valid_ids = {
+        str(item.get("id"))
+        for item in context.get("evidence") or []
+        if item.get("id") is not None
+    }
+
+    def validate(output: AcademicWorkerOutput) -> list[str]:
+        issues = []
+        if output.task_id != task.id or output.kind != task.kind:
+            issues.append("worker_task_mismatch")
+        evidence_ids = set(output.evidence_ids)
+        if not evidence_ids or not evidence_ids <= valid_ids:
+            issues.append("worker_unknown_evidence_id")
+        if len(output.finding_zh.strip()) < 12 or len(output.finding_en.split()) < 8:
+            issues.append("worker_finding_too_short")
+        return issues
+
+    return run_structured_agent(
+        f"{task.kind}_worker",
+        planned_tier=task.tier,
+        system_prompt=AGENT_WORKER,
+        payload={
+            "task": task.model_dump(),
+            **context,
+        },
+        schema=AcademicWorkerOutput,
+        validate=validate,
+        temperature=0.2,
+        max_tokens=1100,
     )
 
 

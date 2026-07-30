@@ -143,6 +143,8 @@ export default function ProfileSection({
       weight: edge?.weight ?? fallbackWeight,
     })
   }
+  const primarySourceUrl = profile.affiliationEvidence?.sourceLinks?.[0]?.url
+    || (profile.authorId.startsWith("http") ? profile.authorId : "")
 
   return (
     <section className="scholar-profile-page mx-auto px-0 py-8 sm:px-0 sm:py-10">
@@ -155,16 +157,20 @@ export default function ProfileSection({
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0">
-            <a
-              href={profile.authorId}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-start gap-1 break-words text-xl font-bold hover:text-primary hover:underline sm:text-2xl"
-              title={t("graph.open_alex")}
-            >
-              {profile.name}
-              <ExternalLink className="mt-1 h-4 w-4 shrink-0" />
-            </a>
+            {primarySourceUrl ? (
+              <a
+                href={primarySourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-start gap-1 break-words text-xl font-bold hover:text-primary hover:underline sm:text-2xl"
+                title={t("graph.open_alex")}
+              >
+                {profile.name}
+                <ExternalLink className="mt-1 h-4 w-4 shrink-0" />
+              </a>
+            ) : (
+              <p className="break-words text-xl font-bold sm:text-2xl">{profile.name}</p>
+            )}
             {profile.affiliationEvidence?.verifiedEmployment ? (
               <p className="break-words text-sm text-muted-foreground">
                 {[
@@ -228,6 +234,32 @@ export default function ProfileSection({
 
         <TabsContent value="overview" className="space-y-6">
           <ScholarIntroduction profile={profile} lang={lang} t={t} />
+
+          {(profile.agentAnalysis?.orchestrator?.findings?.length ?? 0) > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">{t("agent.specialist_title")}</CardTitle>
+                <CardDescription>{t("agent.specialist_desc")}</CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-3 md:grid-cols-2">
+                {profile.agentAnalysis?.orchestrator?.findings?.map((finding) => (
+                  <div key={finding.taskId} className="rounded-xl border bg-muted/25 p-4">
+                    <p className="text-sm font-semibold">
+                      {t(`agent.worker.${finding.kind}`)}
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      {lang === "zh" ? finding.findingZh : finding.findingEn}
+                    </p>
+                    {(lang === "zh" ? finding.limitationsZh : finding.limitationsEn) ? (
+                      <p className="mt-2 text-xs leading-5 text-muted-foreground/80">
+                        {lang === "zh" ? finding.limitationsZh : finding.limitationsEn}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>

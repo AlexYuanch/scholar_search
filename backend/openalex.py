@@ -3,6 +3,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from typing import Callable, List
 
 import requests
@@ -23,6 +24,7 @@ DEFAULT_MAX_PAGES = int(os.getenv("OPENALEX_MAX_WORK_PAGES", "200"))
 IDENTITY_FINGERPRINT_WORKS = int(os.getenv("OPENALEX_IDENTITY_FINGERPRINT_WORKS", "100"))
 IDENTITY_MAX_WORKERS = int(os.getenv("OPENALEX_IDENTITY_MAX_WORKERS", "8"))
 IDENTITY_FINGERPRINT_VERSION = 2
+PROVISIONAL_AUTHOR_PREFIX = "provisional"
 _SESSION = requests.Session()
 _CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 _BUDGET_GUARD: Callable[[str], int | None] | None = None
@@ -222,6 +224,416 @@ def search_authors(
                 authors_by_id[author_id] = author
 
     return sorted(authors_by_id.values(), key=_author_search_rank, reverse=True)[:100]
+
+
+def is_provisional_author_id(author_id: str | None) -> bool:
+    return str(author_id or "").startswith(f"{PROVISIONAL_AUTHOR_PREFIX}:")
+
+
+def _parse_provisional_author_id(author_id: str) -> tuple[str, int]:
+    parts = str(author_id or "").split(":")
+    if len(parts) != 3 or parts[0] != PROVISIONAL_AUTHOR_PREFIX:
+        raise ValueError("Invalid provisional author id")
+    try:
+        authorship_index = int(parts[2])
+    except ValueError as exc:
+        raise ValueError("Invalid provisional authorship index") from exc
+    if not parts[1] or authorship_index < 0:
+        raise ValueError("Invalid provisional author id")
+    return _entity_id(parts[1]), authorship_index
+
+
+def _person_name_tokens(value: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[a-z0-9\u3400-\u9fff]+", str(value or "").casefold()))
+
+
+def _exact_person_name_match(query: str, candidate: str) -> bool:
+    query_tokens = _person_name_tokens(query)
+    candidate_tokens = _person_name_tokens(candidate)
+    return bool(
+        query_tokens
+        and candidate_tokens
+        and (
+            query_tokens == candidate_tokens
+            or query_tokens == tuple(reversed(candidate_tokens))
+            or sorted(query_tokens) == sorted(candidate_tokens)
+        )
+    )
+
+
+def _raw_author_query_variants(name: str) -> list[str]:
+    normalized = " ".join(name.strip().split())
+    variants = [normalized]
+    tokens = normalized.split()
+    if len(tokens) in {2, 3}:
+        reversed_name = " ".join(reversed(tokens))
+        if reversed_name.casefold() != normalized.casefold():
+            variants.append(reversed_name)
+    return variants
+
+
+_PROVISIONAL_WORK_SELECT = (
+    "id,doi,title,publication_year,publication_date,cited_by_count,authorships,"
+    "abstract_inverted_index,referenced_works,concepts,primary_topic,topics,"
+    "keywords,primary_location,type,language,updated_date"
+)
+
+
+def _search_works_by_raw_author(
+    name: str,
+    *,
+    api_key: str,
+    budget_provider: str,
+    max_pages: int = 2,
+) -> list[dict]:
+    """Find exact paper authorships, including authorships without an Author ID."""
+    works_by_id: dict[str, dict] = {}
+    for variant in _raw_author_query_variants(name):
+        cursor = "*"
+        page = 0
+        escaped = variant.replace('"', "")
+        while cursor and page < max_pages:
+            page += 1
+            data = _get(
+                "/works",
+                api_key=api_key,
+                budget_provider=budget_provider,
+                filter=f'raw_author_name.search:"{escaped}"',
+                per_page=100,
+                cursor=cursor,
+                sort="cited_by_count:desc",
+                select=_PROVISIONAL_WORK_SELECT,
+            )
+            for work in data.get("results", []):
+                work_id = str(work.get("id") or "")
+                if work_id:
+                    works_by_id.setdefault(work_id, work)
+            cursor = (data.get("meta") or {}).get("next_cursor")
+    return list(works_by_id.values())
+
+
+def get_work(
+    work_id: str,
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> dict:
+    return _get(
+        f"/works/{_entity_id(work_id)}",
+        api_key=api_key,
+        budget_provider=budget_provider,
+        select=_PROVISIONAL_WORK_SELECT,
+    )
+
+
+def _authorship_name(authorship: dict) -> str:
+    author = authorship.get("author") or {}
+    return str(
+        authorship.get("raw_author_name")
+        or author.get("display_name")
+        or author.get("raw_name")
+        or ""
+    ).strip()
+
+
+def _provisional_authorship_records(name: str, works: list[dict]) -> list[dict]:
+    records = []
+    for work in works:
+        for index, authorship in enumerate(work.get("authorships") or []):
+            author = authorship.get("author") or {}
+            if author.get("id") or not _exact_person_name_match(name, _authorship_name(authorship)):
+                continue
+            coauthor_keys = set()
+            coauthor_names = []
+            for other_index, other_authorship in enumerate(work.get("authorships") or []):
+                if other_index == index:
+                    continue
+                other_author = other_authorship.get("author") or {}
+                other_name = _authorship_name(other_authorship)
+                other_key = str(other_author.get("id") or "").strip()
+                if other_key:
+                    coauthor_keys.add(other_key)
+                if other_name and other_name not in coauthor_names:
+                    coauthor_names.append(other_name)
+            institution_keys = set()
+            institution_names = []
+            for institution in authorship.get("institutions") or []:
+                institution_name = str(institution.get("display_name") or "").strip()
+                institution_key = str(institution.get("id") or institution_name).strip().casefold()
+                if institution_key:
+                    institution_keys.add(institution_key)
+                if institution_name and institution_name not in institution_names:
+                    institution_names.append(institution_name)
+            records.append({
+                "work": work,
+                "authorship_index": index,
+                "name": _authorship_name(authorship),
+                "authorship": authorship,
+                "coauthor_keys": coauthor_keys,
+                "coauthor_names": coauthor_names,
+                "institution_keys": institution_keys,
+                "institution_names": institution_names,
+            })
+    return records
+
+
+def _provisional_components(records: list[dict]) -> list[set[int]]:
+    """Join records only through duplicated works or stable coauthors.
+
+    A shared institution alone is deliberately insufficient because common
+    institutions routinely contain multiple same-name researchers.
+    """
+    def linked(left: int, right: int) -> bool:
+        left_work = records[left]["work"]
+        right_work = records[right]["work"]
+        left_key = str(left_work.get("doi") or left_work.get("id") or "")
+        right_key = str(right_work.get("doi") or right_work.get("id") or "")
+        return bool(
+            left_key
+            and left_key == right_key
+            or records[left]["coauthor_keys"] & records[right]["coauthor_keys"]
+        )
+
+    remaining = set(range(len(records)))
+    components: list[set[int]] = []
+    while remaining:
+        component = {remaining.pop()}
+        frontier = list(component)
+        while frontier:
+            current = frontier.pop()
+            matches = {candidate for candidate in remaining if linked(current, candidate)}
+            component.update(matches)
+            remaining.difference_update(matches)
+            frontier.extend(matches)
+        components.append(component)
+    return components
+
+
+def _h_index(works: list[dict]) -> int:
+    citations = sorted(
+        (max(0, int(work.get("cited_by_count") or 0)) for work in works),
+        reverse=True,
+    )
+    return max((index for index, count in enumerate(citations, 1) if count >= index), default=0)
+
+
+def _build_provisional_candidate(
+    component: set[int],
+    records: list[dict],
+    *,
+    requested_id: str | None = None,
+) -> dict:
+    component_records = [records[index] for index in sorted(component)]
+    anchor = max(
+        component_records,
+        key=lambda record: (
+            int(record["work"].get("cited_by_count") or 0),
+            int(record["work"].get("publication_year") or 0),
+            str(record["work"].get("id") or ""),
+        ),
+    )
+    anchor_work = anchor["work"]
+    candidate_id = requested_id or (
+        f"{PROVISIONAL_AUTHOR_PREFIX}:{_entity_id(anchor_work.get('id'))}:"
+        f"{anchor['authorship_index']}"
+    )
+    works_by_id = {}
+    for record in component_records:
+        work = deepcopy(record["work"])
+        work_id = str(work.get("id") or work.get("doi") or len(works_by_id))
+        works_by_id.setdefault(work_id, work)
+    works = list(works_by_id.values())
+    publication_years = sorted({
+        int(work.get("publication_year"))
+        for work in works
+        if work.get("publication_year")
+    })
+    topic_ids = set()
+    topic_names = set()
+    for work in works:
+        for topic in [work.get("primary_topic") or {}, *(work.get("topics") or [])]:
+            if topic.get("id"):
+                topic_ids.add(str(topic["id"]))
+            if topic.get("display_name"):
+                topic_names.add(str(topic["display_name"]).strip())
+    affiliation_rows: dict[str, dict] = {}
+    for record in component_records:
+        year = int(record["work"].get("publication_year") or 0)
+        work_key = str(record["work"].get("doi") or record["work"].get("id") or "")
+        for institution in record["authorship"].get("institutions") or []:
+            name = str(institution.get("display_name") or "").strip()
+            if not name:
+                continue
+            key = str(institution.get("id") or name).strip().casefold()
+            row = affiliation_rows.setdefault(key, {
+                "institution": deepcopy(institution),
+                "years": set(),
+                "work_ids": set(),
+            })
+            if year:
+                row["years"].add(year)
+            if work_key:
+                row["work_ids"].add(work_key)
+    affiliations = [
+        {
+            "institution": row["institution"],
+            "years": sorted(row["years"], reverse=True),
+        }
+        for row in affiliation_rows.values()
+    ]
+    fingerprint_affiliations = [
+        {
+            "id": row["institution"].get("id"),
+            "name": row["institution"].get("display_name", ""),
+            "years": sorted(row["years"], reverse=True),
+            "work_count": len(row["work_ids"]),
+        }
+        for row in affiliation_rows.values()
+    ]
+    latest_record = max(
+        component_records,
+        key=lambda record: int(record["work"].get("publication_year") or 0),
+    )
+    last_known_institutions = deepcopy(
+        latest_record["authorship"].get("institutions") or []
+    )
+    coauthor_keys = sorted(set().union(
+        *(record["coauthor_keys"] for record in component_records)
+    ))
+    anchor_data = {
+        "work_id": str(anchor_work.get("id") or ""),
+        "title": str(anchor_work.get("title") or ""),
+        "doi": str(anchor_work.get("doi") or ""),
+        "year": anchor_work.get("publication_year"),
+        "authorship_index": anchor["authorship_index"],
+        "coauthors": anchor["coauthor_names"],
+        "institutions": anchor["institution_names"],
+    }
+    return {
+        "id": candidate_id,
+        "display_name": anchor["name"],
+        "works_count": len(works),
+        "cited_by_count": sum(int(work.get("cited_by_count") or 0) for work in works),
+        "summary_stats": {"h_index": _h_index(works)},
+        "orcid": None,
+        "last_known_institutions": last_known_institutions,
+        "affiliations": affiliations,
+        "provisional": True,
+        "provisional_anchor": anchor_data,
+        "identity_confidence": "review",
+        "identity_evidence": [{
+            "type": "paper_anchor",
+            "work_id": anchor_data["work_id"],
+            "title": anchor_data["title"],
+            "doi": anchor_data["doi"],
+            "coauthors": anchor_data["coauthors"],
+            "institutions": anchor_data["institutions"],
+        }],
+        "identity_fingerprint": {
+            "version": IDENTITY_FINGERPRINT_VERSION,
+            "work_ids": sorted(
+                str(work.get("doi") or work.get("id") or "")
+                for work in works
+                if work.get("doi") or work.get("id")
+            ),
+            "coauthor_ids": coauthor_keys,
+            "topic_ids": sorted(topic_ids),
+            "topic_names": sorted(topic_names, key=str.casefold),
+            "publication_years": publication_years,
+            "sampled_works": len(works),
+            "affiliations": fingerprint_affiliations,
+        },
+        "_provisional_work_ids": [
+            str(work.get("id") or "") for work in works if work.get("id")
+        ],
+        "_provisional_works": works,
+    }
+
+
+def discover_provisional_authors(
+    name: str,
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> list[dict]:
+    """Create review-only candidates from exact paper authorships lacking IDs."""
+    works = _search_works_by_raw_author(
+        name,
+        api_key=api_key,
+        budget_provider=budget_provider,
+    )
+    records = _provisional_authorship_records(name, works)
+    candidates = [
+        _build_provisional_candidate(component, records)
+        for component in _provisional_components(records)
+    ]
+    for candidate in candidates:
+        candidate.pop("_provisional_work_ids", None)
+        candidate.pop("_provisional_works", None)
+    return sorted(candidates, key=_author_search_rank, reverse=True)[:20]
+
+
+def get_provisional_author_bundle(
+    author_id: str,
+    *,
+    api_key: str,
+    budget_provider: str,
+) -> tuple[dict, list[dict]]:
+    """Resolve a publication-anchored candidate into a conservative paper cluster."""
+    work_id, authorship_index = _parse_provisional_author_id(author_id)
+    anchor_work = get_work(
+        work_id,
+        api_key=api_key,
+        budget_provider=budget_provider,
+    )
+    authorships = anchor_work.get("authorships") or []
+    if authorship_index >= len(authorships):
+        raise OpenAlexError("OpenAlex anchor authorship no longer exists", status_code=404)
+    name = _authorship_name(authorships[authorship_index])
+    works = _search_works_by_raw_author(
+        name,
+        api_key=api_key,
+        budget_provider=budget_provider,
+    )
+    if not any(_entity_id(work.get("id")) == work_id for work in works):
+        works.append(anchor_work)
+    records = _provisional_authorship_records(name, works)
+    anchor_record_index = next(
+        (
+            index
+            for index, record in enumerate(records)
+            if _entity_id(record["work"].get("id")) == work_id
+            and record["authorship_index"] == authorship_index
+        ),
+        None,
+    )
+    if anchor_record_index is None:
+        raise OpenAlexError("OpenAlex anchor authorship cannot be matched", status_code=404)
+    component = next(
+        component
+        for component in _provisional_components(records)
+        if anchor_record_index in component
+    )
+    candidate = _build_provisional_candidate(
+        component,
+        records,
+        requested_id=author_id,
+    )
+    provisional_works = candidate.pop("_provisional_works")
+    candidate.pop("_provisional_work_ids", None)
+    for work in provisional_works:
+        for index, authorship in enumerate(work.get("authorships") or []):
+            if not _exact_person_name_match(name, _authorship_name(authorship)):
+                continue
+            author = dict(authorship.get("author") or {})
+            if author.get("id"):
+                continue
+            author["id"] = author_id
+            author["display_name"] = name
+            authorship["author"] = author
+    candidate["merged_author_ids"] = [author_id]
+    candidate["provisional"] = True
+    return candidate, provisional_works
 
 
 def get_author(author_id: str, *, api_key: str, budget_provider: str) -> dict:

@@ -176,3 +176,53 @@ def test_longcat_failure_falls_back_to_deepseek(monkeypatch):
     assert trace["attemptedModels"] == ["LongCat-2.0", "deepseek-v4-flash"]
     assert trace["attemptedProviders"] == ["longcat", "deepseek"]
     assert "longcat_fast_error:RuntimeError" in trace["reasons"]
+
+
+def test_orchestrator_fallback_dynamically_selects_available_worker_tasks(monkeypatch):
+    monkeypatch.delenv("LONGCAT_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    plan, trace = llm.orchestrate_workers({
+        "paper_count": 18,
+        "representative_paper_count": 4,
+        "coauthor_count": 8,
+        "institution_count": 3,
+        "active_years": 9,
+    })
+
+    assert {task.kind for task in plan.tasks} == {
+        "representative_works",
+        "collaboration_opportunities",
+        "institution_positioning",
+        "research_continuity",
+    }
+    assert trace["status"] == "disabled"
+
+
+def test_worker_output_rejects_unknown_evidence_ids(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(llm, "_invoke_json", lambda *_args, **_kwargs: {
+        "task_id": "representative",
+        "kind": "representative_works",
+        "finding_zh": "代表作体现了研究方向。",
+        "finding_en": "Representative works reflect the research direction.",
+        "evidence_ids": ["404"],
+        "confidence": "high",
+        "limitations_zh": "",
+        "limitations_en": "",
+    })
+
+    result, trace = llm.run_academic_worker(
+        llm.OrchestratorTask(
+            id="representative",
+            kind="representative_works",
+            objective="分析代表作",
+            rationale="有多篇高被引论文",
+            tier="fast",
+        ),
+        {"evidence": [{"id": "1", "type": "paper", "text": "Known paper"}]},
+    )
+
+    assert result is None
+    assert "worker_unknown_evidence_id" in trace["reasons"]

@@ -124,14 +124,15 @@ flowchart LR
 ### 交互式查询
 
 1. 主画像调用 `POST /api/profile/jobs`。已有画像立即返回；首次画像在同一事务写入学者占位、用户历史和 `profile_status=queued`，再幂等创建保存查询姓名与联合作者 ID 的 `refresh_jobs`，Web 请求随即结束。
-2. Worker 领取任务后对候选身份组再次验证；仅联合获取通过身份阈值的 OpenAlex 作者详情和论文，游标分页必须完整结束。
+2. Worker 领取任务后对候选身份组再次验证；常规候选仅联合获取通过身份阈值的 OpenAlex 作者详情和论文。若候选来自没有 Author ID 的精确论文署名，则使用 `provisional:<work_id>:<authorship_index>` 作为稳定锚点，重新核对署名、机构、DOI 与合作者，并只保留与锚点通过重复论文或稳定合作者连接的保守论文簇。
 3. 对有 DOI 的论文查询 Crossref；随后按作者身份选择 DBLP person 并匹配已有论文；配置 SerpApi 时再核对 Google Scholar。
 4. 数据裁决节点按 DOI、题名和年份关联来源，保留字段来源与冲突；任何辅助来源都不能增加论文。身份节点再以 ORCID、机构和合作者裁定准确优先的主论文集。
-5. 引用、细粒度方向、演化和合作节点只消费身份裁决后的论文集；总结生成后执行证据审查。
-6. 质量检查比较 `works_count`、本次数量、上一成功数量和证据审查结果。
-7. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
-8. `profile_status.version + 1` 并设为 `ready`；触发器发送 PostgreSQL 通知。前端也轮询带任务状态的查询历史，使用户离开生成页后仍能收到右下角完成提醒。
-9. `POST /api/profile/stream` 保留为对比画像等兼容流程，不再作为主画像首次生成入口。
+5. 引用、细粒度方向、演化和合作节点只消费身份裁决后的论文集。合作图完成后，Orchestrator 根据代表作、合作者、机构和时间证据动态生成最多四个任务，通过 LangGraph `Send` 并行派发给专业 Worker，再汇总可追溯结论供总结 Agent 使用。
+6. 总结生成后由 Evaluator 审查；拒绝时把 flags 与双语审查意见发送给 Optimizer 修改并再次审查，最多修订两轮。之后确定性证据门禁仍会逐项核对引用 ID、论文 URL/DOI 和统计口径。
+7. 质量检查比较 `works_count`、本次数量、上一成功数量和证据审查结果。
+8. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
+9. `profile_status.version + 1` 并设为 `ready`；触发器发送 PostgreSQL 通知。前端也轮询带任务状态的查询历史，使用户离开生成页后仍能收到右下角完成提醒。
+10. `POST /api/profile/stream` 保留为对比画像等兼容流程，不再作为主画像首次生成入口。
 
 ### 最近成功画像与后台更新
 

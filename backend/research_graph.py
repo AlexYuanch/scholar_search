@@ -10,7 +10,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from crossref import normalize_doi, verify_dois
-from openalex import get_author, get_graph_works
+from openalex import (
+    get_author,
+    get_graph_works,
+    get_provisional_author_bundle,
+    is_provisional_author_id,
+)
 
 
 GRAPH_ANALYZER_VERSION = "abstract-extractive-v1"
@@ -632,24 +637,33 @@ def sync_scholar_research_graph(
         author_id,
         *(str(value) for value in merged_author_ids if value),
     ]))[:8]
-    author = get_author(author_id, api_key=api_key, budget_provider=budget_provider)
     works = []
     warnings = []
-    for source_author_id in target_author_ids:
-        author_works, author_warnings, complete = get_graph_works(
-            source_author_id,
-            published_since=published_since,
+    if is_provisional_author_id(author_id):
+        author, works = get_provisional_author_bundle(
+            author_id,
             api_key=api_key,
             budget_provider=budget_provider,
         )
-        warnings.extend(
-            f"{source_author_id}: {warning}" for warning in author_warnings
-        )
-        if not complete:
-            raise IncompleteGraphSync(
-                "; ".join(warnings) or "OpenAlex graph fetch incomplete"
+        target_author_ids = [author_id]
+        published_since = None
+    else:
+        author = get_author(author_id, api_key=api_key, budget_provider=budget_provider)
+        for source_author_id in target_author_ids:
+            author_works, author_warnings, complete = get_graph_works(
+                source_author_id,
+                published_since=published_since,
+                api_key=api_key,
+                budget_provider=budget_provider,
             )
-        works.extend(author_works)
+            warnings.extend(
+                f"{source_author_id}: {warning}" for warning in author_warnings
+            )
+            if not complete:
+                raise IncompleteGraphSync(
+                    "; ".join(warnings) or "OpenAlex graph fetch incomplete"
+                )
+            works.extend(author_works)
 
     source_fetched_works = len(works)
     if published_work_ids is not None:

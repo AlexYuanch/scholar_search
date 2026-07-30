@@ -184,6 +184,7 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-base font-semibold">{c.name}</p>
                     {c.orcid && <Badge variant="outline">{t("candidate.orcid_available")}</Badge>}
+                    {c.provisional && <Badge variant="outline">{t("candidate.provisional")}</Badge>}
                   </div>
                   <p className="mt-1 max-w-2xl break-words text-sm text-muted-foreground">
                     <span className="font-medium text-foreground">{t("candidate.primary_inst")}</span>
@@ -222,6 +223,38 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                       {c.research_topics.slice(0, 4).map((topic) => (
                         <Badge key={topic} variant="secondary" className="font-normal">{topic}</Badge>
                       ))}
+                    </div>
+                  ) : null}
+                  {c.provisional_anchor?.title ? (
+                    <div className="mt-3 max-w-2xl rounded-xl border bg-muted/35 p-3 text-xs text-muted-foreground">
+                      <p className="font-medium text-foreground">
+                        {t("candidate.anchor_paper")}：
+                        {c.provisional_anchor.work_id ? (
+                          <a
+                            href={c.provisional_anchor.work_id}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ml-1 text-primary hover:underline"
+                          >
+                            {c.provisional_anchor.title}
+                          </a>
+                        ) : (
+                          <span className="ml-1">{c.provisional_anchor.title}</span>
+                        )}
+                      </p>
+                      {c.provisional_anchor.doi ? (
+                        <p className="mt-1 break-all">DOI: {c.provisional_anchor.doi.replace("https://doi.org/", "")}</p>
+                      ) : null}
+                      {c.provisional_anchor.institutions?.length ? (
+                        <p className="mt-1">
+                          {t("candidate.anchor_institution")}：{c.provisional_anchor.institutions.join("、")}
+                        </p>
+                      ) : null}
+                      {c.provisional_anchor.coauthors?.length ? (
+                        <p className="mt-1">
+                          {t("candidate.anchor_coauthors")}：{c.provisional_anchor.coauthors.join("、")}
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
                   {c.orcid ? (

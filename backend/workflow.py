@@ -24,8 +24,18 @@ DAG 结构（多来源裁决 + Agent 分析 + 证据审查）:
                                                           ↓
                                                    build_graph
                                                           ↓
+                                                orchestrate_workers
+                                                          ↓
+                                             dynamic analysis workers
+                                                          ↓
+                                                aggregate_workers
+                                                          ↓
                                                 generate_report → review_report_agent
+                                                                          ↓ rejected
+                                                                  optimize_report
                                                                           ↓
+                                                                  review_report_agent
+                                                                          ↓ approved/limit
                                                                   review_evidence
                                                           ↓
                                                 format_payload → END
@@ -49,8 +59,14 @@ from nodes import (
     agent_analyze_trajectory,
     analyze_coauthors,
     build_collaboration_graph,
+    orchestrate_analysis_workers,
+    dispatch_analysis_workers,
+    run_analysis_worker,
+    aggregate_analysis_workers,
     generate_profile_report,
     agent_review_profile,
+    route_after_agent_review,
+    optimize_profile_report,
     review_profile_evidence,
     format_web_payload,
 )
@@ -73,8 +89,12 @@ NODES = [
     ("agent_analyze_trajectory", agent_analyze_trajectory),
     ("analyze_coauthors", analyze_coauthors),
     ("build_graph", build_collaboration_graph),
+    ("orchestrate_workers", orchestrate_analysis_workers),
+    ("analysis_worker", run_analysis_worker),
+    ("aggregate_workers", aggregate_analysis_workers),
     ("generate_report", generate_profile_report),
     ("agent_review_report", agent_review_profile),
+    ("optimize_report", optimize_profile_report),
     ("review_evidence", review_profile_evidence),
     ("format_payload", format_web_payload),
 ]
@@ -112,9 +132,23 @@ def build() -> StateGraph:
 
     # 串行尾
     builder.add_edge("analyze_coauthors", "build_graph")
-    builder.add_edge("build_graph", "generate_report")
+    builder.add_edge("build_graph", "orchestrate_workers")
+    builder.add_conditional_edges(
+        "orchestrate_workers",
+        dispatch_analysis_workers,
+    )
+    builder.add_edge("analysis_worker", "aggregate_workers")
+    builder.add_edge("aggregate_workers", "generate_report")
     builder.add_edge("generate_report", "agent_review_report")
-    builder.add_edge("agent_review_report", "review_evidence")
+    builder.add_conditional_edges(
+        "agent_review_report",
+        route_after_agent_review,
+        {
+            "optimize_report": "optimize_report",
+            "review_evidence": "review_evidence",
+        },
+    )
+    builder.add_edge("optimize_report", "agent_review_report")
     builder.add_edge("review_evidence", "format_payload")
     builder.add_edge("format_payload", END)
 

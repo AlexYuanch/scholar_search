@@ -11,6 +11,7 @@ from nodes import dedup_authors
 from openalex import (
     IDENTITY_FINGERPRINT_VERSION,
     OpenAlexError,
+    discover_provisional_authors,
     enrich_authors_for_disambiguation,
     search_authors,
 )
@@ -38,7 +39,7 @@ SEARCH_COALESCE_POLL_SECONDS = float(
 OPENALEX_MIN_REMAINING_CREDITS = int(
     os.getenv("OPENALEX_MIN_REMAINING_CREDITS", "200")
 )
-AFFILIATION_SELECTION_VERSION = 3
+AFFILIATION_SELECTION_VERSION = 4
 
 _IDENTITY_GROUP_ORDER = {"high": 0, "medium": 1, "review": 2}
 
@@ -154,6 +155,16 @@ def _candidate_identity_evidence(author: dict) -> list[dict]:
     if isinstance(author.get("identity_evidence"), list):
         return author["identity_evidence"]
     evidence = []
+    if author.get("provisional") and author.get("provisional_anchor"):
+        anchor = author["provisional_anchor"]
+        evidence.append({
+            "type": "paper_anchor",
+            "work_id": anchor.get("work_id"),
+            "title": anchor.get("title"),
+            "doi": anchor.get("doi"),
+            "coauthors": anchor.get("coauthors") or [],
+            "institutions": anchor.get("institutions") or [],
+        })
     if author.get("orcid"):
         evidence.append({"type": "orcid", "value": author["orcid"]})
     if author.get("primary_institution"):
@@ -258,6 +269,12 @@ def _candidate_payload(author: dict) -> dict:
                     "topic_count": int(item.get("topic_count") or 0),
                 },
             })
+        elif item.get("type") == "paper_anchor":
+            match_reasons.append({
+                "code": "publication_anchor",
+                "label": "publication_anchor",
+                "value": item.get("title") or item.get("doi") or item.get("work_id"),
+            })
 
     research_topics = list(dict.fromkeys(
         str(topic).strip()
@@ -269,7 +286,7 @@ def _candidate_payload(author: dict) -> dict:
         default=None,
     )
     identity_score = max(0, min(100, identity_score))
-    return {
+    payload = {
         "id": author["id"],
         "name": author.get("display_name") or author.get("name") or "",
         "institution": primary_institution,
@@ -293,6 +310,14 @@ def _candidate_payload(author: dict) -> dict:
         "latest_publication_year": latest_publication_year,
         "research_topics": research_topics,
     }
+    if author.get("provisional"):
+        payload.update({
+            "provisional": True,
+            "provisional_anchor": author.get("provisional_anchor") or {},
+            "identity_group": "review",
+            "identity_score": min(int(payload["identity_score"]), 45),
+        })
+    return payload
 
 
 def _sort_candidate_payloads(candidates: list[dict]) -> list[dict]:
@@ -324,8 +349,10 @@ def build_live_candidate_payload(
     budget_provider: str,
     search_fn: Callable[[str], list[dict]] | None = None,
     enrich_fn: Callable[[list[dict]], list[dict]] | None = None,
+    provisional_fn: Callable[[str], list[dict]] | None = None,
 ) -> tuple[list[dict], bool]:
     """Fetch candidates while reusing persistent identity fingerprints."""
+    use_default_search = search_fn is None
     search_fn = search_fn or (
         lambda name: search_authors(
             name,
@@ -341,6 +368,18 @@ def build_live_candidate_payload(
         )
     )
     candidates = [dict(candidate) for candidate in search_fn(query_text)]
+    provisional_incomplete = False
+    try:
+        if provisional_fn is not None:
+            candidates.extend(dict(candidate) for candidate in provisional_fn(query_text))
+        elif use_default_search:
+            candidates.extend(discover_provisional_authors(
+                query_text,
+                api_key=api_key,
+                budget_provider=budget_provider,
+            ))
+    except OpenAlexError:
+        provisional_incomplete = True
     author_ids = [str(candidate.get("id")) for candidate in candidates if candidate.get("id")]
     cached_by_id = repository.get_openalex_identity_caches(author_ids)
     refresh_candidates = []
@@ -348,6 +387,10 @@ def build_live_candidate_payload(
 
     for candidate in candidates:
         author_id = str(candidate.get("id") or "")
+        if candidate.get("provisional") and _supports_current_fingerprint(
+            candidate.get("identity_fingerprint") or {}
+        ):
+            continue
         cached = cached_by_id.get(author_id)
         cached_fingerprint = (cached or {}).get("fingerprint") or {}
         if cached and _supports_current_fingerprint(cached_fingerprint):
@@ -375,7 +418,7 @@ def build_live_candidate_payload(
                 refreshed["identity_fingerprint"] = stale_fallbacks[author_id]
             refreshed_by_id[author_id] = refreshed
 
-    incomplete = False
+    incomplete = provisional_incomplete
     for index, candidate in enumerate(candidates):
         author_id = str(candidate.get("id") or "")
         if author_id in refreshed_by_id:
