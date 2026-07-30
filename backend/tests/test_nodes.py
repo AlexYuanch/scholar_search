@@ -383,6 +383,26 @@ def test_fetch_profile_and_collect_works_support_provisional_paper_candidate(mon
     assert state["raw_works"][0]["authorships"][0]["author"]["id"] == provisional_id
 
 
+def test_fetch_profile_accepts_bare_openalex_author_id(monkeypatch):
+    import openalex
+
+    monkeypatch.setattr(openalex, "get_author", lambda _author_id, **_kwargs: {
+        "id": "https://openalex.org/A5100700361",
+        "display_name": "Kaiming He",
+        "works_count": 164,
+        "last_known_institutions": [],
+        "affiliations": [],
+    })
+
+    state = default_state()
+    state["target_author_id"] = "A5100700361"
+    result = fetch_author_profile(state)
+
+    assert result["target_author_profile"]["display_name"] == "Kaiming He"
+    assert result["target_author_ids"] == ["https://openalex.org/A5100700361"]
+    assert result["identity_audit"]["rejectedAuthorIds"] == []
+
+
 def test_fetch_profile_rejects_client_supplied_namesake_without_identity_evidence(monkeypatch):
     import openalex
 

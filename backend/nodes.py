@@ -29,6 +29,10 @@ def _normalized_name_keys(author: dict) -> set[str]:
     return keys
 
 
+def _openalex_entity_id(value: object) -> str:
+    return str(value or "").strip().rstrip("/").rsplit("/", 1)[-1]
+
+
 def _institution_keys(author: dict) -> set[str]:
     keys = set()
     for institution in author.get("last_known_institutions") or []:
@@ -278,7 +282,15 @@ def fetch_author_profile(state: ScholarProfileState) -> dict:
         )
         for author_id in requested_ids
     ]
-    valid_ids = [primary_id]
+    primary_profile = next(
+        (
+            profile
+            for profile in profiles
+            if _openalex_entity_id(profile.get("id")) == _openalex_entity_id(primary_id)
+        ),
+        profiles[0],
+    )
+    valid_ids = [primary_profile.get("id") or primary_id]
     if len(profiles) > 1:
         groups = dedup_authors(
             enrich_authors_for_disambiguation(
@@ -288,15 +300,32 @@ def fetch_author_profile(state: ScholarProfileState) -> dict:
             )
         )
         selected = next(
-            (group for group in groups if primary_id in (group.get("merged_ids") or [])),
+            (
+                group
+                for group in groups
+                if _openalex_entity_id(primary_id)
+                in {
+                    _openalex_entity_id(author_id)
+                    for author_id in group.get("merged_ids") or []
+                }
+            ),
             None,
         )
         if selected:
             valid_ids = selected.get("merged_ids") or valid_ids
-    valid_profiles = [profile for profile in profiles if profile.get("id") in valid_ids]
+    valid_id_keys = {_openalex_entity_id(author_id) for author_id in valid_ids}
+    valid_profiles = [
+        profile
+        for profile in profiles
+        if _openalex_entity_id(profile.get("id")) in valid_id_keys
+    ]
     primary = deepcopy(next(
-        (profile for profile in valid_profiles if profile.get("id") == primary_id),
-        valid_profiles[0],
+        (
+            profile
+            for profile in valid_profiles
+            if _openalex_entity_id(profile.get("id")) == _openalex_entity_id(primary_id)
+        ),
+        primary_profile,
     ))
     institutions = []
     alternatives = []
@@ -317,7 +346,11 @@ def fetch_author_profile(state: ScholarProfileState) -> dict:
         "primaryAuthorId": primary_id,
         "requestedAuthorIds": requested_ids,
         "mergedAuthorIds": valid_ids,
-        "rejectedAuthorIds": [author_id for author_id in requested_ids if author_id not in valid_ids],
+        "rejectedAuthorIds": [
+            author_id
+            for author_id in requested_ids
+            if _openalex_entity_id(author_id) not in valid_id_keys
+        ],
         "mergedCount": len(valid_ids),
     }
     return {
