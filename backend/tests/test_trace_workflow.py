@@ -40,3 +40,41 @@ def test_result_summary_never_includes_sensitive_keys():
         "provider": "longcat",
         "model": "LongCat-2.0",
     }
+
+
+def test_result_summary_exposes_sanitized_agent_and_worker_status():
+    summary = _result_summary({
+        "agent_runs": [{
+            "agent": "topic_agent",
+            "status": "success",
+            "provider": "longcat",
+            "model": "LongCat-2.0",
+            "tier": "fast",
+            "escalated": False,
+            "reasons": ["validated"],
+            "access_token": "do-not-print",
+        }],
+        "worker_outputs": [{
+            "taskId": "representative_works",
+            "kind": "representative_works",
+            "confidence": 0.92,
+            "evidenceIds": ["1", "2"],
+            "findingZh": "sensitive long-form output",
+        }],
+    })
+
+    assert summary["agent_runs"] == [{
+        "agent": "topic_agent",
+        "status": "success",
+        "provider": "longcat",
+        "model": "LongCat-2.0",
+        "tier": "fast",
+        "escalated": False,
+        "reasons": ["validated"],
+    }]
+    assert summary["worker_outputs"] == [{
+        "task_id": "representative_works",
+        "kind": "representative_works",
+        "confidence": 0.92,
+        "evidence_count": 2,
+    }]

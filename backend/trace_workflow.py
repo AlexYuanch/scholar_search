@@ -70,7 +70,50 @@ def _compact_value(key: str, value: Any) -> Any:
         }
     if key in {"topic_clusters", "interest_timeline", "coauthors", "graph_nodes", "graph_edges"}:
         return {"count": len(value)} if isinstance(value, list) else {"count": 0}
-    if key in {"agent_runs", "worker_outputs", "review_history", "profile_evidence", "analysis_claims"}:
+    if key == "agent_runs" and isinstance(value, list):
+        return [
+            {
+                "agent": _safe_text(item.get("agent"), 48),
+                "status": _safe_text(item.get("status"), 24),
+                "provider": _safe_text(item.get("provider"), 24),
+                "model": _safe_text(item.get("model"), 48),
+                "tier": _safe_text(item.get("tier") or item.get("plannedTier"), 24),
+                "escalated": bool(item.get("escalated")),
+                "reasons": [
+                    _safe_text(reason, 72)
+                    for reason in (item.get("reasons") or [])[:3]
+                ],
+            }
+            for item in value
+            if isinstance(item, dict)
+        ]
+    if key == "worker_outputs" and isinstance(value, list):
+        return [
+            {
+                "task_id": _safe_text(item.get("taskId"), 48),
+                "kind": _safe_text(item.get("kind"), 48),
+                "confidence": item.get("confidence"),
+                "evidence_count": len(item.get("evidenceIds") or []),
+            }
+            for item in value
+            if isinstance(item, dict)
+        ]
+    if key == "review_history" and isinstance(value, list):
+        return [
+            {
+                "iteration": item.get("iteration"),
+                "supported": bool(item.get("summarySupported")),
+                "confidence": item.get("confidence"),
+                "approved_evidence_count": len(item.get("approvedEvidenceIds") or []),
+                "flags": [
+                    _safe_text(flag, 72)
+                    for flag in (item.get("flags") or [])[:4]
+                ],
+            }
+            for item in value
+            if isinstance(item, dict)
+        ]
+    if key in {"profile_evidence", "analysis_claims"}:
         return {"count": len(value)} if isinstance(value, list) else {"count": 0}
     if key == "orchestrator_tasks" and isinstance(value, list):
         return [
@@ -137,6 +180,7 @@ def _state_summary(state: Any) -> dict[str, Any]:
         "orchestrator_tasks",
         "worker_task",
         "worker_outputs",
+        "agent_runs",
         "profile_evidence",
         "review_iteration",
         "review_history",
