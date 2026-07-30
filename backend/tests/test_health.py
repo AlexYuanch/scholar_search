@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from auth import AuthUser, require_user
 from credentials import encrypt_secret
 from main import app
+from openalex import IDENTITY_FINGERPRINT_VERSION
 from repository import InMemoryRepository
 
 
@@ -232,13 +233,19 @@ def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticate
         "summary_stats": {"h_index": 2},
         "last_known_institutions": [{"display_name": "Current Institute"}],
         "affiliations": [
-            {"institution": {"display_name": "Current Institute"}, "years": [2025]},
+            {"institution": {"display_name": "Current Institute"}, "years": [2024, 2025]},
             {"institution": {"display_name": "Previous Institute"}, "years": [2020]},
         ],
         "identity_fingerprint": {
+            "version": IDENTITY_FINGERPRINT_VERSION,
             "sampled_works": 2,
             "coauthor_ids": ["C1"],
             "topic_ids": ["T1"],
+            "affiliations": [{
+                "name": "Current Institute",
+                "years": [2024, 2025],
+                "work_count": 2,
+            }],
         },
     }
     monkeypatch.setattr(main, "search_authors", lambda _name, **_kwargs: [author])
@@ -256,6 +263,11 @@ def test_search_exposes_identity_confirmation_evidence(monkeypatch, authenticate
     assert candidate["identity_confidence"] == "single"
     assert candidate["primary_institution"] == "Current Institute"
     assert candidate["other_institutions"] == ["Previous Institute"]
+    assert candidate["historical_affiliations"] == [{
+        "name": "Previous Institute",
+        "years": [2020],
+        "work_count": 0,
+    }]
     assert candidate["orcid"].endswith("0001")
     assert {item["type"] for item in candidate["identity_evidence"]} == {
         "orcid",

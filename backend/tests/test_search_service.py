@@ -28,6 +28,9 @@ def _payload(author_id="A1"):
         "merged_ids": [author_id],
         "disambiguation": "Independent profile",
         "identity_confidence": "single",
+        "identity_group": "review",
+        "identity_score": 35,
+        "match_reasons": [],
         "identity_evidence": [],
     }]
 
@@ -132,7 +135,13 @@ def test_identity_fingerprints_are_reused_across_different_queries():
     repository = InMemoryRepository()
     repository.save_openalex_identity_cache(
         "A1",
-        {"sampled_works": 1, "work_ids": ["W1"], "coauthor_ids": [], "topic_ids": []},
+        {
+            "version": search_service.IDENTITY_FINGERPRINT_VERSION,
+            "sampled_works": 1,
+            "work_ids": ["W1"],
+            "coauthor_ids": [],
+            "topic_ids": [],
+        },
         3600,
     )
     authors = [
@@ -157,6 +166,7 @@ def test_identity_fingerprints_are_reused_across_different_queries():
             {
                 **candidate,
                 "identity_fingerprint": {
+                    "version": search_service.IDENTITY_FINGERPRINT_VERSION,
                     "sampled_works": 1,
                     "work_ids": [f"W-{candidate['id']}"],
                     "coauthor_ids": [],
@@ -205,8 +215,14 @@ def test_candidate_payload_exposes_identity_sorting_and_topic_filters():
             "sharedInstitutions": 1,
         }],
         "identity_fingerprint": {
+            "version": search_service.IDENTITY_FINGERPRINT_VERSION,
             "topic_names": ["Analytical Engines", "History of Computing"],
             "publication_years": [2024, 2025],
+            "affiliations": [{
+                "name": "Analytical Engine Institute",
+                "years": [2024, 2025],
+                "work_count": 2,
+            }],
         },
     })
 
@@ -217,6 +233,138 @@ def test_candidate_payload_exposes_identity_sorting_and_topic_filters():
     assert {reason["code"] for reason in candidate["match_reasons"]} >= {
         "orcid", "primary_institution", "merged_profile",
     }
+
+
+def test_candidate_primary_affiliation_requires_two_works_or_consecutive_years():
+    candidate = search_service._candidate_payload({
+        "id": "A1",
+        "display_name": "Yunfan Gao",
+        "last_known_institutions": [
+            {"display_name": "Tongji University"},
+            {"display_name": "Northwest A&F University"},
+        ],
+        "affiliations": [
+            {
+                "institution": {"display_name": "Tongji University"},
+                "years": [2024, 2025, 2026],
+            },
+            {
+                "institution": {"display_name": "Fudan University"},
+                "years": [2022],
+            },
+            {
+                "institution": {"display_name": "Nanjing University"},
+                "years": [2022],
+            },
+            {
+                "institution": {"display_name": "Northwest A&F University"},
+                "years": [2025],
+            },
+        ],
+        "identity_fingerprint": {
+            "version": search_service.IDENTITY_FINGERPRINT_VERSION,
+            "affiliations": [
+                {
+                    "name": "Tongji University",
+                    "years": [2024, 2025, 2026],
+                    "work_count": 8,
+                },
+                {
+                    "name": "Harbin Engineering University",
+                    "years": [2021],
+                    "work_count": 1,
+                },
+            ],
+        },
+    })
+
+    assert candidate["primary_institution"] == "Tongji University"
+    assert candidate["institution"] == "Tongji University"
+    assert [row["name"] for row in candidate["historical_affiliations"]] == [
+        "Northwest A&F University",
+        "Fudan University",
+        "Nanjing University",
+        "Harbin Engineering University",
+    ]
+
+
+def test_two_papers_in_one_year_can_support_primary_affiliation():
+    candidate = search_service._candidate_payload({
+        "id": "A1",
+        "display_name": "Ada Lovelace",
+        "last_known_institutions": [{"display_name": "Analytical Engine Institute"}],
+        "identity_fingerprint": {
+            "version": search_service.IDENTITY_FINGERPRINT_VERSION,
+            "affiliations": [{
+                "name": "Analytical Engine Institute",
+                "years": [2025],
+                "work_count": 2,
+            }],
+        },
+    })
+
+    assert candidate["primary_institution"] == "Analytical Engine Institute"
+
+
+def test_single_paper_affiliation_is_only_historical_information():
+    candidate = search_service._candidate_payload({
+        "id": "A1",
+        "display_name": "Ada Lovelace",
+        "last_known_institutions": [{"display_name": "Analytical Engine Institute"}],
+        "identity_fingerprint": {
+            "version": search_service.IDENTITY_FINGERPRINT_VERSION,
+            "affiliations": [{
+                "name": "Analytical Engine Institute",
+                "years": [2025],
+                "work_count": 1,
+            }],
+        },
+    })
+
+    assert candidate["primary_institution"] == ""
+    assert candidate["historical_affiliations"] == [{
+        "name": "Analytical Engine Institute",
+        "years": [2025],
+        "work_count": 1,
+    }]
+
+
+def test_legacy_identity_fingerprint_is_refreshed_even_when_cache_is_fresh():
+    repository = InMemoryRepository()
+    repository.save_openalex_identity_cache(
+        "A1",
+        {"sampled_works": 1, "work_ids": ["W1"]},
+        3600,
+    )
+    enriched = []
+
+    def enrich(candidates):
+        enriched.extend(candidate["id"] for candidate in candidates)
+        return [{
+            **candidate,
+            "identity_fingerprint": {
+                "version": search_service.IDENTITY_FINGERPRINT_VERSION,
+                "sampled_works": 2,
+                "work_ids": ["W1", "W2"],
+                "affiliations": [],
+            },
+        } for candidate in candidates]
+
+    search_service.build_live_candidate_payload(
+        repository,
+        "Ada",
+        api_key="test-key",
+        budget_provider="openalex:user:test",
+        search_fn=lambda _query: [{
+            "id": "A1",
+            "display_name": "Ada",
+            "last_known_institutions": [],
+            "affiliations": [],
+        }],
+        enrich_fn=enrich,
+    )
+
+    assert enriched == ["A1"]
 
 
 def test_candidate_default_sort_prioritizes_identity_over_citations():

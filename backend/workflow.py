@@ -4,7 +4,9 @@ DAG 结构（多来源裁决 + Agent 分析 + 证据审查）:
 
   fetch_profile → collect_orcid_identity → collect_works → dedup_works
                                                     ↓
-                                collect_crossref → adjudicate_sources
+                  collect_crossref → collect_dblp → collect_google_scholar
+                                                    ↓
+                                         adjudicate_sources
                                                     ↓
                                            resolve_work_identity
                                                     ↓
@@ -36,6 +38,8 @@ from nodes import (
     collect_works,
     deduplicate_works,
     collect_crossref_records,
+    collect_dblp_records,
+    collect_google_scholar_records,
     adjudicate_sources,
     resolve_work_identity,
     plan_agent_analysis,
@@ -58,6 +62,8 @@ NODES = [
 
     ("dedup_works", deduplicate_works),
     ("collect_crossref", collect_crossref_records),
+    ("collect_dblp", collect_dblp_records),
+    ("collect_google_scholar", collect_google_scholar_records),
     ("adjudicate_sources", adjudicate_sources),
     ("resolve_work_identity", resolve_work_identity),
     ("plan_agents", plan_agent_analysis),
@@ -87,7 +93,9 @@ def build() -> StateGraph:
     builder.add_edge("collect_orcid_identity", "collect_works")
     builder.add_edge("collect_works", "dedup_works")
     builder.add_edge("dedup_works", "collect_crossref")
-    builder.add_edge("collect_crossref", "adjudicate_sources")
+    builder.add_edge("collect_crossref", "collect_dblp")
+    builder.add_edge("collect_dblp", "collect_google_scholar")
+    builder.add_edge("collect_google_scholar", "adjudicate_sources")
 
     # 并行分析
     builder.add_edge("adjudicate_sources", "resolve_work_identity")

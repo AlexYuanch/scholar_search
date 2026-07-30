@@ -101,7 +101,9 @@ function localizedEvidence(
       papers: numberFormat.format(profile.totalPapers),
       citations: numberFormat.format(profile.totalCitations),
       hindex: numberFormat.format(profile.hIndex),
-      verified: numberFormat.format(profile.dataAudit?.crossrefVerified ?? 0),
+      verified: numberFormat.format(
+        profile.dataAudit?.multiSourceVerified ?? profile.dataAudit?.crossrefVerified ?? 0
+      ),
     })
   }
   if (item.type === "topic") {

@@ -8,7 +8,12 @@ from collections.abc import Callable
 from typing import Any
 
 from nodes import dedup_authors
-from openalex import OpenAlexError, enrich_authors_for_disambiguation, search_authors
+from openalex import (
+    IDENTITY_FINGERPRINT_VERSION,
+    OpenAlexError,
+    enrich_authors_for_disambiguation,
+    search_authors,
+)
 
 
 SEARCH_CACHE_TTL_SECONDS = int(os.getenv("OPENALEX_SEARCH_CACHE_TTL_SECONDS", "86400"))
@@ -33,7 +38,7 @@ SEARCH_COALESCE_POLL_SECONDS = float(
 OPENALEX_MIN_REMAINING_CREDITS = int(
     os.getenv("OPENALEX_MIN_REMAINING_CREDITS", "200")
 )
-AFFILIATION_SELECTION_VERSION = 2
+AFFILIATION_SELECTION_VERSION = 3
 
 _IDENTITY_GROUP_ORDER = {"high": 0, "medium": 1, "review": 2}
 
@@ -45,6 +50,104 @@ class SearchCoalesceTimeout(RuntimeError):
 def normalize_search_query(value: str) -> tuple[str, str]:
     query_text = " ".join(unicodedata.normalize("NFKC", value).strip().split())
     return query_text.casefold(), query_text
+
+
+def _clean_affiliation_name(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _clean_affiliation_years(values: list[Any]) -> list[int]:
+    years = set()
+    for value in values:
+        try:
+            year = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1800 <= year <= 2100:
+            years.add(year)
+    return sorted(years, reverse=True)
+
+
+def _has_consecutive_years(years: list[int]) -> bool:
+    ordered = sorted(set(years))
+    return any(current - previous == 1 for previous, current in zip(ordered, ordered[1:]))
+
+
+def _candidate_affiliations(author: dict) -> tuple[str, list[dict]]:
+    records_by_name: dict[str, dict] = {}
+
+    def merge_record(name: Any, years: list[Any] | None = None, work_count: Any = 0) -> None:
+        cleaned_name = _clean_affiliation_name(name)
+        if not cleaned_name:
+            return
+        key = cleaned_name.casefold()
+        row = records_by_name.setdefault(
+            key,
+            {"name": cleaned_name, "years": set(), "work_count": 0},
+        )
+        row["years"].update(_clean_affiliation_years(years or []))
+        try:
+            row["work_count"] = max(row["work_count"], max(0, int(work_count or 0)))
+        except (TypeError, ValueError):
+            pass
+
+    for affiliation in author.get("affiliations") or []:
+        institution = affiliation.get("institution") or {}
+        merge_record(institution.get("display_name"), affiliation.get("years"))
+    fingerprint = author.get("identity_fingerprint") or {}
+    for affiliation in fingerprint.get("affiliations") or []:
+        merge_record(
+            affiliation.get("name"),
+            affiliation.get("years"),
+            affiliation.get("work_count"),
+        )
+    current_names = {
+        _clean_affiliation_name(institution.get("display_name")).casefold()
+        for institution in author.get("last_known_institutions") or []
+        if _clean_affiliation_name(institution.get("display_name"))
+    }
+    for institution in author.get("last_known_institutions") or []:
+        merge_record(institution.get("display_name"))
+
+    normalized = [
+        {
+            "name": row["name"],
+            "years": sorted(row["years"], reverse=True),
+            "work_count": row["work_count"],
+        }
+        for row in records_by_name.values()
+    ]
+    eligible = [
+        row for row in normalized
+        if row["work_count"] >= 2 or _has_consecutive_years(row["years"])
+    ]
+    primary = max(
+        eligible,
+        key=lambda row: (
+            row["name"].casefold() in current_names,
+            max(row["years"], default=0),
+            row["work_count"],
+            len(row["years"]),
+            row["name"].casefold(),
+        ),
+        default=None,
+    )
+    primary_name = primary["name"] if primary else ""
+
+    historical = [row for row in normalized if row["name"] != primary_name]
+    historical.sort(key=lambda row: (
+        -max(row["years"], default=0),
+        -row["work_count"],
+        -len(row["years"]),
+        row["name"].casefold(),
+    ))
+    return primary_name, historical
+
+
+def _supports_current_fingerprint(fingerprint: dict | None) -> bool:
+    return bool(fingerprint) and (
+        fingerprint.get("version") == IDENTITY_FINGERPRINT_VERSION
+    )
 
 
 def _candidate_identity_evidence(author: dict) -> list[dict]:
@@ -85,18 +188,20 @@ def _candidate_identity_evidence(author: dict) -> list[dict]:
 
 
 def _candidate_payload(author: dict) -> dict:
-    institutions = author.get("institutions") or []
-    last_known = author.get("last_known_institutions") or [{}]
-    primary_institution = (
-        author.get("primary_institution")
-        or author.get("current_institution")
-        or (institutions or [last_known[0].get("display_name", "")])[0]
-    )
-    other_institutions = (
-        author.get("other_institutions")
-        or author.get("historical_institutions")
-        or [institution for institution in institutions if institution != primary_institution]
-    )
+    primary_institution, historical_affiliations = _candidate_affiliations(author)
+    if not primary_institution and author.get("published_profile_merged_count"):
+        primary_institution = _clean_affiliation_name(
+            author.get("primary_institution") or author.get("current_institution")
+        )
+        historical_affiliations = [
+            row for row in historical_affiliations
+            if row["name"] != primary_institution
+        ]
+    other_institutions = [row["name"] for row in historical_affiliations]
+    institutions = list(dict.fromkeys(
+        [primary_institution, *other_institutions]
+    ))
+    institutions = [institution for institution in institutions if institution]
     identity_confidence = str(author.get("identity_confidence") or "single")
     fingerprint = author.get("identity_fingerprint") or {}
     evidence = _candidate_identity_evidence(author)
@@ -171,6 +276,7 @@ def _candidate_payload(author: dict) -> dict:
         "institutions": institutions,
         "primary_institution": primary_institution,
         "other_institutions": other_institutions,
+        "historical_affiliations": historical_affiliations,
         "affiliation_selection_version": AFFILIATION_SELECTION_VERSION,
         "works_count": author.get("works_count", 0),
         "cited_by_count": author.get("cited_by_count", 0),
@@ -243,10 +349,11 @@ def build_live_candidate_payload(
     for candidate in candidates:
         author_id = str(candidate.get("id") or "")
         cached = cached_by_id.get(author_id)
-        if cached:
-            candidate["identity_fingerprint"] = cached.get("fingerprint") or {}
+        cached_fingerprint = (cached or {}).get("fingerprint") or {}
+        if cached and _supports_current_fingerprint(cached_fingerprint):
+            candidate["identity_fingerprint"] = cached_fingerprint
             if not cached.get("fresh"):
-                stale_fallbacks[author_id] = candidate["identity_fingerprint"]
+                stale_fallbacks[author_id] = cached_fingerprint
                 refresh_candidates.append(dict(candidate))
         elif author_id:
             refresh_candidates.append(dict(candidate))
@@ -287,8 +394,9 @@ def build_local_candidate_payload(repository, query_text: str) -> list[dict]:
     cached_by_id = repository.get_openalex_identity_caches(author_ids)
     for candidate in candidates:
         cached = cached_by_id.get(str(candidate.get("id") or ""))
-        if cached:
-            candidate["identity_fingerprint"] = cached.get("fingerprint") or {}
+        fingerprint = (cached or {}).get("fingerprint") or {}
+        if _supports_current_fingerprint(fingerprint):
+            candidate["identity_fingerprint"] = fingerprint
     merged = dedup_authors(candidates)
     for author in merged:
         known_merged_ids = list(dict.fromkeys(author.get("merged_author_ids") or []))

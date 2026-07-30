@@ -9,6 +9,8 @@ from nodes import (
     analyze_coauthors,
     build_collaboration_graph,
     collect_crossref_records,
+    collect_dblp_records,
+    collect_google_scholar_records,
     collect_works,
     dedup_authors,
     fetch_author_profile,
@@ -862,6 +864,58 @@ def test_crossref_collection_and_adjudication_merge_by_doi(monkeypatch):
     assert adjudicated["deduped_works"] == adjudicated["adjudicated_works"]
 
 
+def test_dblp_and_google_scholar_add_verification_without_expanding_works(monkeypatch):
+    import dblp
+    import google_scholar
+
+    state = default_state()
+    state["target_author_profile"] = {"display_name": "Fei-Fei Li", "works_count": 1}
+    state["works_complete"] = True
+    state["deduped_works"] = [{
+        "id": "https://openalex.org/W1",
+        "doi": "https://doi.org/10.1000/vision",
+        "title": "Visual Recognition",
+        "publication_year": 2024,
+        "cited_by_count": 8,
+        "authorships": [],
+        "concepts": [],
+    }]
+    state["source_works"] = {"openalex": state["deduped_works"], "crossref": []}
+    state["source_audit"] = {"requested": 1, "verified": 0, "missing": 1, "failed": 0}
+    monkeypatch.setattr(dblp, "verify_author_works", lambda _profile, _works: ([{
+        "source": "dblp",
+        "id": "journals/test/one",
+        "doi": "10.1000/vision",
+        "title": "Visual Recognition",
+        "publication_year": 2024,
+        "journal": "Vision Journal",
+        "url": "https://dblp.org/rec/journals/test/one",
+    }], {"status": "available", "requested": 1, "matched": 1}))
+    monkeypatch.setattr(google_scholar, "verify_author_works", lambda _profile, _works: ([{
+        "source": "google_scholar",
+        "id": "scholar-1",
+        "title": "Visual Recognition",
+        "publication_year": 2024,
+        "url": "https://scholar.google.com/example",
+    }], {"status": "available", "requested": 1, "matched": 1}))
+
+    state.update(collect_dblp_records(state))
+    state.update(collect_google_scholar_records(state))
+    result = adjudicate_sources(state)
+
+    assert len(result["adjudicated_works"]) == 1
+    work = result["adjudicated_works"][0]
+    assert {item["source"] for item in work["source_records"]} == {
+        "openalex", "dblp", "google_scholar",
+    }
+    assert work["adjudicated_journal"] == "Vision Journal"
+    assert result["data_audit"]["multiSourceVerified"] == 1
+    assert result["data_audit"]["unverifiedWorks"] == 0
+    assert result["data_audit"]["sources"] == [
+        "OpenAlex", "Crossref", "DBLP", "Google Scholar",
+    ]
+
+
 def test_evidence_review_rejects_untraceable_paper_claim():
     state = default_state()
     state["adjudicated_works"] = [{
@@ -1129,6 +1183,8 @@ def test_workflow_uses_multi_source_adjudication_and_review_nodes():
     assert node_names[0] == "fetch_profile"
     assert "collect_works" in node_names
     assert "collect_crossref" in node_names
+    assert "collect_dblp" in node_names
+    assert "collect_google_scholar" in node_names
     assert "adjudicate_sources" in node_names
     assert "collect_orcid_identity" in node_names
     assert "resolve_work_identity" in node_names
@@ -1137,6 +1193,9 @@ def test_workflow_uses_multi_source_adjudication_and_review_nodes():
     assert "agent_review_report" in node_names
     assert "review_evidence" in node_names
     assert node_names.index("adjudicate_sources") < node_names.index("plan_agents")
+    assert node_names.index("collect_crossref") < node_names.index("collect_dblp")
+    assert node_names.index("collect_dblp") < node_names.index("collect_google_scholar")
+    assert node_names.index("collect_google_scholar") < node_names.index("adjudicate_sources")
     assert node_names.index("adjudicate_sources") < node_names.index("resolve_work_identity")
     assert node_names.index("resolve_work_identity") < node_names.index("plan_agents")
     assert node_names.index("plan_agents") < node_names.index("analyze_citations")

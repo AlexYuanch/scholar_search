@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Literal, TypeVar
 
@@ -78,15 +79,22 @@ _strong_usage_date = date.today()
 _strong_usage_count = 0
 
 
+@dataclass(frozen=True)
+class ProviderAttempt:
+    provider: str
+    model: str
+    tier: AgentTier
+
+
 def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
-def _api_key() -> str:
+def _deepseek_api_key() -> str:
     return _env("LLM_API_KEY") or _env("OPENAI_API_KEY")
 
 
-def _base_url() -> str:
+def _deepseek_base_url() -> str:
     return (_env("LLM_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
 
 
@@ -98,16 +106,39 @@ def _strong_model() -> str:
     return _env("LLM_STRONG_MODEL") or _fast_model()
 
 
+def _longcat_api_key() -> str:
+    return _env("LONGCAT_API_KEY")
+
+
+def _longcat_base_url() -> str:
+    return (_env("LONGCAT_BASE_URL") or "https://api.longcat.chat/openai").rstrip("/")
+
+
+def _longcat_model() -> str:
+    return _env("LONGCAT_MODEL") or "LongCat-2.0"
+
+
 def _router_mode() -> str:
     mode = _env("LLM_ROUTER_MODE", "auto").lower()
     return mode if mode in {"auto", "fast", "strong", "off"} else "auto"
 
 
-def _configured() -> bool:
-    key = _api_key()
+def _valid_key(key: str) -> bool:
     lowered = key.casefold()
     placeholders = ("your_api", "your-api", "你的", "replace_with")
     return bool(key and not any(marker in lowered for marker in placeholders))
+
+
+def _deepseek_configured() -> bool:
+    return _valid_key(_deepseek_api_key())
+
+
+def _longcat_configured() -> bool:
+    return _valid_key(_longcat_api_key())
+
+
+def _configured() -> bool:
+    return _longcat_configured() or _deepseek_configured()
 
 
 def _strong_limit() -> int:
@@ -131,10 +162,18 @@ def _reserve_strong_slot() -> bool:
         return True
 
 
-def _llm(model: str, **kwargs) -> ChatOpenAI:
+def _llm(model: str, *, provider: str = "deepseek", **kwargs) -> ChatOpenAI:
+    if provider == "longcat":
+        return ChatOpenAI(
+            api_key=_longcat_api_key(),
+            base_url=_longcat_base_url(),
+            model=model,
+            extra_body={"thinking": {"type": "disabled"}},
+            **kwargs,
+        )
     return ChatOpenAI(
-        api_key=_api_key(),
-        base_url=_base_url(),
+        api_key=_deepseek_api_key(),
+        base_url=_deepseek_base_url(),
         model=model,
         **kwargs,
     )
@@ -154,10 +193,16 @@ def _invoke_json(
     system_prompt: str,
     payload: dict,
     *,
+    provider: str = "deepseek",
     temperature: float,
     max_tokens: int,
 ) -> dict:
-    response = _llm(model, temperature=temperature, max_tokens=max_tokens).invoke([
+    response = _llm(
+        model,
+        provider=provider,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    ).invoke([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ])
@@ -169,9 +214,11 @@ def _trace(
     *,
     status: str,
     model: str = "",
+    provider: str = "",
     tier: str = "",
     planned_tier: str = "",
     attempted_models: list[str] | None = None,
+    attempted_providers: list[str] | None = None,
     escalated: bool = False,
     reasons: list[str] | None = None,
 ) -> dict:
@@ -179,12 +226,41 @@ def _trace(
         "agent": agent,
         "status": status,
         "model": model,
+        "provider": provider,
         "tier": tier,
         "plannedTier": planned_tier,
         "attemptedModels": attempted_models or [],
+        "attemptedProviders": attempted_providers or [],
         "escalated": escalated,
         "reasons": reasons or [],
     }
+
+
+def _router_attempts() -> list[ProviderAttempt]:
+    attempts = []
+    if _longcat_configured():
+        attempts.append(ProviderAttempt("longcat", _longcat_model(), "fast"))
+    if _deepseek_configured():
+        attempts.append(ProviderAttempt("deepseek", _fast_model(), "fast"))
+    return attempts
+
+
+def _agent_attempts(selected_tier: AgentTier, mode: str) -> list[ProviderAttempt]:
+    attempts = []
+    if _longcat_configured():
+        attempts.append(ProviderAttempt("longcat", _longcat_model(), selected_tier))
+    if not _deepseek_configured():
+        return attempts
+    tiers: list[AgentTier] = [selected_tier]
+    if mode == "auto":
+        tiers.append("strong" if selected_tier == "fast" else "fast")
+    for tier in tiers:
+        attempts.append(ProviderAttempt(
+            "deepseek",
+            _strong_model() if tier == "strong" else _fast_model(),
+            tier,
+        ))
+    return attempts
 
 
 def _fallback_plan(context: dict) -> AgentPlan:
@@ -227,34 +303,43 @@ def plan_agents(context: dict) -> tuple[AgentPlan, dict]:
             reasons=[f"forced_{mode}"],
         )
 
-    model = _fast_model()
-    try:
-        result = AgentPlan.model_validate(_invoke_json(
-            model,
-            AGENT_ROUTER,
-            context,
-            temperature=0,
-            max_tokens=350,
-        ))
-        return result, _trace(
-            "router_agent",
-            status="success",
-            model=model,
-            tier="fast",
-            planned_tier="fast",
-            attempted_models=[model],
-            reasons=[result.rationale] if result.rationale else [],
-        )
-    except Exception as exc:
-        return fallback, _trace(
-            "router_agent",
-            status="fallback",
-            model=model,
-            tier="fast",
-            planned_tier="fast",
-            attempted_models=[model],
-            reasons=[f"router_error:{type(exc).__name__}", fallback.rationale],
-        )
+    attempted_models = []
+    attempted_providers = []
+    reasons = []
+    for attempt in _router_attempts():
+        attempted_models.append(attempt.model)
+        attempted_providers.append(attempt.provider)
+        try:
+            result = AgentPlan.model_validate(_invoke_json(
+                attempt.model,
+                AGENT_ROUTER,
+                context,
+                provider=attempt.provider,
+                temperature=0,
+                max_tokens=350,
+            ))
+            return result, _trace(
+                "router_agent",
+                status="success",
+                model=attempt.model,
+                provider=attempt.provider,
+                tier="fast",
+                planned_tier="fast",
+                attempted_models=attempted_models,
+                attempted_providers=attempted_providers,
+                reasons=reasons + ([result.rationale] if result.rationale else []),
+            )
+        except Exception as exc:
+            reasons.append(f"{attempt.provider}_router_error:{type(exc).__name__}")
+    return fallback, _trace(
+        "router_agent",
+        status="fallback",
+        tier="fast",
+        planned_tier="fast",
+        attempted_models=attempted_models,
+        attempted_providers=attempted_providers,
+        reasons=reasons + [fallback.rationale],
+    )
 
 
 def run_structured_agent(
@@ -282,26 +367,27 @@ def run_structured_agent(
         else "strong" if mode == "strong"
         else planned_tier
     )
-    tiers: list[AgentTier] = [selected_tier]
-    if mode == "auto":
-        tiers.append("strong" if selected_tier == "fast" else "fast")
-
     attempted_models: list[str] = []
+    attempted_providers: list[str] = []
     reasons: list[str] = []
-    first_tier = tiers[0]
-    for index, tier in enumerate(tiers):
-        model = _strong_model() if tier == "strong" else _fast_model()
-        if model in attempted_models:
+    first_tier = selected_tier
+    seen = set()
+    for index, attempt in enumerate(_agent_attempts(selected_tier, mode)):
+        attempt_key = (attempt.provider, attempt.model)
+        if attempt_key in seen:
             continue
-        if tier == "strong" and not _reserve_strong_slot():
+        seen.add(attempt_key)
+        if attempt.provider == "deepseek" and attempt.tier == "strong" and not _reserve_strong_slot():
             reasons.append("strong_daily_limit_reached")
             continue
-        attempted_models.append(model)
+        attempted_models.append(attempt.model)
+        attempted_providers.append(attempt.provider)
         try:
             parsed = schema.model_validate(_invoke_json(
-                model,
+                attempt.model,
                 system_prompt,
                 payload,
+                provider=attempt.provider,
                 temperature=temperature,
                 max_tokens=max_tokens,
             ))
@@ -312,21 +398,29 @@ def run_structured_agent(
             return parsed, _trace(
                 agent,
                 status="success",
-                model=model,
-                tier=tier,
+                model=attempt.model,
+                provider=attempt.provider,
+                tier=attempt.tier,
                 planned_tier=planned_tier,
                 attempted_models=attempted_models,
-                escalated=index > 0 and tier == "strong" and first_tier == "fast",
+                attempted_providers=attempted_providers,
+                escalated=(
+                    attempt.provider == "deepseek"
+                    and index > 0
+                    and attempt.tier == "strong"
+                    and first_tier == "fast"
+                ),
                 reasons=reasons,
             )
         except Exception as exc:
-            reasons.append(f"{tier}_error:{type(exc).__name__}")
+            reasons.append(f"{attempt.provider}_{attempt.tier}_error:{type(exc).__name__}")
 
     return None, _trace(
         agent,
         status="fallback",
         planned_tier=planned_tier,
         attempted_models=attempted_models,
+        attempted_providers=attempted_providers,
         escalated=len(attempted_models) > 1,
         reasons=reasons or ["no_valid_agent_output"],
     )

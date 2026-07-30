@@ -4,6 +4,7 @@ import llm
 
 
 def _configure(monkeypatch):
+    monkeypatch.delenv("LONGCAT_API_KEY", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("LLM_FAST_MODEL", "deepseek-v4-flash")
@@ -111,3 +112,67 @@ def test_placeholder_key_disables_agents(monkeypatch):
     assert result is None
     assert trace["status"] == "disabled"
     assert trace["reasons"] == ["llm_not_configured"]
+
+
+def test_longcat_is_used_before_deepseek(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setenv("LONGCAT_API_KEY", "longcat-test-key")
+    monkeypatch.setenv("LONGCAT_BASE_URL", "https://api.longcat.chat/openai")
+    monkeypatch.setenv("LONGCAT_MODEL", "LongCat-2.0")
+
+    def fake_invoke(model, *_args, provider="deepseek", **_kwargs):
+        assert model == "LongCat-2.0"
+        assert provider == "longcat"
+        return {
+            "summary_zh": "有充分依据的学者总结 [1]，并且包含足够长度用于通过验证。",
+            "summary_en": "A sufficiently supported scholar summary with traceable evidence [1].",
+            "evidence_ids": ["1"],
+            "confidence": "high",
+        }
+
+    monkeypatch.setattr(llm, "_invoke_json", fake_invoke)
+    result, trace = llm.run_structured_agent(
+        "report_agent",
+        planned_tier="strong",
+        system_prompt="test",
+        payload={},
+        schema=llm.ProfileReportOutput,
+        validate=lambda _output: [],
+    )
+
+    assert result is not None
+    assert trace["provider"] == "longcat"
+    assert trace["model"] == "LongCat-2.0"
+    assert trace["attemptedProviders"] == ["longcat"]
+
+
+def test_longcat_failure_falls_back_to_deepseek(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setenv("LONGCAT_API_KEY", "longcat-test-key")
+
+    def fake_invoke(model, *_args, provider="deepseek", **_kwargs):
+        if provider == "longcat":
+            raise RuntimeError("temporary failure")
+        return {
+            "summary_zh": "有充分依据的学者总结 [1]，并且包含足够长度用于通过验证。",
+            "summary_en": "A sufficiently supported scholar summary with traceable evidence [1].",
+            "evidence_ids": ["1"],
+            "confidence": "medium",
+        }
+
+    monkeypatch.setattr(llm, "_invoke_json", fake_invoke)
+    result, trace = llm.run_structured_agent(
+        "report_agent",
+        planned_tier="fast",
+        system_prompt="test",
+        payload={},
+        schema=llm.ProfileReportOutput,
+        validate=lambda _output: [],
+    )
+
+    assert result is not None
+    assert trace["provider"] == "deepseek"
+    assert trace["model"] == "deepseek-v4-flash"
+    assert trace["attemptedModels"] == ["LongCat-2.0", "deepseek-v4-flash"]
+    assert trace["attemptedProviders"] == ["longcat", "deepseek"]
+    assert "longcat_fast_error:RuntimeError" in trace["reasons"]

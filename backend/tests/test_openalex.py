@@ -322,7 +322,13 @@ def test_author_identity_fingerprint_uses_works_coauthors_and_topics(monkeypatch
                 "doi": "https://doi.org/10.1000/one",
                 "publication_year": 2025,
                 "authorships": [
-                    {"author": {"id": "A1"}},
+                    {
+                        "author": {"id": "A1"},
+                        "institutions": [{
+                            "id": "I1",
+                            "display_name": "Analytical Engine Institute",
+                        }],
+                    },
                     {"author": {"id": "C1"}},
                 ],
                 "primary_topic": {"id": "T1"},
@@ -351,3 +357,10 @@ def test_author_identity_fingerprint_uses_works_coauthors_and_topics(monkeypatch
     assert fingerprint["topic_ids"] == ["T1", "T2"]
     assert fingerprint["topic_names"] == ["Analytical Engines", "History of Computing"]
     assert fingerprint["publication_years"] == [2025, 2026]
+    assert fingerprint["version"] == openalex.IDENTITY_FINGERPRINT_VERSION
+    assert fingerprint["affiliations"] == [{
+        "id": "I1",
+        "name": "Analytical Engine Institute",
+        "years": [2025],
+        "work_count": 1,
+    }]

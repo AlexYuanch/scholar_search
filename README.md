@@ -29,7 +29,7 @@ ScholarSearch 是一个面向教师、学生和科研团队的学者情报平台
 
 一次画像生成主要经过四个阶段：
 
-1. **身份与数据核验**：联合 OpenAlex、公开 ORCID 和 Crossref，按 DOI 去重并保守处理同名学者。
+1. **身份与数据核验**：联合 OpenAlex、公开 ORCID、Crossref 和 DBLP，按 DOI/题名年份核对并保守处理同名学者；Google Scholar 预留 SerpApi 可选接口，不配置时自动跳过。
 2. **Agent 学术分析**：分析引用趋势、细粒度研究方向、研究变化和代表成果。
 3. **关系与图谱生成**：构建合作网络、研究脉络，并发现同行、合作对象和相关机构。
 4. **证据审查与发布**：结论必须能回到真实论文和公开来源；校验失败时保留最近一次成功画像。
@@ -40,7 +40,7 @@ ScholarSearch 是一个面向教师、学生和科研团队的学者情报平台
 
 - **准确优先**：身份冲突时宁可提示画像可能不完整，也不混入疑似他人的论文。
 - **结论可追溯**：方向、变化和合作判断尽量关联到真实论文、作者和来源记录。
-- **模型不替代证据**：DeepSeek Agent 负责理解与归纳，确定性规则负责校验和发布门禁。
+- **模型不替代证据**：LongCat Agent 优先负责理解与归纳，失败时自动回退 DeepSeek，确定性规则负责校验和发布门禁。
 
 ## 技术架构
 
@@ -49,8 +49,8 @@ ScholarSearch 是一个面向教师、学生和科研团队的学者情报平台
 | 前端 | React 19、Vite、TypeScript、Tailwind CSS |
 | API | FastAPI、SQLAlchemy、Server-Sent Events |
 | 工作流 | LangGraph、多 Agent 路由、独立 Worker |
-| 数据 | PostgreSQL、OpenAlex、Crossref、公开 ORCID |
-| 模型 | DeepSeek 或其他 OpenAI 兼容接口 |
+| 数据 | PostgreSQL、OpenAlex、Crossref、公开 ORCID、DBLP；可选 Google Scholar |
+| 模型 | LongCat-2.0 优先、DeepSeek 回退 |
 | 部署 | Docker Compose、Caddy、Nginx、Alembic |
 
 ## 快速启动

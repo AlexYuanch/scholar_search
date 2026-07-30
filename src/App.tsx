@@ -186,12 +186,28 @@ function CandidateList({ candidates, onSelect, loading, t }: {
                     {c.orcid && <Badge variant="outline">{t("candidate.orcid_available")}</Badge>}
                   </div>
                   <p className="mt-1 max-w-2xl break-words text-sm text-muted-foreground">
-                    {c.primary_institution || c.institution || t("candidate.unknown_inst")}
+                    <span className="font-medium text-foreground">{t("candidate.primary_inst")}</span>
+                    {c.primary_institution || t("candidate.unknown_inst")}
                   </p>
-                  {c.other_institutions?.length ? (
-                    <p className="mt-0.5 max-w-2xl break-words text-xs text-muted-foreground">
-                      {c.other_institutions.slice(0, 3).join(" · ")}
-                    </p>
+                  {c.historical_affiliations?.length ? (
+                    <details className="group mt-2 max-w-2xl text-xs text-muted-foreground">
+                      <summary className="cursor-pointer select-none font-medium text-primary hover:underline">
+                        {t("candidate.historical_inst")}
+                      </summary>
+                      <div className="mt-2 space-y-1.5 border-l border-border pl-3">
+                        {c.historical_affiliations.map((affiliation) => (
+                          <p key={`${affiliation.name}-${affiliation.years.join("-")}`} className="break-words">
+                            <span className="text-foreground">{affiliation.name}</span>
+                            {affiliation.years.length ? (
+                              <span> · {affiliation.years.join("、")}</span>
+                            ) : null}
+                            {affiliation.work_count > 0 ? (
+                              <span> · {t("candidate.affiliation_papers").replace("{count}", String(affiliation.work_count))}</span>
+                            ) : null}
+                          </p>
+                        ))}
+                      </div>
+                    </details>
                   ) : null}
                   <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
                     <span>{c.works_count} {t("candidate.papers")}</span>

@@ -73,12 +73,16 @@ OWNER_PASSWORD=$(env_value POSTGRES_OWNER_PASSWORD)
 APP_PASSWORD=$(env_value POSTGRES_APP_PASSWORD)
 CREDENTIAL_ENCRYPTION_KEY=$(env_value CREDENTIAL_ENCRYPTION_KEY)
 OPENALEX_API_KEY=$(env_value OPENALEX_API_KEY)
+LONGCAT_API_KEY=$(env_value LONGCAT_API_KEY)
+LONGCAT_BASE_URL=$(env_value LONGCAT_BASE_URL)
+LONGCAT_MODEL=$(env_value LONGCAT_MODEL)
 LLM_API_KEY=$(env_value LLM_API_KEY)
 LLM_BASE_URL=$(env_value LLM_BASE_URL)
 LLM_FAST_MODEL=$(env_value LLM_FAST_MODEL)
 LLM_STRONG_MODEL=$(env_value LLM_STRONG_MODEL)
 LLM_ROUTER_MODE=$(env_value LLM_ROUTER_MODE)
 LLM_STRONG_DAILY_LIMIT=$(env_value LLM_STRONG_DAILY_LIMIT)
+SERPAPI_API_KEY=$(env_value SERPAPI_API_KEY)
 
 if [ -z "$PUBLIC_HOST" ] || [ -z "$PUBLIC_APP_URL" ]; then
     echo "PUBLIC_HOST 和 PUBLIC_APP_URL 不能为空。" >&2
@@ -135,6 +139,28 @@ if [ -n "$LLM_API_KEY" ]; then
     esac
     case "$LLM_STRONG_DAILY_LIMIT" in
         ''|*[!0-9]*) echo "LLM_STRONG_DAILY_LIMIT 必须是非负整数。" >&2; exit 1 ;;
+    esac
+fi
+
+if [ -n "$LONGCAT_API_KEY" ]; then
+    case "$LONGCAT_API_KEY" in
+        your_api_key|YOUR_API_KEY|REPLACE_WITH_*)
+            echo "LONGCAT_API_KEY 仍是示例值，请填写真实模型 API key。" >&2
+            exit 1
+            ;;
+    esac
+    if [ -z "$LONGCAT_BASE_URL" ] || [ -z "$LONGCAT_MODEL" ]; then
+        echo "启用 LongCat 时必须同时配置 LONGCAT_BASE_URL 和 LONGCAT_MODEL。" >&2
+        exit 1
+    fi
+fi
+
+if [ -n "$SERPAPI_API_KEY" ]; then
+    case "$SERPAPI_API_KEY" in
+        your_api_key|YOUR_API_KEY|REPLACE_WITH_*)
+            echo "SERPAPI_API_KEY 仍是示例值，请填写真实 SerpApi key。" >&2
+            exit 1
+            ;;
     esac
 fi
 

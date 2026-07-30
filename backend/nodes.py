@@ -640,6 +640,38 @@ def collect_crossref_records(state: ScholarProfileState) -> dict:
     return {"source_works": source_works, "source_audit": audit, "warnings": warnings}
 
 
+def collect_dblp_records(state: ScholarProfileState) -> dict:
+    """用 DBLP 核验已有论文，不按姓名扩张论文列表。"""
+    from dblp import verify_author_works
+
+    works = state.get("deduped_works") or state.get("raw_works") or []
+    records, report = verify_author_works(state.get("target_author_profile") or {}, works)
+    source_works = dict(state.get("source_works") or {})
+    source_works["dblp"] = records
+    source_audit = dict(state.get("source_audit") or {})
+    source_audit["dblp"] = report
+    warnings = []
+    if report.get("status") == "unavailable":
+        warnings.append("DBLP 暂时不可用，已继续使用其他来源")
+    return {"source_works": source_works, "source_audit": source_audit, "warnings": warnings}
+
+
+def collect_google_scholar_records(state: ScholarProfileState) -> dict:
+    """可选地通过 SerpApi 核验 Google Scholar 记录。"""
+    from google_scholar import verify_author_works
+
+    works = state.get("deduped_works") or state.get("raw_works") or []
+    records, report = verify_author_works(state.get("target_author_profile") or {}, works)
+    source_works = dict(state.get("source_works") or {})
+    source_works["google_scholar"] = records
+    source_audit = dict(state.get("source_audit") or {})
+    source_audit["google_scholar"] = report
+    warnings = []
+    if report.get("status") == "unavailable":
+        warnings.append("Google Scholar 核验暂时不可用，已继续使用其他来源")
+    return {"source_works": source_works, "source_audit": source_audit, "warnings": warnings}
+
+
 def _normalized_title(value: str | None) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", str(value or "").casefold()).strip()
 
@@ -665,9 +697,28 @@ def adjudicate_sources(state: ScholarProfileState) -> dict:
         for record in (state.get("source_works") or {}).get("crossref", [])
         if normalize_doi(record.get("doi"))
     }
+    dblp_records = list((state.get("source_works") or {}).get("dblp", []))
+    scholar_records = list((state.get("source_works") or {}).get("google_scholar", []))
+
+    def source_lookup(records: list[dict]) -> tuple[dict[str, dict], dict[tuple[str, int], dict]]:
+        by_doi = {
+            normalize_doi(record.get("doi")): record
+            for record in records
+            if normalize_doi(record.get("doi"))
+        }
+        by_title_year = {
+            (_normalized_title(record.get("title")), int(record.get("publication_year") or 0)): record
+            for record in records
+            if _normalized_title(record.get("title"))
+        }
+        return by_doi, by_title_year
+
+    dblp_by_doi, dblp_by_title_year = source_lookup(dblp_records)
+    scholar_by_doi, scholar_by_title_year = source_lookup(scholar_records)
     adjudicated = []
     conflicts = []
     verified = 0
+    multi_source_verified = 0
     works_with_doi = 0
 
     for source_work in openalex_works:
@@ -687,6 +738,12 @@ def adjudicate_sources(state: ScholarProfileState) -> dict:
         }
         work_conflicts = []
         crossref_record = crossref_records.get(doi) if doi else None
+        title_year = (
+            _normalized_title(work.get("title")),
+            int(work.get("publication_year") or 0),
+        )
+        dblp_record = (dblp_by_doi.get(doi) if doi else None) or dblp_by_title_year.get(title_year)
+        scholar_record = (scholar_by_doi.get(doi) if doi else None) or scholar_by_title_year.get(title_year)
         if doi:
             works_with_doi += 1
             work["doi"] = f"https://doi.org/{doi}"
@@ -723,6 +780,26 @@ def adjudicate_sources(state: ScholarProfileState) -> dict:
                 work["adjudicated_journal"] = crossref_record["journal"]
                 field_sources["journal"] = "crossref"
             work["crossref"] = crossref_record
+        if dblp_record:
+            source_records.append({
+                "source": "dblp",
+                "id": dblp_record.get("id", ""),
+                "url": dblp_record.get("url", ""),
+            })
+            if dblp_record.get("journal") and not _work_journal(work):
+                work["adjudicated_journal"] = dblp_record["journal"]
+                field_sources["journal"] = "dblp"
+            work["dblp"] = dblp_record
+        if scholar_record:
+            source_records.append({
+                "source": "google_scholar",
+                "id": scholar_record.get("id", ""),
+                "url": scholar_record.get("url", ""),
+            })
+            work["google_scholar"] = scholar_record
+
+        if crossref_record or dblp_record or scholar_record:
+            multi_source_verified += 1
             work["verification_status"] = "verified"
         else:
             work["verification_status"] = "doi_unverified" if doi else "no_doi"
@@ -735,20 +812,28 @@ def adjudicate_sources(state: ScholarProfileState) -> dict:
         adjudicated.append(work)
 
     source_audit = state.get("source_audit") or {}
+    dblp_audit = source_audit.get("dblp") or {}
+    scholar_audit = source_audit.get("google_scholar") or {}
     total = len(adjudicated)
     verification_ratio = verified / total if total else 0
+    multi_source_ratio = multi_source_verified / total if total else 0
     if not state.get("works_complete", False) or source_audit.get("failed"):
         status = "attention"
-    elif verification_ratio >= 0.7:
+    elif multi_source_ratio >= 0.7:
         status = "sufficient"
-    elif verified:
+    elif multi_source_verified:
         status = "partial"
     else:
         status = "attention"
     expected = int((state.get("target_author_profile") or {}).get("works_count") or 0)
+    sources = ["OpenAlex", "Crossref"]
+    if dblp_audit.get("status") == "available":
+        sources.append("DBLP")
+    if scholar_audit.get("status") == "available":
+        sources.append("Google Scholar")
     data_audit = {
         "status": status,
-        "sources": ["OpenAlex", "Crossref"],
+        "sources": sources,
         "openalexExpected": expected,
         "openalexFetched": len(state.get("raw_works") or []),
         "collectedWorks": total,
@@ -758,12 +843,18 @@ def adjudicate_sources(state: ScholarProfileState) -> dict:
         "crossrefMissing": int(source_audit.get("missing") or 0),
         "crossrefFailed": int(source_audit.get("failed") or 0),
         "crossrefLimited": bool(source_audit.get("limited")),
-        "unverifiedWorks": max(0, total - verified),
+        "dblpStatus": str(dblp_audit.get("status") or "not_applicable"),
+        "dblpMatched": int(dblp_audit.get("matched") or 0),
+        "googleScholarStatus": str(scholar_audit.get("status") or "disabled"),
+        "googleScholarMatched": int(scholar_audit.get("matched") or 0),
+        "multiSourceVerified": multi_source_verified,
+        "unverifiedWorks": max(0, total - multi_source_verified),
         "duplicateRecordsMerged": max(0, len(state.get("raw_works") or []) - total),
         "conflictCount": len(conflicts),
         "conflicts": conflicts[:20],
         "worksComplete": bool(state.get("works_complete")),
         "verifiedRatio": round(verification_ratio, 4),
+        "multiSourceRatio": round(multi_source_ratio, 4),
         "retrievedAt": datetime.now(timezone.utc).isoformat(),
     }
     return {
@@ -810,7 +901,8 @@ def resolve_work_identity(state: ScholarProfileState) -> dict:
         "orcidStatus": (state.get("orcid_audit") or {}).get("status", "unavailable"),
     }
     kept_with_doi = sum(bool(work.get("doi")) for work in kept)
-    kept_verified = sum(work.get("verification_status") == "verified" for work in kept)
+    kept_verified = sum(bool(work.get("crossref")) for work in kept)
+    kept_multi_source_verified = sum(work.get("verification_status") == "verified" for work in kept)
     audit_sources = list((state.get("data_audit") or {}).get("sources") or [])
     if (state.get("orcid_audit") or {}).get("status") == "available" and "ORCID" not in audit_sources:
         audit_sources.append("ORCID")
@@ -825,8 +917,13 @@ def resolve_work_identity(state: ScholarProfileState) -> dict:
         "collectedWorks": len(kept),
         "worksWithDoi": kept_with_doi,
         "crossrefVerified": kept_verified,
-        "unverifiedWorks": max(0, len(kept) - kept_verified),
+        "multiSourceVerified": kept_multi_source_verified,
+        "unverifiedWorks": max(0, len(kept) - kept_multi_source_verified),
         "verifiedRatio": round(kept_verified / len(kept), 4) if kept else 0,
+        "multiSourceRatio": (
+            round(kept_multi_source_verified / len(kept), 4)
+            if kept else 0
+        ),
         "identityExcludedWorks": audit["excludedWorks"],
     }
     warnings = []
@@ -1629,17 +1726,18 @@ def _flatten_representative_papers(representative_papers: dict) -> list[dict]:
 def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[dict]:
     cs = state["citation_summary"]
     audit = state.get("data_audit") or {}
-    verified = int(audit.get("crossrefVerified") or 0)
+    verified = int(audit.get("multiSourceVerified") or audit.get("crossrefVerified") or 0)
+    sources = list(audit.get("sources") or ["OpenAlex"])
     evidence = [{
         "id": "1",
         "type": "metric",
         "text": (
             f"本次统一论文集在 {inst_name} 关联档案下收录 "
             f"{cs.get('total_papers', 0)} 篇论文、{cs.get('total_citations', 0)} 次引用，"
-            f"h-index 为 {cs.get('h_index', 0)}；其中 {verified} 篇 DOI 已通过 Crossref 核验，"
+            f"h-index 为 {cs.get('h_index', 0)}；其中 {verified} 篇得到其他公开来源交叉核对，"
             "引用数采用 OpenAlex 口径。"
         ),
-        "sources": ["OpenAlex", "Crossref"] if verified else ["OpenAlex"],
+        "sources": sources,
     }]
     next_id = 2
     topics = [t["topic"] for t in state["topic_clusters"][:5]]
@@ -1648,7 +1746,7 @@ def _build_profile_evidence(state: ScholarProfileState, inst_name: str) -> list[
             "id": str(next_id),
             "type": "topic",
             "text": "核心研究方向来自裁决后论文标题与 OpenAlex topics、keywords 交叉聚合: " + "、".join(topics) + "。",
-            "sources": ["OpenAlex", "Crossref"] if verified else ["OpenAlex"],
+            "sources": sources,
         })
         next_id += 1
     for paper in _flatten_representative_papers(state["representative_papers"])[:3]:

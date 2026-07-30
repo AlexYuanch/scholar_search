@@ -17,9 +17,12 @@ flowchart LR
   WF --> OA["OpenAlex"]
   WF --> CR["Crossref DOI metadata"]
   WF --> ORCID["ORCID public works"]
-  WF --> ROUTER["DeepSeek router agent"]
-  ROUTER --> FLASH["DeepSeek V4 Flash"]
-  ROUTER --> PRO["DeepSeek V4 Pro"]
+  WF --> DBLP["DBLP person/publication API"]
+  WF -. optional .-> GS["Google Scholar via SerpApi"]
+  WF --> ROUTER["Agent provider router"]
+  ROUTER --> LONGCAT["LongCat-2.0 first"]
+  ROUTER --> FLASH["DeepSeek Flash fallback"]
+  ROUTER --> PRO["DeepSeek Pro fallback"]
   MAINT["Worker 每小时维护"] --> JOB
   WORKER["Refresh worker"] -->|"SKIP LOCKED"| JOB
   WORKER --> OA
@@ -33,7 +36,7 @@ flowchart LR
 |----|------|------|
 | 前端 | Vite + React + TypeScript | 身份确认、五栏画像、证据化分析/比较、近期变化、登录、历史/研究追踪、SSE 与论文分页 |
 | API | FastAPI | 密码登录、Cookie 会话、受保护查询、确定性智能投影、NDJSON 与 SSE |
-| 工作流 | LangGraph | OpenAlex 发现、Crossref 核验、数据裁决、模型路由、多个学术分析 Agent、确定性证据审查和载荷格式化 |
+| 工作流 | LangGraph | OpenAlex 发现、Crossref/ORCID/DBLP 核验、可选 Google Scholar、数据裁决、模型回退、多个学术分析 Agent、确定性证据审查和载荷格式化 |
 | Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、加密用户凭据、持久搜索缓存、按用户额度状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
@@ -49,7 +52,7 @@ flowchart LR
 
 画像主内容按“学者概览 / 学术成果 / 合作关系 / 研究脉络 / 同行与机构”五栏组织。概览先展示研究画像，再把研究方向与核心指标合并呈现，随后展示近期变化、时间线和折叠的数据说明；学术成果使用确定性代表作结果并保留全部论文；合作关系包含核心合作者和关系图；研究脉络包含阶段、方向变化、方向活跃度和摘要演进；同行与机构只展示分析进度、用途导向的相关学者和真实相关机构，不再重复渲染底部通用计算说明。时间线方向点击会切换到学术成果并应用对应筛选。
 
-候选选择页不渲染后端身份聚类的内部术语、分组分数、档案指纹或重复证据框，只使用机构、ORCID、研究方向、论文、引用、h-index 和最近发表年份帮助用户选择。后台仍保留完整 `identity_evidence`、`match_reasons` 与身份分组用于排序、审计和工作流校验。
+候选选择页不渲染后端身份聚类的内部术语、分组分数、档案指纹或重复证据框，只使用机构、ORCID、研究方向、论文、引用、h-index 和最近发表年份帮助用户选择。主卡片通过作者 `affiliations` 年份和身份指纹中的目标作者论文署名统计，只选择一个满足连续两年或至少两篇论文支持的主要机构；其余机构保留为默认收起的往年关联信息，并继续参与机构筛选。后台仍保留完整 `identity_evidence`、`match_reasons` 与身份分组用于排序、审计和工作流校验。
 
 `DataVerification` 不再渲染 Agent 名称、模型或降级状态；主层只显示收录论文、更新时间、数据来源和可能遗漏，Crossref 覆盖、来源差异和已知局限置于折叠说明。模型运行信息继续保存在 `agentAnalysis` 中供服务端审计，不作为学术结论展示。
 
@@ -65,13 +68,13 @@ flowchart LR
 
 候选搜索先为同名 OpenAlex 作者抽取最多 100 篇高被引论文的轻量身份指纹。身份裁决采用保守规则：ORCID 相同直接归并；不同 ORCID 默认隔离，不能再由共同机构或主题数量覆盖；缺少 ORCID 时仍需共同论文，或机构、合作者、主题的比例型组合证据。机构履历异常扩散的档案不参与上下文自动归并，避免污染档案在常见姓名中形成连锁误合并。聚类以高引用档案作为主 ID，不通过阈值的同名者保持独立。前端只提交聚类得到的 ID 集合，工作流会再次计算指纹并拒绝不属于主身份组的 ID，避免客户端强制合并任意学者。
 
-搜索先规范化 Unicode、空白和大小写得到共享 `query_key`。Web 与 worker 优先读取服务器 `OPENALEX_API_KEY`，普通用户无需配置数据源密钥；历史个人 key 仅在服务端 key 缺失时兼容回退。新鲜 `openalex_search_cache` 直接返回；过期结果先返回旧值并把 `requested_by_user_id` 写入后台刷新，冷请求以 `openalex_search_jobs` 的活跃任务唯一索引合并，多 Web 实例只有一个请求或 worker 访问上游。OpenAlex 不可用、限流或平台剩余额度到达保留线时，Repository 可按学者名/别名从已发布的真实 PostgreSQL 学者数据构造保守候选；没有本地事实时才返回明确上游错误。`openalex_identity_cache` 让不同姓名查询复用昂贵的论文/合作者/主题指纹，但不改变既有归并阈值。
+搜索先规范化 Unicode、空白和大小写得到共享 `query_key`。Web 与 worker 优先读取服务器 `OPENALEX_API_KEY`，普通用户无需配置数据源密钥；历史个人 key 仅在服务端 key 缺失时兼容回退。新鲜 `openalex_search_cache` 直接返回；过期结果先返回旧值并把 `requested_by_user_id` 写入后台刷新，冷请求以 `openalex_search_jobs` 的活跃任务唯一索引合并，多 Web 实例只有一个请求或 worker 访问上游。OpenAlex 不可用、限流或平台剩余额度到达保留线时，Repository 可按学者名/别名从已发布的真实 PostgreSQL 学者数据构造保守候选；没有本地事实时才返回明确上游错误。`openalex_identity_cache` 让不同姓名查询复用昂贵的论文、合作者、主题和目标作者机构支持统计；指纹与候选载荷都有独立版本，旧缓存会自动补算，不改变既有归并阈值。
 
-多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责发现，Crossref 按 DOI 核验出版元数据，`orcid.py` 从公共 ORCID works 端点读取 DOI/标题/年份且不需要密钥。来源裁决后，`resolve_work_identity` 以 ORCID 命中和 Crossref 作者 ORCID为强锚点；论文簇只由 DOI、同题同年记录或稳定合作者建立强连接，机构用于主簇评分但不能单独产生传递连接，主题相似只用于分析。多个 ORCID 锚定的跨方向簇共同保留；无 ORCID 时按最近机构、稳定合作者、近期连续发表和簇规模选择主簇。
+多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责发现，Crossref 按 DOI 核验出版元数据，`orcid.py` 读取公共 ORCID works，`dblp.py` 先按姓名、机构或 ORCID 选择 DBLP person，再只匹配当前已有论文。`google_scholar.py` 是可选 SerpApi 适配器；无 key 时返回 `disabled` 且不发网络请求，有 key 时同样只按题名年份核对已有论文。来源裁决后，`resolve_work_identity` 以 ORCID 命中和 Crossref 作者 ORCID为强锚点；论文簇只由 DOI、同题同年记录或稳定合作者建立强连接，机构用于主簇评分但不能单独产生传递连接，主题相似只用于分析。
 
 研究方向优先聚合 OpenAlex topics 与重复 keywords；标题 2–4 元短语必须至少出现在 3 篇论文中才可辅助候选。`topic_agent` 输出 2–8 词规范方向名，标题复制、高相似标题、宽泛标签或不可追溯结果均被 Pydantic 后置校验拒绝。`trajectory_agent` 消费两个三年窗口的方向数量/占比、双语方向说明和代表论文 ID/标题/年份，最多输出四条内容级洞察；未知方向、虚构论文、纯数字复述和无证据推断不能发布。前端只渲染服务端用真实论文对象回填的 `evidencePapers`。
 
-模型输出不是事实来源。`review_evidence` 仍在载荷格式化前确定性检查指标可复算性、论文链接可追溯性和证据 ID；Agent 审查只能降低置信度或触发模板重建，不能批准确定性门禁拒绝的内容。`agentAnalysis` 只保存 Agent 名称、模型、层级、升级原因、状态、趋势结论和审查摘要，不保存 key、完整提示词或原始响应。`LLM_STRONG_DAILY_LIMIT` 为单进程 Pro 调用保护线；达到后自动降级 Flash。
+模型输出不是事实来源。`review_evidence` 仍在载荷格式化前确定性检查指标可复算性、论文链接可追溯性和证据 ID；Agent 审查只能降低置信度或触发模板重建，不能批准确定性门禁拒绝的内容。`agentAnalysis` 只保存 Agent 名称、提供商、模型、层级、回退原因、状态、趋势结论和审查摘要，不保存 key、完整提示词或原始响应。配置 `LONGCAT_API_KEY` 后，每个 Agent 先调用 `LongCat-2.0`（关闭 thinking 以稳定返回结构化正文）；网络、额度、JSON 或输出校验失败后，才进入现有 `LLM_*` DeepSeek Flash/Pro 路径。`LLM_STRONG_DAILY_LIMIT` 仅限制 DeepSeek Pro 调用。
 
 ## 数据模型
 
@@ -122,8 +125,8 @@ flowchart LR
 
 1. 主画像调用 `POST /api/profile/jobs`。已有画像立即返回；首次画像在同一事务写入学者占位、用户历史和 `profile_status=queued`，再幂等创建保存查询姓名与联合作者 ID 的 `refresh_jobs`，Web 请求随即结束。
 2. Worker 领取任务后对候选身份组再次验证；仅联合获取通过身份阈值的 OpenAlex 作者详情和论文，游标分页必须完整结束。
-3. 对有 DOI 的论文查询 Crossref，并记录已核验、未找到、失败和核验上限。
-4. 数据裁决节点按 DOI 合并来源，保留字段来源与冲突；身份节点再以 ORCID、机构和合作者裁定准确优先的主论文集。
+3. 对有 DOI 的论文查询 Crossref；随后按作者身份选择 DBLP person 并匹配已有论文；配置 SerpApi 时再核对 Google Scholar。
+4. 数据裁决节点按 DOI、题名和年份关联来源，保留字段来源与冲突；任何辅助来源都不能增加论文。身份节点再以 ORCID、机构和合作者裁定准确优先的主论文集。
 5. 引用、细粒度方向、演化和合作节点只消费身份裁决后的论文集；总结生成后执行证据审查。
 6. 质量检查比较 `works_count`、本次数量、上一成功数量和证据审查结果。
 7. 同一事务写入学者、机构、论文、authorship、最新画像和数据指纹。
@@ -221,7 +224,7 @@ SSE 连接断开不会影响画像生成，浏览器重连后会先读取当前 
 - 搜索与画像生成设置独立账号/IP 限额，事件由 worker 定期清理。
 - 管理员入口显隐仅用于界面体验，真正权限由 FastAPI 角色依赖执行；运营统计不保存原始 IP，也不向管理员暴露会话 token、Cookie 或安全限速明细。
 - CORS 仅允许配置的前端域名，Cookie 请求启用 credentials。
-- 数据库、OpenAlex、可选凭据加密 key 和 LLM 密钥全部为服务端配置，不进入 Vite bundle。
+- 数据库、OpenAlex、LongCat、DeepSeek、可选 SerpApi 和凭据加密 key 全部为服务端配置，不进入 Vite bundle。
 
 ## 部署模型
 

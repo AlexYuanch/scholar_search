@@ -34,6 +34,11 @@ export interface Candidate {
   institutions?: string[]
   primary_institution?: string
   other_institutions?: string[]
+  historical_affiliations?: Array<{
+    name: string
+    years: number[]
+    work_count: number
+  }>
   works_count: number
   cited_by_count: number
   h_index: number
@@ -133,11 +138,17 @@ export interface ScholarProfile {
     crossrefMissing: number
     crossrefFailed: number
     crossrefLimited: boolean
+    dblpStatus?: string
+    dblpMatched?: number
+    googleScholarStatus?: string
+    googleScholarMatched?: number
+    multiSourceVerified?: number
     unverifiedWorks: number
     duplicateRecordsMerged: number
     conflictCount: number
     worksComplete: boolean
     verifiedRatio: number
+    multiSourceRatio?: number
     retrievedAt: string
   }
   evidenceReview?: {

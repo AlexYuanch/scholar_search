@@ -22,6 +22,7 @@ RETRY_STATUSES = {429, 500, 502, 503, 504}
 DEFAULT_MAX_PAGES = int(os.getenv("OPENALEX_MAX_WORK_PAGES", "200"))
 IDENTITY_FINGERPRINT_WORKS = int(os.getenv("OPENALEX_IDENTITY_FINGERPRINT_WORKS", "100"))
 IDENTITY_MAX_WORKERS = int(os.getenv("OPENALEX_IDENTITY_MAX_WORKERS", "8"))
+IDENTITY_FINGERPRINT_VERSION = 2
 _SESSION = requests.Session()
 _CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 _BUDGET_GUARD: Callable[[str], int | None] | None = None
@@ -345,16 +346,38 @@ def get_author_identity_fingerprint(
     topic_ids = set()
     topic_names = set()
     publication_years = []
+    affiliations_by_key = {}
     for work in data.get("results", []):
         work_key = work.get("doi") or work.get("id")
         if work_key:
             work_ids.add(str(work_key))
-        if work.get("publication_year"):
-            publication_years.append(int(work["publication_year"]))
+        publication_year = int(work["publication_year"]) if work.get("publication_year") else 0
+        if publication_year:
+            publication_years.append(publication_year)
         for authorship in work.get("authorships") or []:
             coauthor_id = (authorship.get("author") or {}).get("id")
             if coauthor_id and _entity_id(coauthor_id) != normalized_author_id:
                 coauthor_ids.add(str(coauthor_id))
+            if _entity_id(coauthor_id) != normalized_author_id:
+                continue
+            for institution in authorship.get("institutions") or []:
+                name = str(institution.get("display_name") or "").strip()
+                if not name:
+                    continue
+                key = str(institution.get("id") or name).strip().casefold()
+                row = affiliations_by_key.setdefault(
+                    key,
+                    {
+                        "id": institution.get("id"),
+                        "name": name,
+                        "years": set(),
+                        "work_ids": set(),
+                    },
+                )
+                if publication_year:
+                    row["years"].add(publication_year)
+                if work_key:
+                    row["work_ids"].add(str(work_key))
         primary_topic = work.get("primary_topic") or {}
         if primary_topic.get("id"):
             topic_ids.add(str(primary_topic["id"]))
@@ -365,13 +388,32 @@ def get_author_identity_fingerprint(
                 topic_ids.add(str(topic["id"]))
             if topic.get("display_name"):
                 topic_names.add(str(topic["display_name"]).strip())
+    affiliations = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "years": sorted(row["years"], reverse=True),
+            "work_count": len(row["work_ids"]),
+        }
+        for row in affiliations_by_key.values()
+    ]
+    affiliations.sort(
+        key=lambda row: (
+            max(row["years"], default=0),
+            row["work_count"],
+            row["name"].casefold(),
+        ),
+        reverse=True,
+    )
     return {
+        "version": IDENTITY_FINGERPRINT_VERSION,
         "work_ids": sorted(work_ids),
         "coauthor_ids": sorted(coauthor_ids),
         "topic_ids": sorted(topic_ids),
         "topic_names": sorted(topic_names, key=str.casefold),
         "publication_years": sorted(set(publication_years)),
         "sampled_works": len(data.get("results", [])),
+        "affiliations": affiliations,
     }
 
 
