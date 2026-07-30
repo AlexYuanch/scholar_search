@@ -85,6 +85,16 @@ npm run build
 npm run test:db
 ```
 
+需要定位线上工作流耗时或模型回退时，可在已配置生产同等环境变量的后端容器中运行脱敏追踪：
+
+```bash
+python trace_workflow.py \
+  --author-id A5100700361 \
+  --output /tmp/workflow-trace.json
+```
+
+追踪只记录节点状态摘要、数量、模型和耗时，不保存密钥、完整提示词或模型原始响应。示例见 [Kaiming He 线上工作流透明测试](docs/WORKFLOW_TRACE_KAIMING_HE_20260730.md)。
+
 更完整的产品边界、数据模型和部署说明见：
 
 - [产品说明](docs/PRODUCT.md)
