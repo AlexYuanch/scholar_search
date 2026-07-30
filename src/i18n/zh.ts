@@ -21,7 +21,7 @@ const zh: Record<string, string> = {
   "landing.research_desc": "沿合作关系和研究方向，识别重点同行与潜在合作伙伴。",
   "landing.network_title": "持续追踪研究进展",
   "landing.network_desc": "保存关注学者，及时查看新论文、方向变化与合作动态。",
-  "landing.trust_note": "数据来自 OpenAlex、Crossref 与公开 ORCID 记录，并保留来源、更新时间和可能遗漏。",
+  "landing.trust_note": "数据来自 OpenAlex，并通过 Crossref、公开 ORCID 与 DBLP 交叉核对；系统保留来源、更新时间和可能遗漏。",
   "guide.label": "新手指南",
   "guide.title": "第一次使用，只需三步",
   "guide.description": "从输入姓名到阅读画像，每一步都保留公开身份和论文证据，帮助你先找对人，再理解其研究。",

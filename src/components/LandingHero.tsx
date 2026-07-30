@@ -160,7 +160,8 @@ export default function LandingHero({
             <span>OpenAlex</span>
             <span>Crossref</span>
             <span>ORCID</span>
-            <span>DeepSeek Agents</span>
+            <span>DBLP</span>
+            <span>LongCat → DeepSeek</span>
           </div>
           <small>{t("landing.source_note")}</small>
         </div>

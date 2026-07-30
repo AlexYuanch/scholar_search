@@ -21,7 +21,7 @@ const en: Record<string, string> = {
   "landing.research_desc": "Follow research topics and collaboration links to identify important peers and potential partners.",
   "landing.network_title": "Track Research Progress",
   "landing.network_desc": "Follow scholars and return to new papers, changing directions, and collaboration updates.",
-  "landing.trust_note": "Data comes from OpenAlex, Crossref, and public ORCID records, with sources, update times, and possible gaps clearly noted.",
+  "landing.trust_note": "Data comes from OpenAlex and is cross-checked with Crossref, public ORCID, and DBLP records, with sources, update times, and possible gaps clearly noted.",
   "guide.label": "Getting started",
   "guide.title": "Your first profile in three steps",
   "guide.description": "From entering a name to reading the profile, public identity and publication evidence remain visible so you can identify the right person before interpreting their research.",
