@@ -40,7 +40,7 @@ flowchart LR
 | Repository | SQLAlchemy 2 + psycopg | 事务化事实数据、画像、加密用户凭据、持久搜索缓存、按用户额度状态和队列 |
 | 数据库 | 标准 PostgreSQL 17 | 数据、约束、索引、通知和并发队列 |
 | Worker | 独立 Python 进程 | 定时入队、刷新、质量检查、重试和清理 |
-| 公网入口 | Caddy + Nginx | 自动 HTTPS、静态资源、同源 API 代理和日志 |
+| 公网入口 | Caddy + Nginx | 自动 HTTPS、静态资源、同源 API 代理、Docker DNS 动态解析和日志 |
 
 匿名前端先展示 Hero 搜索、原创科研插画、三项核心能力和数据可信说明，不自动打开登录框。`LandingGuide` 在其后用浏览器原生组件提供三步指南和六段匿名案例，覆盖候选确认、后台工作流、画像概览、合作网络节点/连线、查询历史、研究追踪和能力边界；不依赖截图缩放，因此在高分屏与移动端保持清晰。`LandingHero` 使用 `IntersectionObserver` 切换内容显隐类，并通过 `prefers-reduced-motion` 关闭动态效果。匿名搜索把姓名保存在 `App` 状态并打开可关闭的认证弹窗；注册或登录成功后继续原搜索，后端查询路由没有开放匿名权限。
 
@@ -233,7 +233,7 @@ SSE 连接断开不会影响画像生成，浏览器重连后会先读取当前 
 
 仓库提供两种兼容部署方式：
 
-1. **单机 Compose（当前交付）**：Caddy、Nginx 前端、Web、worker、迁移、自动备份和 PostgreSQL 运行在一台 ECS。公网只暴露 Caddy 的 80/443，数据库端口仅绑定回环地址。`deploy/bootstrap-aliyun.sh` 可为 Ubuntu 24.04 ECS 安装 Docker、配置可选 ACR 加速、补充 Swap 和生成首次配置；`deploy/deploy.sh` 负责配置校验、迁移和健康等待，并根据上次成功提交到当前提交的 Git 变化选择前端增量、后端增量、纯文档跳过或完整构建。首次运行、`.env` 摘要变化和无法安全分类的基础设施变化自动执行完整构建。
+1. **单机 Compose（当前交付）**：Caddy、Nginx 前端、Web、worker、迁移、自动备份和 PostgreSQL 运行在一台 ECS。公网只暴露 Caddy 的 80/443，数据库端口仅绑定回环地址。Nginx 使用 Docker 内置 DNS 定期重新解析 `web` 服务，避免后端增量重建后继续连接旧容器 IP；前端容器健康检查访问 `/api/ready`，同时覆盖静态代理和后端可用性。`deploy/bootstrap-aliyun.sh` 可为 Ubuntu 24.04 ECS 安装 Docker、配置可选 ACR 加速、补充 Swap 和生成首次配置；`deploy/deploy.sh` 负责配置校验、迁移和健康等待，并根据上次成功提交到当前提交的 Git 变化选择前端增量、后端增量、纯文档跳过或完整构建。首次运行、`.env` 摘要变化和无法安全分类的基础设施变化自动执行完整构建。
 2. **ECS + RDS（容量增长后）**：Caddy/Nginx、Web、worker 部署在 ECS，PostgreSQL 使用同 VPC 的 RDS。部署流水线先以迁移账号执行 Alembic，再启动受限账号的运行时服务。
 
 无论采用哪种方式，公网只暴露 80/443；生产必须使用 HTTPS、安全 Cookie、独立备份和恢复演练。

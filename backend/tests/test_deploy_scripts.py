@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP = ROOT / "deploy" / "bootstrap-aliyun.sh"
 DEPLOY = ROOT / "deploy" / "deploy.sh"
 COMPOSE = ROOT / "docker-compose.yml"
+NGINX = ROOT / "deploy" / "nginx.conf"
 
 
 def test_aliyun_bootstrap_has_valid_bash_syntax():
@@ -84,6 +85,16 @@ def test_production_deploy_supports_safe_incremental_modes():
     assert "docker compose build migrate web worker" in script
     assert "docker compose run --rm migrate" in script
     assert "docker compose up -d --build --remove-orphans" in script
+
+
+def test_frontend_proxy_refreshes_docker_dns_and_checks_api_readiness():
+    compose = COMPOSE.read_text()
+    nginx = NGINX.read_text()
+
+    assert "resolver 127.0.0.11 valid=10s ipv6=off;" in nginx
+    assert "set $api_upstream http://web:8000;" in nginx
+    assert "proxy_pass $api_upstream;" in nginx
+    assert "http://127.0.0.1/api/ready" in compose
 
 
 def test_compose_runs_daily_postgres_backups_without_manual_profile():

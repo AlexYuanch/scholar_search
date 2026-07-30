@@ -53,6 +53,8 @@ ScholarSearch 是一个面向教师、学生和科研团队的学者情报平台
 | 模型 | LongCat-2.0 优先、DeepSeek 回退 |
 | 部署 | Docker Compose、Caddy、Nginx、Alembic |
 
+生产前端通过 Docker 内置 DNS 动态解析 Web 服务；后端容器增量重建和 IP 变化不会要求手动重启前端代理，前端健康检查同时验证 `/api/ready`。
+
 ## 快速启动
 
 ```bash
