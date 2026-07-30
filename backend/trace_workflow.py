@@ -134,7 +134,7 @@ def _compact_value(key: str, value: Any) -> Any:
     if key == "web_payload" and isinstance(value, dict):
         return {
             "name": _safe_text(value.get("name"), 80),
-            "paper_count": len(value.get("papers") or []),
+            "paper_count": value.get("totalPapers", len(value.get("papers") or [])),
             "topic_count": len(value.get("topics") or value.get("researchDirections") or []),
             "coauthor_count": len(value.get("coauthors") or []),
             "has_agent_analysis": bool(value.get("agentAnalysis")),

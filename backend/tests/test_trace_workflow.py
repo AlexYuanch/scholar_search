@@ -78,3 +78,23 @@ def test_result_summary_exposes_sanitized_agent_and_worker_status():
         "confidence": 0.92,
         "evidence_count": 2,
     }]
+
+
+def test_result_summary_reads_web_payload_totals():
+    summary = _result_summary({
+        "web_payload": {
+            "name": "Kaiming He",
+            "totalPapers": 124,
+            "topics": ["Computer Vision"],
+            "coauthors": [{"name": "Ross Girshick"}],
+            "agentAnalysis": {"status": "completed"},
+        },
+    })
+
+    assert summary["web_payload"] == {
+        "name": "Kaiming He",
+        "paper_count": 124,
+        "topic_count": 1,
+        "coauthor_count": 1,
+        "has_agent_analysis": True,
+    }
