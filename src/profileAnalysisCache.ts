@@ -1,8 +1,13 @@
 import {
   getResearchGraph,
   getScholarIntelligence,
+  getScholarIntelligencePeers,
 } from "@/api"
-import type { ResearchGraph, ScholarIntelligence } from "@/types"
+import type {
+  IntelligencePeerPage,
+  ResearchGraph,
+  ScholarIntelligence,
+} from "@/types"
 
 type CacheEntry<T> = {
   value?: T
@@ -14,9 +19,22 @@ const CACHE_MAX_AGE_MS = 60_000
 const MAX_ENTRIES = 24
 const graphCache = new Map<string, CacheEntry<ResearchGraph>>()
 const intelligenceCache = new Map<string, CacheEntry<ScholarIntelligence>>()
+const peerPageCache = new Map<
+  string,
+  Map<string, CacheEntry<IntelligencePeerPage>>
+>()
 
 function cacheKey(authorId: string, profileVersion: number) {
   return `${authorId}|${profileVersion}`
+}
+
+function peerCacheKey(
+  authorId: string,
+  profileVersion: number,
+  graphVersion: number,
+  discoveryVersion: number,
+) {
+  return [authorId, profileVersion, graphVersion, discoveryVersion].join("|")
 }
 
 function trimCache<T>(cache: Map<string, CacheEntry<T>>) {
@@ -119,6 +137,58 @@ export function loadScholarIntelligenceCached(
     cacheKey(authorId, profileVersion),
     () => getScholarIntelligence(authorId),
     force,
+  )
+}
+
+export function getCachedScholarIntelligencePeerPages(
+  authorId: string,
+  profileVersion: number,
+  graphVersion: number,
+  discoveryVersion: number,
+) {
+  const pages = peerPageCache.get(peerCacheKey(
+    authorId,
+    profileVersion,
+    graphVersion,
+    discoveryVersion,
+  ))
+  if (!pages) return []
+  return [...pages.values()]
+    .map((entry) => entry.value)
+    .filter((page): page is IntelligencePeerPage => Boolean(page))
+    .sort((left, right) => (
+      left.peer_pagination.offset - right.peer_pagination.offset
+    ))
+}
+
+export function loadScholarIntelligencePeerPageCached(
+  authorId: string,
+  profileVersion: number,
+  graphVersion: number,
+  discoveryVersion: number,
+  cursor: string,
+) {
+  const key = peerCacheKey(
+    authorId,
+    profileVersion,
+    graphVersion,
+    discoveryVersion,
+  )
+  let pages = peerPageCache.get(key)
+  if (!pages) {
+    pages = new Map()
+    peerPageCache.set(key, pages)
+    while (peerPageCache.size > MAX_ENTRIES) {
+      const oldestKey = peerPageCache.keys().next().value
+      if (!oldestKey) break
+      peerPageCache.delete(oldestKey)
+    }
+  }
+  return loadEntry(
+    pages,
+    cursor,
+    () => getScholarIntelligencePeers(authorId, cursor),
+    false,
   )
 }
 

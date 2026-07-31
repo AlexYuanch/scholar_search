@@ -17,14 +17,15 @@ import {
   addTracking,
   compareInstitutions,
   discoverScholarField,
-  getScholarIntelligencePeers,
   getTracking,
   submitIntelligenceFeedback,
 } from "@/api"
 import { useAdaptivePolling } from "@/hooks/useAdaptivePolling"
 import {
   getCachedScholarIntelligence,
+  getCachedScholarIntelligencePeerPages,
   loadScholarIntelligenceCached,
+  loadScholarIntelligencePeerPageCached,
 } from "@/profileAnalysisCache"
 import type {
   IntelligenceComparison,
@@ -705,13 +706,25 @@ export default function ScholarIntelligenceAnalysis({
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       const cached = getCachedScholarIntelligence(profile.authorId, profile.profileVersion)
+      const pages = cached
+        ? getCachedScholarIntelligencePeerPages(
+            profile.authorId,
+            profile.profileVersion,
+            cached.generated_from_graph_version,
+            cached.discovery.version,
+          )
+        : []
       setIntelligence(cached ?? null)
       setLoading(!cached)
-      setAdditionalRecommendations([])
-      setAdditionalPeerCandidates([])
-      setNextPeerCursor(cached?.peer_pagination.next_cursor ?? null)
+      setAdditionalRecommendations(pages.map((page) => page.recommendations))
+      setAdditionalPeerCandidates(pages.flatMap((page) => page.peer_candidates ?? []))
+      setNextPeerCursor(
+        pages.at(-1)?.peer_pagination.next_cursor
+          ?? cached?.peer_pagination.next_cursor
+          ?? null,
+      )
       setPeersError("")
-      loadedPeerPages.current = 0
+      loadedPeerPages.current = pages.length
       void load(Boolean(cached))
       void getTracking().then((rows) => {
         if (!controller.signal.aborted) {
@@ -755,11 +768,17 @@ export default function ScholarIntelligenceAnalysis({
   }, [intelligence, lang, load, profile.authorId])
 
   const handleLoadMorePeers = useCallback(async () => {
-    if (!nextPeerCursor || peersLoading) return
+    if (!intelligence || !nextPeerCursor || peersLoading) return
     setPeersLoading(true)
     setPeersError("")
     try {
-      const page = await getScholarIntelligencePeers(profile.authorId, nextPeerCursor)
+      const page = await loadScholarIntelligencePeerPageCached(
+        profile.authorId,
+        profile.profileVersion,
+        intelligence.generated_from_graph_version,
+        intelligence.discovery.version,
+        nextPeerCursor,
+      )
       setAdditionalRecommendations((current) => [...current, page.recommendations])
       setAdditionalPeerCandidates((current) => [
         ...current,
@@ -778,7 +797,14 @@ export default function ScholarIntelligenceAnalysis({
     } finally {
       setPeersLoading(false)
     }
-  }, [lang, nextPeerCursor, peersLoading, profile.authorId])
+  }, [
+    intelligence,
+    lang,
+    nextPeerCursor,
+    peersLoading,
+    profile.authorId,
+    profile.profileVersion,
+  ])
 
   const handleTrack = useCallback(async (authorId: string) => {
     setTrackingBusy(authorId)
