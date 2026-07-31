@@ -81,8 +81,11 @@ def research_graph_needs_refresh(
     repository,
     author_id: str,
     max_age_days: int = 7,
+    *,
+    state: dict | None = None,
 ) -> bool:
-    state = get_research_graph_sync_state(repository, author_id)
+    if state is None:
+        state = get_research_graph_sync_state(repository, author_id)
     if state and state.get("status") in {"queued", "updating", "failed"}:
         return False
     if not state or not state.get("last_success_at"):

@@ -9,12 +9,14 @@ import asyncio
 import base64
 import ipaddress
 import json
+import logging
 import math
 import os
 import queue
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -85,6 +87,9 @@ from intelligence_service import ScholarIntelligenceService
 from scholar_intelligence import ANALYSIS_VERSION
 from state import default_state
 from workflow import graph
+
+
+logger = logging.getLogger(__name__)
 
 
 NODE_SIGNAL = {
@@ -422,6 +427,50 @@ def _decode_cursor(cursor: str | None) -> int:
         return max(0, int(base64.urlsafe_b64decode(padded).decode()))
     except (ValueError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=400, detail="Invalid cursor") from exc
+
+
+def _with_peer_cursor(result: dict) -> dict:
+    pagination = result.get("peer_pagination") or {}
+    next_offset = pagination.pop("next_offset", None)
+    if next_offset is not None:
+        pagination["next_cursor"] = _encode_cursor(int(next_offset))
+    else:
+        pagination.setdefault("next_cursor", None)
+    result["peer_pagination"] = pagination
+    return result
+
+
+def _analysis_response(
+    name: str,
+    author_id: str,
+    payload: dict,
+    timings: dict[str, float],
+    *,
+    cache_hit: bool | None = None,
+) -> JSONResponse:
+    serialize_started = perf_counter()
+    response = JSONResponse(content=payload)
+    timings = {
+        **timings,
+        "serialize": (perf_counter() - serialize_started) * 1000,
+    }
+    response.headers["Server-Timing"] = ", ".join(
+        f"{key};dur={value:.1f}"
+        for key, value in timings.items()
+    )
+    if cache_hit is not None:
+        response.headers["X-Analysis-Cache"] = "hit" if cache_hit else "miss"
+    logger.info(
+        "analysis_request name=%s author_id=%s total_ms=%.1f "
+        "response_bytes=%d cache_hit=%s timings=%s",
+        name,
+        author_id,
+        sum(timings.values()),
+        len(response.body),
+        cache_hit,
+        {key: round(value, 1) for key, value in timings.items()},
+    )
+    return response
 
 
 def _profile_status_event_key(event: dict) -> tuple[int, str, str]:
@@ -1243,11 +1292,21 @@ def author_research_graph(
     user: AuthUser = Depends(require_user),
 ):
     """Return a scholar graph and lazily queue it only when the tab is opened."""
+    state_started = perf_counter()
     state = get_research_graph_sync_state(repository, author_id) or {}
-    if state.get("status") != "failed" and research_graph_needs_refresh(
-        repository,
-        author_id,
-    ):
+    state_ms = (perf_counter() - state_started) * 1000
+    freshness_started = perf_counter()
+    needs_refresh = (
+        state.get("status") != "failed"
+        and research_graph_needs_refresh(
+            repository,
+            author_id,
+            state=state,
+        )
+    )
+    freshness_ms = (perf_counter() - freshness_started) * 1000
+    queue_started = perf_counter()
+    if needs_refresh:
         _consume_api_quota("profile", user, request)
         _require_openalex_credential(user)
         try:
@@ -1262,22 +1321,46 @@ def author_research_graph(
                 status_code=404,
                 detail="Scholar profile not found",
             ) from exc
-    return get_research_graph(repository, author_id)
+    queue_ms = (perf_counter() - queue_started) * 1000
+    projection_started = perf_counter()
+    result = get_research_graph(repository, author_id)
+    projection_ms = (perf_counter() - projection_started) * 1000
+    return _analysis_response(
+        "research_graph",
+        author_id,
+        result,
+        {
+            "state": state_ms,
+            "freshness": freshness_ms,
+            "queue": queue_ms,
+            "projection": projection_ms,
+        },
+    )
 
 
 @app.get("/api/authors/{author_id:path}/intelligence")
 def author_intelligence(
     author_id: str,
     request: Request,
-    limit: int = Query(8, ge=1, le=20),
+    limit: int = Query(20, ge=1, le=20),
     user: AuthUser = Depends(require_user),
 ):
     """Compute explainable intelligence directly from the dynamic graph."""
+    state_started = perf_counter()
     state = get_research_graph_sync_state(repository, author_id) or {}
-    if state.get("status") != "failed" and research_graph_needs_refresh(
-        repository,
-        author_id,
-    ):
+    state_ms = (perf_counter() - state_started) * 1000
+    freshness_started = perf_counter()
+    needs_refresh = (
+        state.get("status") != "failed"
+        and research_graph_needs_refresh(
+            repository,
+            author_id,
+            state=state,
+        )
+    )
+    freshness_ms = (perf_counter() - freshness_started) * 1000
+    queue_started = perf_counter()
+    if needs_refresh:
         _consume_api_quota("profile", user, request)
         _require_openalex_credential(user)
         try:
@@ -1292,23 +1375,72 @@ def author_intelligence(
                 status_code=404,
                 detail="Scholar profile not found",
             ) from exc
+    queue_ms = (perf_counter() - queue_started) * 1000
+    cache_before = intelligence_service.cache_info(repository)
+    analysis_started = perf_counter()
     result = intelligence_service.analyze(
         repository,
         author_id,
         limit=limit,
     )
-    if result["discovery"]["status"] in {"enriching", "partial", "ready"}:
-        result["discovery"] = advance_field_discovery(
-            repository,
-            author_id,
-            result_counts={
-                key: len(rows)
-                for key, rows in result["recommendations"].items()
-            },
-        )
-    latest_state = get_research_graph_sync_state(repository, author_id) or {}
-    result["graph_status"] = latest_state.get("status", "never")
-    return result
+    analysis_ms = (perf_counter() - analysis_started) * 1000
+    cache_after = intelligence_service.cache_info(repository)
+    result["graph_status"] = state.get("status", "never")
+    _with_peer_cursor(result)
+    return _analysis_response(
+        "scholar_intelligence",
+        author_id,
+        result,
+        {
+            "state": state_ms,
+            "freshness": freshness_ms,
+            "queue": queue_ms,
+            "analysis": analysis_ms,
+        },
+        cache_hit=cache_after["hits"] > cache_before["hits"],
+    )
+
+
+@app.get("/api/authors/{author_id:path}/intelligence/peers")
+def author_intelligence_peers(
+    author_id: str,
+    cursor: str | None = None,
+    limit: int = Query(20, ge=1, le=20),
+    _user: AuthUser = Depends(require_user),
+):
+    """Return the next bounded page of already analyzed field candidates."""
+    candidate_offset = _decode_cursor(cursor)
+    state_started = perf_counter()
+    state = get_research_graph_sync_state(repository, author_id) or {}
+    state_ms = (perf_counter() - state_started) * 1000
+    cache_before = intelligence_service.cache_info(repository)
+    analysis_started = perf_counter()
+    result = intelligence_service.analyze(
+        repository,
+        author_id,
+        limit=limit,
+        candidate_offset=candidate_offset,
+    )
+    analysis_ms = (perf_counter() - analysis_started) * 1000
+    cache_after = intelligence_service.cache_info(repository)
+    _with_peer_cursor(result)
+    payload = {
+        "analysis_version": result["analysis_version"],
+        "generated_from_graph_version": result[
+            "generated_from_graph_version"
+        ],
+        "graph_status": state.get("status", "never"),
+        "discovery": result["discovery"],
+        "recommendations": result["recommendations"],
+        "peer_pagination": result["peer_pagination"],
+    }
+    return _analysis_response(
+        "scholar_intelligence_peers",
+        author_id,
+        payload,
+        {"state": state_ms, "analysis": analysis_ms},
+        cache_hit=cache_after["hits"] > cache_before["hits"],
+    )
 
 
 @app.post("/api/authors/{author_id:path}/intelligence/discover")

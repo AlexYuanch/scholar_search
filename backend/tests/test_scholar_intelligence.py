@@ -1123,3 +1123,77 @@ def test_authenticated_intelligence_routes_and_feedback(monkeypatch):
     assert discovery_first.json()["graph_job_id"]
     assert discovery_second.json()["job_id"] == discovery_first.json()["job_id"]
     assert discovery_second.json()["graph_job_id"] == discovery_first.json()["graph_job_id"]
+
+
+def test_intelligence_reads_do_not_advance_discovery_and_pages_use_cursor(
+    monkeypatch,
+):
+    import main
+
+    repository = _rich_repository()
+    user = repository.create_password_user(
+        "intelligence-read-user",
+        hash_password("correct horse battery staple"),
+    )
+    raw_session = generate_token()
+    repository.create_user_session(
+        user["id"],
+        hash_token(raw_session),
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    calls = []
+
+    def analyze(_repository, author_id, *, limit, candidate_offset=0):
+        calls.append((author_id, limit, candidate_offset))
+        return {
+            "analysis_version": "test",
+            "source": "dynamic_research_graph",
+            "generated_from_graph_version": 1,
+            "discovery": {"status": "ready"},
+            "recommendations": {
+                "north_stars": [],
+                "peers": [],
+                "potential_collaborators": [],
+                "potential_competitors": [],
+            },
+            "peer_pagination": {
+                "total": 45,
+                "offset": candidate_offset,
+                "limit": limit,
+                "next_cursor": (
+                    main._encode_cursor(candidate_offset + limit)
+                    if candidate_offset + limit < 45
+                    else None
+                ),
+            },
+        }
+
+    monkeypatch.setattr(main, "repository", repository)
+    monkeypatch.setattr(app.state, "repository", repository)
+    monkeypatch.setattr(main.intelligence_service, "analyze", analyze)
+    monkeypatch.setattr(
+        main,
+        "research_graph_needs_refresh",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        main,
+        "advance_field_discovery",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("GET must not advance field discovery")
+        ),
+    )
+    client = TestClient(app)
+    client.cookies.set("scholar_session", raw_session)
+
+    first = client.get(f"/api/authors/{FOCUS}/intelligence")
+    page = client.get(
+        f"/api/authors/{FOCUS}/intelligence/peers",
+        params={"cursor": main._encode_cursor(20), "limit": 20},
+    )
+
+    assert first.status_code == 200
+    assert first.headers["server-timing"]
+    assert page.status_code == 200
+    assert page.json()["peer_pagination"]["offset"] == 20
+    assert calls == [(FOCUS, 20, 0), (FOCUS, 20, 20)]

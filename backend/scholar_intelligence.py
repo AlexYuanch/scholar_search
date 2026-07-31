@@ -1515,9 +1515,15 @@ def build_scholar_intelligence(
     repository,
     author_id: str,
     *,
-    limit: int = 8,
+    limit: int = 20,
+    candidate_offset: int = 0,
 ) -> dict:
-    dataset = load_intelligence_dataset(repository, author_id)
+    dataset = load_intelligence_dataset(
+        repository,
+        author_id,
+        candidate_limit=limit,
+        candidate_offset=candidate_offset,
+    )
     context = _build_context(dataset)
     focus = dataset["scholars"].get(author_id)
     if not focus:
@@ -1585,7 +1591,10 @@ def build_scholar_intelligence(
                 for row in topics
             ],
             "as_of_year": dataset.get("as_of_year"),
-            "candidate_count": max(0, len(dataset["scholars"]) - 1),
+            "candidate_count": int(
+                dataset.get("candidate_total")
+                or max(0, len(dataset["scholars"]) - 1)
+            ),
             "scope": _i18n(
                 "当前平台动态研究图谱中的相关学者样本",
                 "Related scholars in the platform's current dynamic research graph",
@@ -1611,6 +1620,21 @@ def build_scholar_intelligence(
         "dimensions": subject_analysis["dimensions"],
         "representative_works": subject_analysis["representative_works"],
         "recommendations": recommendations,
+        "peer_pagination": {
+            "total": int(dataset.get("candidate_total") or 0),
+            "offset": int(dataset.get("candidate_offset") or 0),
+            "limit": int(dataset.get("candidate_limit") or limit),
+            "next_offset": (
+                int(dataset.get("candidate_offset") or 0)
+                + int(dataset.get("candidate_limit") or limit)
+                if (
+                    int(dataset.get("candidate_offset") or 0)
+                    + int(dataset.get("candidate_limit") or limit)
+                    < int(dataset.get("candidate_total") or 0)
+                )
+                else None
+            ),
+        },
         "field_reference_list": {
             "label": _i18n(
                 "领域北极星参照学者",

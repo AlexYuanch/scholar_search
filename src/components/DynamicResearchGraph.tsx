@@ -6,10 +6,14 @@ import {
   RotateCcw,
 } from "lucide-react"
 import {
-  getResearchGraph,
   getResearchGraphObject,
   refreshResearchGraph,
 } from "@/api"
+import {
+  getCachedResearchGraph,
+  loadResearchGraphCached,
+} from "@/profileAnalysisCache"
+import { useAdaptivePolling } from "@/hooks/useAdaptivePolling"
 import type {
   ResearchGraph,
   ResearchGraphObject,
@@ -214,9 +218,13 @@ export default function DynamicResearchGraph({
   profile: ScholarProfile
   t: Translate
 }) {
-  const [graph, setGraph] = useState<ResearchGraph | null>(null)
+  const cachedGraph = getCachedResearchGraph(
+    profile.authorId,
+    profile.profileVersion,
+  )
+  const [graph, setGraph] = useState<ResearchGraph | null>(cachedGraph ?? null)
   const [detail, setDetail] = useState<ResearchGraphObject | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!cachedGraph)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState("")
   const viewModel = useMemo(
@@ -224,39 +232,44 @@ export default function DynamicResearchGraph({
     [graph],
   )
 
-  const load = useCallback(async (silent = false, signal?: AbortSignal) => {
+  const load = useCallback(async (silent = false, force = false) => {
     if (!silent) setLoading(true)
     try {
-      const next = await getResearchGraph(profile.authorId, signal)
+      const next = await loadResearchGraphCached(
+        profile.authorId,
+        profile.profileVersion,
+        force,
+      )
       setGraph(next)
       setError("")
     } catch (reason: unknown) {
-      if (reason instanceof DOMException && reason.name === "AbortError") return
       setError(
         reason instanceof Error
           ? reason.message
           : t("research_graph.load_failed"),
       )
     } finally {
-      if (!silent && !signal?.aborted) setLoading(false)
+      if (!silent) setLoading(false)
     }
-  }, [profile.authorId, t])
+  }, [profile.authorId, profile.profileVersion, t])
 
   useEffect(() => {
-    const controller = new AbortController()
     void Promise.resolve().then(() => {
-      if (controller.signal.aborted) return
       setDetail(null)
-      return load(false, controller.signal)
+      const cached = getCachedResearchGraph(
+        profile.authorId,
+        profile.profileVersion,
+      )
+      setGraph(cached ?? null)
+      return load(Boolean(cached))
     })
-    return () => controller.abort()
-  }, [load, profile.profileVersion])
+  }, [load, profile.authorId, profile.profileVersion])
 
-  useEffect(() => {
-    if (!graph || !["queued", "updating"].includes(graph.status.status)) return
-    const timer = window.setInterval(() => void load(true), 3000)
-    return () => window.clearInterval(timer)
-  }, [graph, load])
+  const poll = useCallback(() => load(true, true), [load])
+  useAdaptivePolling(
+    Boolean(graph && ["queued", "updating"].includes(graph.status.status)),
+    poll,
+  )
 
   const requestRefresh = async (forceRebuild: boolean) => {
     setRefreshing(true)
@@ -269,7 +282,7 @@ export default function DynamicResearchGraph({
         } : current)
       }
       setError("")
-      await load(true)
+      await load(true, true)
     } catch (reason: unknown) {
       setError(
         reason instanceof Error

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
   ArrowLeftRight,
@@ -17,10 +17,15 @@ import {
   addTracking,
   compareInstitutions,
   discoverScholarField,
-  getScholarIntelligence,
+  getScholarIntelligencePeers,
   getTracking,
   submitIntelligenceFeedback,
 } from "@/api"
+import { useAdaptivePolling } from "@/hooks/useAdaptivePolling"
+import {
+  getCachedScholarIntelligence,
+  loadScholarIntelligenceCached,
+} from "@/profileAnalysisCache"
 import type {
   IntelligenceComparison,
   IntelligenceEvidence,
@@ -274,28 +279,30 @@ function strongestRecommendationCategory(
   ) as IntelligenceRecommendation["category"]
 }
 
-function mergeRecommendations(
-  intelligence: ScholarIntelligence,
+function mergeRecommendationGroups(
+  recommendationGroups: ScholarIntelligence["recommendations"][],
 ): MergedRecommendation[] {
   const merged = new Map<string, MergedRecommendation>()
-  const groups: Array<[IntelligenceRecommendation["category"], IntelligenceRecommendation[]]> = [
-    ["north_star", intelligence.recommendations.north_stars],
-    ["peer", intelligence.recommendations.peers],
-    ["potential_collaborator", intelligence.recommendations.potential_collaborators],
-    ["potential_competitor", intelligence.recommendations.potential_competitors],
-  ]
-  for (const [category, rows] of groups) {
-    for (const row of rows) {
-      const current = merged.get(row.author_id) || {
-        author_id: row.author_id,
-        name: row.name,
-        institution: row.institution,
-        categories: [],
-        byCategory: {},
+  for (const recommendations of recommendationGroups) {
+    const groups: Array<[IntelligenceRecommendation["category"], IntelligenceRecommendation[]]> = [
+      ["north_star", recommendations.north_stars],
+      ["peer", recommendations.peers],
+      ["potential_collaborator", recommendations.potential_collaborators],
+      ["potential_competitor", recommendations.potential_competitors],
+    ]
+    for (const [category, rows] of groups) {
+      for (const row of rows) {
+        const current = merged.get(row.author_id) || {
+          author_id: row.author_id,
+          name: row.name,
+          institution: row.institution,
+          categories: [],
+          byCategory: {},
+        }
+        if (!current.categories.includes(category)) current.categories.push(category)
+        current.byCategory[category] = row
+        merged.set(row.author_id, current)
       }
-      if (!current.categories.includes(category)) current.categories.push(category)
-      current.byCategory[category] = row
-      merged.set(row.author_id, current)
     }
   }
   return [...merged.values()].sort((left, right) => {
@@ -571,8 +578,9 @@ export default function ScholarIntelligenceAnalysis({
   onCompare,
   onTrackingChange,
 }: Props) {
-  const [intelligence, setIntelligence] = useState<ScholarIntelligence | null>(null)
-  const [loading, setLoading] = useState(true)
+  const cachedIntelligence = getCachedScholarIntelligence(profile.authorId, profile.profileVersion)
+  const [intelligence, setIntelligence] = useState<ScholarIntelligence | null>(cachedIntelligence ?? null)
+  const [loading, setLoading] = useState(!cachedIntelligence)
   const [error, setError] = useState("")
   const [filter, setFilter] = useState<DiscoveryFilter>("all")
   const [actionBusy, setActionBusy] = useState(false)
@@ -582,33 +590,51 @@ export default function ScholarIntelligenceAnalysis({
   const [feedbackBusy, setFeedbackBusy] = useState("")
   const [institutionComparison, setInstitutionComparison] = useState<IntelligenceComparison | null>(null)
   const [institutionComparing, setInstitutionComparing] = useState("")
+  const [additionalRecommendations, setAdditionalRecommendations] = useState<
+    ScholarIntelligence["recommendations"][]
+  >([])
+  const [nextPeerCursor, setNextPeerCursor] = useState<string | null>(
+    cachedIntelligence?.peer_pagination.next_cursor ?? null,
+  )
+  const [peersLoading, setPeersLoading] = useState(false)
+  const [peersError, setPeersError] = useState("")
+  const loadedPeerPages = useRef(0)
 
-  const load = useCallback(async (signal?: AbortSignal, background = false) => {
+  const load = useCallback(async (background = false, force = false) => {
     if (!background) setLoading(true)
     try {
-      const result = await getScholarIntelligence(profile.authorId, signal)
-      if (!signal?.aborted) {
-        setIntelligence(result)
-        setError("")
+      const result = await loadScholarIntelligenceCached(
+        profile.authorId,
+        profile.profileVersion,
+        force,
+      )
+      setIntelligence(result)
+      if (loadedPeerPages.current === 0) {
+        setNextPeerCursor(result.peer_pagination.next_cursor)
       }
+      setError("")
     } catch (reason: unknown) {
-      if (reason instanceof DOMException && reason.name === "AbortError") return
-      if (!signal?.aborted) {
-        setError(
-          reason instanceof ApiError
-            ? reason.message
-            : (lang === "zh" ? "同行与机构加载失败" : "Could not load peers and institutions"),
-        )
-      }
+      setError(
+        reason instanceof ApiError
+          ? reason.message
+          : (lang === "zh" ? "同行与机构加载失败" : "Could not load peers and institutions"),
+      )
     } finally {
-      if (!signal?.aborted && !background) setLoading(false)
+      if (!background) setLoading(false)
     }
-  }, [lang, profile.authorId])
+  }, [lang, profile.authorId, profile.profileVersion])
 
   useEffect(() => {
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      void load(controller.signal)
+      const cached = getCachedScholarIntelligence(profile.authorId, profile.profileVersion)
+      setIntelligence(cached ?? null)
+      setLoading(!cached)
+      setAdditionalRecommendations([])
+      setNextPeerCursor(cached?.peer_pagination.next_cursor ?? null)
+      setPeersError("")
+      loadedPeerPages.current = 0
+      void load(Boolean(cached))
       void getTracking().then((rows) => {
         if (!controller.signal.aborted) {
           setTracked(new Set(rows.map((row) => row.author_id)))
@@ -619,17 +645,16 @@ export default function ScholarIntelligenceAnalysis({
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [load])
+  }, [load, profile.authorId, profile.profileVersion])
 
-  useEffect(() => {
-    if (!intelligence || !["queued", "discovering", "enriching"].includes(intelligence.discovery.status)) {
-      return
-    }
-    const timer = window.setInterval(() => {
-      void load(undefined, true)
-    }, 3000)
-    return () => window.clearInterval(timer)
-  }, [intelligence, load])
+  const discoveryActive = Boolean(
+    intelligence
+    && ["queued", "discovering", "enriching"].includes(intelligence.discovery.status),
+  )
+  useAdaptivePolling(discoveryActive, useCallback(
+    () => load(true, true),
+    [load],
+  ))
 
   const handleDiscover = useCallback(async () => {
     setActionBusy(true)
@@ -639,7 +664,7 @@ export default function ScholarIntelligenceAnalysis({
         profile.authorId,
         intelligence?.discovery.status === "failed",
       )
-      await load(undefined, true)
+      await load(true, true)
     } catch (reason: unknown) {
       setError(
         reason instanceof Error
@@ -650,6 +675,26 @@ export default function ScholarIntelligenceAnalysis({
       setActionBusy(false)
     }
   }, [intelligence, lang, load, profile.authorId])
+
+  const handleLoadMorePeers = useCallback(async () => {
+    if (!nextPeerCursor || peersLoading) return
+    setPeersLoading(true)
+    setPeersError("")
+    try {
+      const page = await getScholarIntelligencePeers(profile.authorId, nextPeerCursor)
+      setAdditionalRecommendations((current) => [...current, page.recommendations])
+      setNextPeerCursor(page.peer_pagination.next_cursor)
+      loadedPeerPages.current += 1
+    } catch (reason: unknown) {
+      setPeersError(
+        reason instanceof ApiError
+          ? reason.message
+          : (lang === "zh" ? "更多同行加载失败" : "Could not load more peers"),
+      )
+    } finally {
+      setPeersLoading(false)
+    }
+  }, [lang, nextPeerCursor, peersLoading, profile.authorId])
 
   const handleTrack = useCallback(async (authorId: string) => {
     setTrackingBusy(authorId)
@@ -722,9 +767,12 @@ export default function ScholarIntelligenceAnalysis({
 
   const merged = useMemo(
     () => intelligence && intelligence.discovery.discovered_count > 0
-      ? mergeRecommendations(intelligence)
+      ? mergeRecommendationGroups([
+          intelligence.recommendations,
+          ...additionalRecommendations,
+        ])
       : [],
-    [intelligence],
+    [additionalRecommendations, intelligence],
   )
   const availableFilters = useMemo(
     () => ([
@@ -798,7 +846,6 @@ export default function ScholarIntelligenceAnalysis({
     100,
     Math.round(discovery.analyzed_count / progressMaximum * 100),
   )
-  const discoveryActive = ["queued", "discovering", "enriching"].includes(discovery.status)
   const anyRecommendations = merged.length > 0
 
   return (
@@ -903,44 +950,82 @@ export default function ScholarIntelligenceAnalysis({
           </div>
         </div>
         {visible.length > 0 ? (
-          <div className="grid gap-4 lg:grid-cols-2">
-            {visible.map((row) => (
-              <ScholarCard
-                key={row.author_id}
-                row={row}
-                filter={effectiveFilter}
-                tracked={tracked.has(row.author_id)}
-                trackingBusy={trackingBusy === row.author_id}
-                feedback={feedback}
-                feedbackBusy={feedbackBusy}
-                onViewProfile={onViewProfile}
-                onCompare={onCompare}
-                onTrack={(authorId) => void handleTrack(authorId)}
-                onFeedback={handleFeedback}
-                lang={lang}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid gap-4 lg:grid-cols-2">
+              {visible.map((row) => (
+                <ScholarCard
+                  key={row.author_id}
+                  row={row}
+                  filter={effectiveFilter}
+                  tracked={tracked.has(row.author_id)}
+                  trackingBusy={trackingBusy === row.author_id}
+                  feedback={feedback}
+                  feedbackBusy={feedbackBusy}
+                  onViewProfile={onViewProfile}
+                  onCompare={onCompare}
+                  onTrack={(authorId) => void handleTrack(authorId)}
+                  onFeedback={handleFeedback}
+                  lang={lang}
+                />
+              ))}
+            </div>
+            {(nextPeerCursor || peersError) && effectiveFilter === "all" && (
+              <div className="mt-4 flex flex-col items-center gap-2">
+                {peersError && (
+                  <p className="text-sm text-destructive">{peersError}</p>
+                )}
+                {nextPeerCursor && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={peersLoading}
+                    onClick={() => void handleLoadMorePeers()}
+                  >
+                    {peersLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {lang === "zh" ? "查看更多同行" : "View more peers"}
+                  </Button>
+                )}
+              </div>
+            )}
+          </>
         ) : (
-          <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-            {discoveryActive
-              ? (
-                  lang === "zh"
-                    ? `候选图谱仍在补全（${discovery.analyzed_count}/${discovery.target_count}），可靠结果会逐步出现。`
-                    : `Candidate graphs are still being enriched (${discovery.analyzed_count}/${discovery.target_count}); reliable results will appear progressively.`
-                )
-              : effectiveFilter === "all" && !anyRecommendations
+          <div className="space-y-4">
+            <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+              {discoveryActive
                 ? (
                     lang === "zh"
-                      ? "当前样本未同时满足方向、时间、贡献与关系证据门槛，暂无可靠学者建议。"
-                      : "The current sample does not jointly meet topic, time, contribution, and relationship thresholds."
+                      ? `候选图谱仍在补全（${discovery.analyzed_count}/${discovery.target_count}），可靠结果会逐步出现。`
+                      : `Candidate graphs are still being enriched (${discovery.analyzed_count}/${discovery.target_count}); reliable results will appear progressively.`
                   )
-                : (
-                    lang === "zh"
-                      ? "当前筛选下没有满足多项证据门槛的结果。"
-                      : "No result under this filter meets the multi-evidence thresholds."
-                  )}
-          </p>
+                : effectiveFilter === "all" && !anyRecommendations
+                  ? (
+                      lang === "zh"
+                        ? "当前样本未同时满足方向、时间、贡献与关系证据门槛，暂无可靠学者建议。"
+                        : "The current sample does not jointly meet topic, time, contribution, and relationship thresholds."
+                    )
+                  : (
+                      lang === "zh"
+                        ? "当前筛选下没有满足多项证据门槛的结果。"
+                        : "No result under this filter meets the multi-evidence thresholds."
+                    )}
+            </p>
+            {(nextPeerCursor || peersError) && effectiveFilter === "all" && (
+              <div className="flex flex-col items-center gap-2">
+                {peersError && <p className="text-sm text-destructive">{peersError}</p>}
+                {nextPeerCursor && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={peersLoading}
+                    onClick={() => void handleLoadMorePeers()}
+                  >
+                    {peersLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {lang === "zh" ? "查看更多同行" : "View more peers"}
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
         )}
       </section>
 

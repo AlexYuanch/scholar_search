@@ -23,6 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { Lang } from "@/i18n"
+import { prefetchProfileAnalysis } from "@/profileAnalysisCache"
 import type { EdgePaper, ScholarProfile } from "@/types"
 
 const CollaborationGraph = lazy(() => import("@/components/CollaborationGraph"))
@@ -123,6 +124,23 @@ export default function ProfileSection({
     })
     return () => cancelAnimationFrame(frame)
   }, [activeTab, paperFilter])
+
+  useEffect(() => {
+    if (analysisUpdating) return
+    const prefetch = () => {
+      prefetchProfileAnalysis(profile.authorId, profile.profileVersion)
+    }
+    const browserWindow = window as Window & {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+    if (browserWindow.requestIdleCallback) {
+      const idleId = browserWindow.requestIdleCallback(prefetch, { timeout: 1_500 })
+      return () => browserWindow.cancelIdleCallback?.(idleId)
+    }
+    const timer = window.setTimeout(prefetch, 300)
+    return () => window.clearTimeout(timer)
+  }, [analysisUpdating, profile.authorId, profile.profileVersion])
 
   const collaboratorId = (name: string, institution?: string, id?: string) => {
     if (id) return id

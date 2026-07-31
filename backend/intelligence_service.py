@@ -53,9 +53,23 @@ class ScholarIntelligenceService:
         self._lock = RLock()
         self._repositories: WeakKeyDictionary = WeakKeyDictionary()
 
-    def analyze(self, repository, author_id: str, *, limit: int = 8) -> dict:
+    def analyze(
+        self,
+        repository,
+        author_id: str,
+        *,
+        limit: int = 20,
+        candidate_offset: int = 0,
+    ) -> dict:
         snapshot = intelligence_snapshot_token(repository, [author_id])
-        key = ("analysis", ANALYSIS_VERSION, author_id, limit, snapshot)
+        key = (
+            "analysis",
+            ANALYSIS_VERSION,
+            author_id,
+            limit,
+            candidate_offset,
+            snapshot,
+        )
         return self._get_or_build(
             repository,
             key,
@@ -63,6 +77,7 @@ class ScholarIntelligenceService:
                 repository,
                 author_id,
                 limit=limit,
+                candidate_offset=candidate_offset,
             ),
         )
 

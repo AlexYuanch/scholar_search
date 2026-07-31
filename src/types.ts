@@ -585,6 +585,12 @@ export interface ScholarIntelligence {
     potential_collaborators: IntelligenceRecommendation[]
     potential_competitors: IntelligenceRecommendation[]
   }
+  peer_pagination: {
+    total: number
+    offset: number
+    limit: number
+    next_cursor: string | null
+  }
   field_reference_list: {
     label: LocalizedText
     is_absolute_ranking: false
@@ -603,6 +609,15 @@ export interface ScholarIntelligence {
     limitations: LocalizedText[]
   }
   limitations: LocalizedText[]
+}
+
+export interface IntelligencePeerPage {
+  analysis_version: string
+  generated_from_graph_version: number
+  graph_status: ScholarIntelligence["graph_status"]
+  discovery: FieldDiscoveryStatus
+  recommendations: ScholarIntelligence["recommendations"]
+  peer_pagination: ScholarIntelligence["peer_pagination"]
 }
 
 export interface IntelligenceComparison {

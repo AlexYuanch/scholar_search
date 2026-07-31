@@ -1,6 +1,7 @@
 import type {
   Candidate,
   IntelligenceComparison,
+  IntelligencePeerPage,
   ResearchGraph,
   ResearchGraphObject,
   ResearchGraphObjectType,
@@ -563,6 +564,19 @@ export async function getScholarIntelligence(
 ): Promise<ScholarIntelligence> {
   const response = await authenticatedFetch(
     `/authors/${encodeURIComponent(authorId)}/intelligence`,
+    { signal },
+  )
+  return response.json()
+}
+
+export async function getScholarIntelligencePeers(
+  authorId: string,
+  cursor: string,
+  signal?: AbortSignal,
+): Promise<IntelligencePeerPage> {
+  const params = new URLSearchParams({ cursor, limit: "20" })
+  const response = await authenticatedFetch(
+    `/authors/${encodeURIComponent(authorId)}/intelligence/peers?${params}`,
     { signal },
   )
   return response.json()

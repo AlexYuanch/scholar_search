@@ -18,7 +18,7 @@ from sqlalchemy import text
 from affiliation_evidence import select_primary_affiliation
 
 
-MAX_FIELD_CANDIDATES = 160
+MAX_FIELD_CANDIDATES = 20
 MAX_WORKS_PER_SCHOLAR = 300
 
 
@@ -48,6 +48,16 @@ def _memory_snapshot_token(repository, requested_ids: tuple[str, ...]) -> tuple:
         (getattr(repository, "_research_graph_store", None) or {})
         .get("sync", {})
     )
+    scoped_ids = set(requested_ids)
+    field_candidates = (
+        (getattr(repository, "_field_discovery_store", None) or {})
+        .get("candidates", {})
+    )
+    scoped_ids.update(
+        candidate_id
+        for focus_id, candidate_id in field_candidates
+        if focus_id in requested_ids
+    )
     graph_token = tuple(sorted(
         (
             author_id,
@@ -57,6 +67,7 @@ def _memory_snapshot_token(repository, requested_ids: tuple[str, ...]) -> tuple:
             str(state.get("data_fingerprint") or ""),
         )
         for author_id, state in graph_states.items()
+        if author_id in scoped_ids
     ))
     discovery_states = (
         (getattr(repository, "_field_discovery_store", None) or {})
@@ -74,43 +85,49 @@ def _memory_snapshot_token(repository, requested_ids: tuple[str, ...]) -> tuple:
 
 def _postgres_snapshot_token(repository, requested_ids: tuple[str, ...]) -> tuple:
     with repository.engine.connect() as conn:
-        graph = conn.execute(text("""
-            select count(*)::integer as state_count,
-                   coalesce(sum(version), 0)::bigint as version_total,
-                   max(updated_at) as latest_update,
-                   count(*) filter (where status = 'ready')::integer as ready_count,
-                   count(*) filter (
-                       where status in ('queued', 'updating')
-                   )::integer as active_count,
-                   count(*) filter (where status = 'failed')::integer as failed_count
-            from public.research_graph_sync_state
-        """)).mappings().one()
+        graph_rows = []
         discovery_rows = []
         if requested_ids:
-            placeholders = ", ".join(
-                f":author_id_{index}"
-                for index in range(len(requested_ids))
-            )
-            discovery_rows = conn.execute(text(f"""
+            graph_rows = conn.execute(text("""
+                with requested as (
+                    select id
+                    from public.scholars
+                    where source = 'openalex'
+                      and source_author_id = any(cast(:author_ids as text[]))
+                ), related as (
+                    select id as scholar_id from requested
+                    union
+                    select fdc.candidate_scholar_id
+                    from public.field_discovery_candidates fdc
+                    where fdc.focus_scholar_id in (select id from requested)
+                )
+                select s.source_author_id as author_id, gs.status, gs.version,
+                       gs.updated_at, gs.data_fingerprint
+                from related
+                join public.scholars s on s.id = related.scholar_id
+                left join public.research_graph_sync_state gs
+                    on gs.scholar_id = related.scholar_id
+                order by s.source_author_id
+            """), {"author_ids": list(requested_ids)}).mappings().all()
+            discovery_rows = conn.execute(text("""
                 select s.source_author_id as author_id, fds.status, fds.version,
                        fds.updated_at, fds.analyzed_count, fds.attempted_count
                 from public.scholars s
                 left join public.field_discovery_state fds
                     on fds.focus_scholar_id = s.id
                 where s.source = 'openalex'
-                  and s.source_author_id in ({placeholders})
+                  and s.source_author_id = any(cast(:author_ids as text[]))
                 order by s.source_author_id
-            """), {
-                f"author_id_{index}": author_id
-                for index, author_id in enumerate(requested_ids)
-            }).mappings().all()
-    graph_token = (
-        int(graph["state_count"] or 0),
-        int(graph["version_total"] or 0),
-        _revision_value(graph["latest_update"]),
-        int(graph["ready_count"] or 0),
-        int(graph["active_count"] or 0),
-        int(graph["failed_count"] or 0),
+            """), {"author_ids": list(requested_ids)}).mappings().all()
+    graph_token = tuple(
+        (
+            row["author_id"],
+            str(row["status"] or ""),
+            int(row["version"] or 0),
+            _revision_value(row["updated_at"]),
+            str(row["data_fingerprint"] or ""),
+        )
+        for row in graph_rows
     )
     rows_by_author = {
         row["author_id"]: row
@@ -186,15 +203,60 @@ def _finalize_dataset(dataset: dict, focus_author_id: str) -> dict:
     return dataset
 
 
-def _memory_dataset(repository, focus_author_id: str) -> dict:
+def _memory_dataset(
+    repository,
+    focus_author_id: str,
+    *,
+    candidate_limit: int,
+    candidate_offset: int,
+) -> dict:
     store = getattr(repository, "_research_graph_store", None) or {}
     authors = store.get("authors", {})
     sync = store.get("sync", {})
     scholars: dict[str, dict] = {}
+    field_candidates = getattr(
+        repository,
+        "_field_discovery_store",
+        {},
+    ).get("candidates", {})
+    ranked_candidates = sorted(
+        (
+            (candidate_id, candidate)
+            for (related_focus_id, candidate_id), candidate
+            in field_candidates.items()
+            if related_focus_id == focus_author_id
+            and (sync.get(candidate_id) or {}).get("last_success_at")
+        ),
+        key=lambda item: (
+            int(item[1].get("rank") or 10**9),
+            item[0],
+        ),
+    )
+    candidate_total = len(ranked_candidates)
+    selected_candidates = {
+        candidate_id
+        for candidate_id, _candidate in ranked_candidates[
+            candidate_offset:candidate_offset + candidate_limit
+        ]
+    }
+    if not field_candidates:
+        ready_candidates = sorted(
+            author_id
+            for author_id, state in sync.items()
+            if author_id != focus_author_id and state.get("last_success_at")
+        )
+        candidate_total = len(ready_candidates)
+        selected_candidates = set(
+            ready_candidates[
+                candidate_offset:candidate_offset + candidate_limit
+            ]
+        )
 
     authored_counts = Counter(author_id for _, author_id in store.get("authorships", {}))
     for author_id, author in authors.items():
         if not authored_counts.get(author_id) and author_id != focus_author_id:
+            continue
+        if author_id != focus_author_id and author_id not in selected_candidates:
             continue
         state = sync.get(author_id, {})
         scholars[author_id] = _empty_scholar(
@@ -317,20 +379,14 @@ def _memory_dataset(repository, focus_author_id: str) -> dict:
                 "cited_work_id": cited_work_id,
             })
 
-    field_candidates = getattr(
-        repository,
-        "_field_discovery_store",
-        {},
-    ).get("candidates", {})
     return _finalize_dataset({
         "scholars": scholars,
         "works": works,
         "citations": citations,
-        "field_candidate_ids": [
-            candidate_id
-            for (related_focus_id, candidate_id) in field_candidates
-            if related_focus_id == focus_author_id
-        ],
+        "field_candidate_ids": sorted(selected_candidates),
+        "candidate_total": candidate_total,
+        "candidate_offset": candidate_offset,
+        "candidate_limit": candidate_limit,
         "source": "dynamic_research_graph",
     }, focus_author_id)
 
@@ -339,6 +395,9 @@ def _postgres_dataset(
     repository,
     focus_author_id: str,
     extra_author_ids: list[str] | None,
+    *,
+    candidate_limit: int,
+    candidate_offset: int,
 ) -> dict:
     required_source_ids = list(dict.fromkeys([
         focus_author_id,
@@ -367,42 +426,31 @@ def _postgres_dataset(
             }, focus_author_id)
         focus_id = str(focus_row["id"])
 
-        topic_ids = [
-            str(row[0])
-            for row in conn.execute(text("""
-                select topic_id
-                from public.scholar_topics
-                where scholar_id = cast(:focus_id as uuid)
-                order by works_count desc, last_year desc nulls last, topic_id
-                limit 10
-            """), {"focus_id": focus_id}).all()
-        ]
-        if not topic_ids:
-            topic_ids = [
-                str(row[0])
-                for row in conn.execute(text("""
-                    select wt.topic_id
-                    from public.authorships a
-                    join public.work_topics wt on wt.work_id = a.work_id
-                    where a.scholar_id = cast(:focus_id as uuid)
-                    group by wt.topic_id
-                    order by count(distinct a.work_id) desc, wt.topic_id
-                    limit 10
-                """), {"focus_id": focus_id}).all()
-            ]
-
         candidate_ids = set(required_ids)
+        candidate_total = int(conn.execute(text("""
+            select count(*)::integer
+            from public.field_discovery_candidates fdc
+            join public.research_graph_sync_state gs
+                on gs.scholar_id = fdc.candidate_scholar_id
+            where fdc.focus_scholar_id = cast(:focus_id as uuid)
+              and gs.last_success_at is not null
+        """), {"focus_id": focus_id}).scalar_one() or 0)
         discovery_rows = conn.execute(text("""
             select fdc.candidate_scholar_id, candidate.source_author_id
             from public.field_discovery_candidates fdc
             join public.scholars candidate
                 on candidate.id = fdc.candidate_scholar_id
+            join public.research_graph_sync_state gs
+                on gs.scholar_id = fdc.candidate_scholar_id
             where fdc.focus_scholar_id = cast(:focus_id as uuid)
+              and gs.last_success_at is not null
             order by fdc.discovery_rank
+            offset :offset
             limit :limit
         """), {
             "focus_id": focus_id,
-            "limit": MAX_FIELD_CANDIDATES,
+            "offset": candidate_offset,
+            "limit": candidate_limit,
         }).mappings().all()
         candidate_ids.update(
             str(row["candidate_scholar_id"])
@@ -412,34 +460,6 @@ def _postgres_dataset(
             str(row["source_author_id"])
             for row in discovery_rows
         ]
-        if topic_ids:
-            rows = conn.execute(text("""
-                select a.scholar_id, count(distinct a.work_id) as matched_works
-                from public.authorships a
-                join public.work_topics wt on wt.work_id = a.work_id
-                join public.paper_insights pi on pi.work_id = a.work_id
-                where wt.topic_id = any(cast(:topic_ids as uuid[]))
-                group by a.scholar_id
-                order by matched_works desc, a.scholar_id
-                limit :limit
-            """), {
-                "topic_ids": topic_ids,
-                "limit": MAX_FIELD_CANDIDATES,
-            }).mappings().all()
-            candidate_ids.update(str(row["scholar_id"]) for row in rows)
-
-        direct_rows = conn.execute(text("""
-            select case
-                when scholar_a_id = cast(:focus_id as uuid)
-                then scholar_b_id else scholar_a_id
-            end as scholar_id
-            from public.collaborations
-            where scholar_a_id = cast(:focus_id as uuid)
-               or scholar_b_id = cast(:focus_id as uuid)
-            order by works_count desc, last_year desc nulls last
-            limit 80
-        """), {"focus_id": focus_id}).all()
-        candidate_ids.update(str(row[0]) for row in direct_rows)
         candidate_ids_list = sorted(candidate_ids)
 
         author_rows = conn.execute(text("""
@@ -631,6 +651,9 @@ def _postgres_dataset(
         "works": works,
         "citations": citations,
         "field_candidate_ids": field_candidate_ids,
+        "candidate_total": candidate_total,
+        "candidate_offset": candidate_offset,
+        "candidate_limit": candidate_limit,
         "source": "dynamic_research_graph",
     }, focus_author_id)
 
@@ -640,10 +663,23 @@ def load_intelligence_dataset(
     focus_author_id: str,
     *,
     extra_author_ids: list[str] | None = None,
+    candidate_limit: int = MAX_FIELD_CANDIDATES,
+    candidate_offset: int = 0,
 ) -> dict:
     if hasattr(repository, "engine"):
-        return _postgres_dataset(repository, focus_author_id, extra_author_ids)
-    return _memory_dataset(repository, focus_author_id)
+        return _postgres_dataset(
+            repository,
+            focus_author_id,
+            extra_author_ids,
+            candidate_limit=candidate_limit,
+            candidate_offset=candidate_offset,
+        )
+    return _memory_dataset(
+        repository,
+        focus_author_id,
+        candidate_limit=candidate_limit,
+        candidate_offset=candidate_offset,
+    )
 
 
 def save_intelligence_feedback(
