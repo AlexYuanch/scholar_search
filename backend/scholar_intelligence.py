@@ -1620,6 +1620,7 @@ def build_scholar_intelligence(
         "dimensions": subject_analysis["dimensions"],
         "representative_works": subject_analysis["representative_works"],
         "recommendations": recommendations,
+        "peer_candidates": dataset.get("peer_candidates") or [],
         "peer_pagination": {
             "total": int(dataset.get("candidate_total") or 0),
             "offset": int(dataset.get("candidate_offset") or 0),

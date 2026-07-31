@@ -1432,6 +1432,7 @@ def author_intelligence_peers(
         "graph_status": state.get("status", "never"),
         "discovery": result["discovery"],
         "recommendations": result["recommendations"],
+        "peer_candidates": result.get("peer_candidates") or [],
         "peer_pagination": result["peer_pagination"],
     }
     return _analysis_response(

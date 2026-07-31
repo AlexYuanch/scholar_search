@@ -770,6 +770,83 @@ def test_completed_field_discovery_limits_final_recommendations_to_candidates():
     assert recommended_ids <= {OPPORTUNITY, COMPETITOR}
 
 
+def test_peer_pages_include_unready_discovered_candidates():
+    repository = _rich_repository()
+    job_id = enqueue_field_discovery(
+        repository,
+        FOCUS,
+        requested_by_user_id="user-a",
+        reason="test",
+    )
+    assert claim_field_discovery(repository)["id"] == job_id
+    candidates = [
+        {
+            "source_id": OPPORTUNITY,
+            "name": "Opportunity Scholar",
+            "historical_works": 9,
+            "recent_works": 4,
+            "rank": 1,
+            "score": 30,
+        },
+        {
+            "source_id": COMPETITOR,
+            "name": "Competing Scholar",
+            "historical_works": 8,
+            "recent_works": 4,
+            "rank": 2,
+            "score": 29,
+        },
+        *[
+            {
+                "source_id": f"https://openalex.org/A-PENDING-{index:02d}",
+                "name": f"Pending Scholar {index}",
+                "historical_works": 20 - index,
+                "recent_works": max(0, 6 - index),
+                "rank": index + 3,
+                "score": 28 - index,
+            }
+            for index in range(23)
+        ],
+    ]
+    save_field_discovery(repository, job_id, FOCUS, {
+        "topics": [{
+            "source_id": "https://openalex.org/T-KNOWLEDGE-GRAPH-RETRIEVAL",
+            "name": "Knowledge Graph Retrieval",
+            "works_count": 6,
+            "active_years": 6,
+            "recent_works": 4,
+            "long_term": True,
+            "recent": True,
+        }],
+        "candidates": candidates,
+        "institutions": [],
+    })
+
+    first = build_scholar_intelligence(
+        repository,
+        FOCUS,
+        limit=20,
+        candidate_offset=0,
+    )
+    second = build_scholar_intelligence(
+        repository,
+        FOCUS,
+        limit=20,
+        candidate_offset=20,
+    )
+
+    assert first["peer_pagination"]["total"] == 25
+    assert first["peer_pagination"]["next_offset"] == 20
+    assert len(first["peer_candidates"]) == 20
+    assert first["peer_candidates"][0]["graph_ready"] is True
+    assert len(second["peer_candidates"]) == 5
+    assert second["peer_pagination"]["next_offset"] is None
+    assert all(not row["graph_ready"] for row in second["peer_candidates"])
+    assert second["peer_candidates"][0]["topics"] == [
+        "Knowledge Graph Retrieval"
+    ]
+
+
 def test_field_discovery_enqueues_graphs_in_progressive_batches():
     repository = _rich_repository()
     job_id = enqueue_field_discovery(

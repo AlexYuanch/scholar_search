@@ -30,6 +30,7 @@ import type {
   IntelligenceComparison,
   IntelligenceEvidence,
   IntelligenceInstitution,
+  IntelligencePeerCandidate,
   IntelligenceRecommendation,
   LocalizedText,
   ScholarIntelligence,
@@ -439,6 +440,79 @@ function ScholarCard({
   )
 }
 
+function BasicPeerCard({
+  row,
+  tracked,
+  trackingBusy,
+  onViewProfile,
+  onTrack,
+  lang,
+}: {
+  row: IntelligencePeerCandidate
+  tracked: boolean
+  trackingBusy: boolean
+  onViewProfile: (authorId: string, scholarName: string) => void
+  onTrack: (authorId: string) => void
+  lang: Lang
+}) {
+  return (
+    <Card className="min-w-0">
+      <CardContent className="space-y-4 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h4 className="break-words font-semibold">{row.name}</h4>
+            <p className="mt-1 break-words text-xs text-muted-foreground">
+              {row.institution || (lang === "zh" ? "机构信息待补全" : "Institution pending")}
+            </p>
+          </div>
+          <Badge variant="outline" className="font-normal">
+            {row.graph_ready
+              ? (lang === "zh" ? "基础信息" : "Basic information")
+              : (lang === "zh" ? "分析补全中" : "Analysis pending")}
+          </Badge>
+        </div>
+        {row.topics.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {row.topics.map((topic) => (
+              <span key={topic} className="rounded-md bg-muted px-2 py-1 text-xs">
+                {topic}
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {lang === "zh"
+            ? `领域发现收录 ${row.historical_works} 篇相关论文，其中近年 ${row.recent_works} 篇；详细方向与证据仍在逐步补全。`
+            : `${row.historical_works} related works were discovered, including ${row.recent_works} recent works; detailed topics and evidence are still being enriched.`}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onViewProfile(row.author_id, row.name)}
+          >
+            <Eye className="h-3.5 w-3.5" />
+            {lang === "zh" ? "查看画像" : "View profile"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={tracked || trackingBusy}
+            onClick={() => onTrack(row.author_id)}
+          >
+            {trackingBusy
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Heart className={`h-3.5 w-3.5 ${tracked ? "fill-current text-red-500" : ""}`} />}
+            {tracked
+              ? (lang === "zh" ? "追踪中" : "Tracked")
+              : (lang === "zh" ? "追踪" : "Track")}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function institutionSummary(
   institution: IntelligenceInstitution,
   focusScholarName: string,
@@ -593,6 +667,9 @@ export default function ScholarIntelligenceAnalysis({
   const [additionalRecommendations, setAdditionalRecommendations] = useState<
     ScholarIntelligence["recommendations"][]
   >([])
+  const [additionalPeerCandidates, setAdditionalPeerCandidates] = useState<
+    IntelligencePeerCandidate[]
+  >([])
   const [nextPeerCursor, setNextPeerCursor] = useState<string | null>(
     cachedIntelligence?.peer_pagination.next_cursor ?? null,
   )
@@ -631,6 +708,7 @@ export default function ScholarIntelligenceAnalysis({
       setIntelligence(cached ?? null)
       setLoading(!cached)
       setAdditionalRecommendations([])
+      setAdditionalPeerCandidates([])
       setNextPeerCursor(cached?.peer_pagination.next_cursor ?? null)
       setPeersError("")
       loadedPeerPages.current = 0
@@ -683,6 +761,12 @@ export default function ScholarIntelligenceAnalysis({
     try {
       const page = await getScholarIntelligencePeers(profile.authorId, nextPeerCursor)
       setAdditionalRecommendations((current) => [...current, page.recommendations])
+      setAdditionalPeerCandidates((current) => [
+        ...current,
+        ...(page.peer_candidates ?? []).filter((candidate) => (
+          !current.some((row) => row.author_id === candidate.author_id)
+        )),
+      ])
       setNextPeerCursor(page.peer_pagination.next_cursor)
       loadedPeerPages.current += 1
     } catch (reason: unknown) {
@@ -790,6 +874,18 @@ export default function ScholarIntelligenceAnalysis({
       : merged.filter((row) => row.categories.includes(effectiveFilter)),
     [effectiveFilter, merged],
   )
+  const basicCandidates = useMemo(() => {
+    if (!intelligence || effectiveFilter !== "all") return []
+    const detailedIds = new Set(merged.map((row) => row.author_id))
+    const candidates = [
+      ...(intelligence.peer_candidates ?? []),
+      ...additionalPeerCandidates,
+    ]
+    return candidates.filter((row, index) => (
+      !detailedIds.has(row.author_id)
+      && candidates.findIndex((candidate) => candidate.author_id === row.author_id) === index
+    ))
+  }, [additionalPeerCandidates, effectiveFilter, intelligence, merged])
   const mergedInstitutions = useMemo(() => {
     if (!intelligence) return []
     const rows = new Map<string, IntelligenceInstitution>()
@@ -846,7 +942,7 @@ export default function ScholarIntelligenceAnalysis({
     100,
     Math.round(discovery.analyzed_count / progressMaximum * 100),
   )
-  const anyRecommendations = merged.length > 0
+  const anyRecommendations = merged.length > 0 || basicCandidates.length > 0
 
   return (
     <div className="space-y-6">
@@ -949,7 +1045,7 @@ export default function ScholarIntelligenceAnalysis({
             ))}
           </div>
         </div>
-        {visible.length > 0 ? (
+        {visible.length > 0 || basicCandidates.length > 0 ? (
           <>
             <div className="grid gap-4 lg:grid-cols-2">
               {visible.map((row) => (
@@ -965,6 +1061,17 @@ export default function ScholarIntelligenceAnalysis({
                   onCompare={onCompare}
                   onTrack={(authorId) => void handleTrack(authorId)}
                   onFeedback={handleFeedback}
+                  lang={lang}
+                />
+              ))}
+              {basicCandidates.map((row) => (
+                <BasicPeerCard
+                  key={row.author_id}
+                  row={row}
+                  tracked={tracked.has(row.author_id)}
+                  trackingBusy={trackingBusy === row.author_id}
+                  onViewProfile={onViewProfile}
+                  onTrack={(authorId) => void handleTrack(authorId)}
                   lang={lang}
                 />
               ))}

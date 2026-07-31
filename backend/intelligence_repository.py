@@ -200,6 +200,38 @@ def _finalize_dataset(dataset: dict, focus_author_id: str) -> dict:
             ),
             reverse=True,
         )
+    candidate_metadata = dataset.get("candidate_metadata") or {}
+    dataset["peer_candidates"] = [
+        {
+            "author_id": author_id,
+            "scholar_id": scholar["id"],
+            "name": scholar["name"],
+            "orcid": scholar.get("orcid"),
+            "institution": select_primary_affiliation(
+                scholar.get("affiliations") or []
+            ) or None,
+            "graph_ready": bool(scholar.get("graph_ready")),
+            "graph_version": int(scholar.get("graph_version") or 0),
+            "discovery_rank": int(
+                (candidate_metadata.get(author_id) or {}).get("rank") or 0
+            ),
+            "historical_works": int(
+                (candidate_metadata.get(author_id) or {}).get(
+                    "historical_works"
+                ) or 0
+            ),
+            "recent_works": int(
+                (candidate_metadata.get(author_id) or {}).get(
+                    "recent_works"
+                ) or 0
+            ),
+            "topics": list(
+                (candidate_metadata.get(author_id) or {}).get("topics") or []
+            )[:3],
+        }
+        for author_id in dataset.get("field_candidate_ids") or []
+        if (scholar := dataset["scholars"].get(author_id)) is not None
+    ]
     return dataset
 
 
@@ -219,25 +251,43 @@ def _memory_dataset(
         "_field_discovery_store",
         {},
     ).get("candidates", {})
+    selected_topic_names = [
+        row.get("name")
+        for row in (
+            getattr(repository, "_field_discovery_store", {})
+            .get("states", {})
+            .get(focus_author_id, {})
+            .get("selected_topics", [])
+        )
+        if row.get("name")
+    ]
     ranked_candidates = sorted(
         (
             (candidate_id, candidate)
             for (related_focus_id, candidate_id), candidate
             in field_candidates.items()
             if related_focus_id == focus_author_id
-            and (sync.get(candidate_id) or {}).get("last_success_at")
         ),
         key=lambda item: (
+            not bool((sync.get(item[0]) or {}).get("last_success_at")),
             int(item[1].get("rank") or 10**9),
             item[0],
         ),
     )
     candidate_total = len(ranked_candidates)
-    selected_candidates = {
-        candidate_id
-        for candidate_id, _candidate in ranked_candidates[
-            candidate_offset:candidate_offset + candidate_limit
-        ]
+    selected_candidate_rows = ranked_candidates[
+        candidate_offset:candidate_offset + candidate_limit
+    ]
+    selected_candidate_ids = [
+        candidate_id for candidate_id, _candidate in selected_candidate_rows
+    ]
+    selected_candidates = set(selected_candidate_ids)
+    candidate_metadata = {
+        candidate_id: {
+            **candidate,
+            "topics": selected_topic_names,
+        }
+        for candidate_id, candidate in selected_candidate_rows
     }
     if not field_candidates:
         ready_candidates = sorted(
@@ -251,6 +301,7 @@ def _memory_dataset(
                 candidate_offset:candidate_offset + candidate_limit
             ]
         )
+        selected_candidate_ids = sorted(selected_candidates)
 
     authored_counts = Counter(author_id for _, author_id in store.get("authorships", {}))
     for author_id, author in authors.items():
@@ -267,6 +318,20 @@ def _memory_dataset(
             ),
             name=author.get("display_name") or author_id,
             orcid=author.get("orcid"),
+            graph_ready=bool(state.get("last_success_at")),
+            graph_version=int(state.get("version") or 0),
+        )
+    for author_id in selected_candidate_ids:
+        if author_id in scholars:
+            continue
+        candidate = candidate_metadata.get(author_id) or {}
+        stored = getattr(repository, "scholars", {}).get(author_id) or {}
+        state = sync.get(author_id, {})
+        scholars[author_id] = _empty_scholar(
+            author_id,
+            scholar_id=stored.get("id") or author_id,
+            name=candidate.get("name") or stored.get("display_name") or author_id,
+            orcid=stored.get("orcid"),
             graph_ready=bool(state.get("last_success_at")),
             graph_version=int(state.get("version") or 0),
         )
@@ -383,7 +448,8 @@ def _memory_dataset(
         "scholars": scholars,
         "works": works,
         "citations": citations,
-        "field_candidate_ids": sorted(selected_candidates),
+        "field_candidate_ids": selected_candidate_ids,
+        "candidate_metadata": candidate_metadata,
         "candidate_total": candidate_total,
         "candidate_offset": candidate_offset,
         "candidate_limit": candidate_limit,
@@ -430,21 +496,30 @@ def _postgres_dataset(
         candidate_total = int(conn.execute(text("""
             select count(*)::integer
             from public.field_discovery_candidates fdc
-            join public.research_graph_sync_state gs
-                on gs.scholar_id = fdc.candidate_scholar_id
             where fdc.focus_scholar_id = cast(:focus_id as uuid)
-              and gs.last_success_at is not null
         """), {"focus_id": focus_id}).scalar_one() or 0)
         discovery_rows = conn.execute(text("""
-            select fdc.candidate_scholar_id, candidate.source_author_id
+            select fdc.candidate_scholar_id, candidate.source_author_id,
+                   candidate.display_name, candidate.orcid,
+                   fdc.discovery_rank, fdc.historical_works,
+                   fdc.recent_works,
+                   coalesce(gs.last_success_at is not null, false) as graph_ready,
+                   array(
+                       select topic.display_name
+                       from public.research_topics topic
+                       where topic.source = 'openalex'
+                         and topic.source_topic_id = any(fdc.topic_source_ids)
+                       order by topic.display_name
+                       limit 3
+                   ) as topic_names
             from public.field_discovery_candidates fdc
             join public.scholars candidate
                 on candidate.id = fdc.candidate_scholar_id
-            join public.research_graph_sync_state gs
+            left join public.research_graph_sync_state gs
                 on gs.scholar_id = fdc.candidate_scholar_id
             where fdc.focus_scholar_id = cast(:focus_id as uuid)
-              and gs.last_success_at is not null
-            order by fdc.discovery_rank
+            order by (gs.last_success_at is not null) desc,
+                     fdc.discovery_rank
             offset :offset
             limit :limit
         """), {
@@ -460,6 +535,15 @@ def _postgres_dataset(
             str(row["source_author_id"])
             for row in discovery_rows
         ]
+        candidate_metadata = {
+            str(row["source_author_id"]): {
+                "rank": int(row["discovery_rank"] or 0),
+                "historical_works": int(row["historical_works"] or 0),
+                "recent_works": int(row["recent_works"] or 0),
+                "topics": list(row["topic_names"] or []),
+            }
+            for row in discovery_rows
+        }
         candidate_ids_list = sorted(candidate_ids)
 
         author_rows = conn.execute(text("""
@@ -651,6 +735,7 @@ def _postgres_dataset(
         "works": works,
         "citations": citations,
         "field_candidate_ids": field_candidate_ids,
+        "candidate_metadata": candidate_metadata,
         "candidate_total": candidate_total,
         "candidate_offset": candidate_offset,
         "candidate_limit": candidate_limit,

@@ -496,6 +496,13 @@ export interface IntelligenceRecommendation extends IntelligenceScholar {
   limitations: LocalizedText[]
 }
 
+export interface IntelligencePeerCandidate extends IntelligenceScholar {
+  discovery_rank: number
+  historical_works: number
+  recent_works: number
+  topics: string[]
+}
+
 export interface IntelligenceTeam {
   institution_id?: string | null
   name: string
@@ -585,6 +592,7 @@ export interface ScholarIntelligence {
     potential_collaborators: IntelligenceRecommendation[]
     potential_competitors: IntelligenceRecommendation[]
   }
+  peer_candidates: IntelligencePeerCandidate[]
   peer_pagination: {
     total: number
     offset: number
@@ -617,6 +625,7 @@ export interface IntelligencePeerPage {
   graph_status: ScholarIntelligence["graph_status"]
   discovery: FieldDiscoveryStatus
   recommendations: ScholarIntelligence["recommendations"]
+  peer_candidates: IntelligencePeerCandidate[]
   peer_pagination: ScholarIntelligence["peer_pagination"]
 }
 
