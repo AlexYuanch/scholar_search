@@ -70,7 +70,7 @@ flowchart LR
 
 搜索先规范化 Unicode、空白和大小写得到共享 `query_key`。Web 与 worker 优先读取服务器 `OPENALEX_API_KEY`，普通用户无需配置数据源密钥；历史个人 key 仅在服务端 key 缺失时兼容回退。新鲜 `openalex_search_cache` 直接返回；过期结果先返回旧值并把 `requested_by_user_id` 写入后台刷新，冷请求以 `openalex_search_jobs` 的活跃任务唯一索引合并，多 Web 实例只有一个请求或 worker 访问上游。OpenAlex 不可用、限流或平台剩余额度到达保留线时，Repository 可按学者名/别名从已发布的真实 PostgreSQL 学者数据构造保守候选；没有本地事实时才返回明确上游错误。`openalex_identity_cache` 让不同姓名查询复用昂贵的论文、合作者、主题和目标作者机构支持统计；指纹与候选载荷都有独立版本，旧缓存会自动补算，不改变既有归并阈值。
 
-多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责发现，Crossref 按 DOI 核验出版元数据，`orcid.py` 读取公共 ORCID works，`dblp.py` 先按姓名、机构或 ORCID 选择 DBLP person，再只匹配当前已有论文。`google_scholar.py` 是可选 SerpApi 适配器；无 key 时返回 `disabled` 且不发网络请求，有 key 时同样只按题名年份核对已有论文。来源裁决后，`resolve_work_identity` 以 ORCID 命中和 Crossref 作者 ORCID为强锚点；论文簇只由 DOI、同题同年记录或稳定合作者建立强连接，机构用于主簇评分但不能单独产生传递连接，主题相似只用于分析。
+多来源工作流先保留 `source_works` 原始记录：OpenAlex 负责发现，Crossref 按 DOI 核验出版元数据，`orcid.py` 读取公共 ORCID works，`dblp.py` 先按姓名、机构或 ORCID 选择 DBLP person，再只匹配当前已有论文。`google_scholar.py` 是可选 SerpApi 适配器；无 key 时返回 `disabled` 且不发网络请求，有 key 时从当前高引用论文中选择最多两个锚点，精确匹配题名、年份和目标署名，提取 Scholar author ID 后读取最多两个候选作者档案并匹配已有论文。没有可靠论文锚点时返回 `identity_unresolved`，不接受姓名查询结果，也不扩张论文集。来源裁决后，`resolve_work_identity` 以 ORCID 命中和 Crossref 作者 ORCID为强锚点；论文簇只由 DOI、同题同年记录或稳定合作者建立强连接，机构用于主簇评分但不能单独产生传递连接，主题相似只用于分析。
 
 研究方向优先聚合 OpenAlex topics 与重复 keywords；标题 2–4 元短语必须至少出现在 3 篇论文中才可辅助候选。`topic_agent` 输出 2–8 词规范方向名，标题复制、高相似标题、宽泛标签或不可追溯结果均被 Pydantic 后置校验拒绝。`trajectory_agent` 消费两个三年窗口的方向数量/占比、双语方向说明和代表论文 ID/标题/年份，最多输出四条内容级洞察；未知方向、虚构论文、纯数字复述和无证据推断不能发布。前端只渲染服务端用真实论文对象回填的 `evidencePapers`。
 
@@ -127,7 +127,7 @@ flowchart LR
 
 1. 主画像调用 `POST /api/profile/jobs`。已有画像立即返回；首次画像在同一事务写入学者占位、用户历史和 `profile_status=queued`，再幂等创建保存查询姓名与联合作者 ID 的 `refresh_jobs`，Web 请求随即结束。
 2. Worker 领取任务后对候选身份组再次验证；常规候选仅联合获取通过身份阈值的 OpenAlex 作者详情和论文。若候选来自没有 Author ID 的精确论文署名，则使用 `provisional:<work_id>:<authorship_index>` 作为稳定锚点，重新核对署名、机构、DOI 与合作者，并只保留与锚点通过重复论文或稳定合作者连接的保守论文簇。
-3. 对有 DOI 的论文查询 Crossref；随后按作者身份选择 DBLP person 并匹配已有论文；配置 SerpApi 时再核对 Google Scholar。
+3. 对有 DOI 的论文查询 Crossref；随后按作者身份选择 DBLP person 并匹配已有论文；配置 SerpApi 时再以已有论文锚定 Scholar 作者 ID，并核对该档案中的现有论文。
 4. 数据裁决节点按 DOI、题名和年份关联来源，保留字段来源与冲突；任何辅助来源都不能增加论文。身份节点再以 ORCID、机构和合作者裁定准确优先的主论文集。
 5. 引用、细粒度方向、演化和合作节点只消费身份裁决后的论文集。合作图完成后，Orchestrator 根据代表作、合作者、机构和时间证据动态生成最多四个任务，通过 LangGraph `Send` 并行派发给专业 Worker，再汇总可追溯结论供总结 Agent 使用。
 6. 总结生成后由 Evaluator 审查；拒绝时把 flags 与双语审查意见发送给 Optimizer 修改并再次审查，最多修订两轮。之后确定性证据门禁仍会逐项核对引用 ID、论文 URL/DOI 和统计口径。
