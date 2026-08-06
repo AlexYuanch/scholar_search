@@ -4,6 +4,9 @@
 !.env.example
 node_modules
 dist
+backups
+design-preview
+output
 backend/.venv
 backend/data
 __pycache__
