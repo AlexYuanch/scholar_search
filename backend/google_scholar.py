@@ -163,22 +163,38 @@ def _author_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _title_matches(known_title: str, candidate_title: str) -> bool:
+    known = _normalized(known_title)
+    candidate = _normalized(candidate_title)
+    if not known or not candidate:
+        return False
+    if known == candidate:
+        return True
+    known_tokens = known.split()
+    candidate_tokens = candidate.split()
+    return (
+        len(known_tokens) >= 6
+        and len(candidate_tokens) - len(known_tokens) <= 16
+        and f" {known} " in f" {candidate} "
+    )
+
+
 def _matching_records(records: list[dict[str, Any]], works: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    known = {
-        (_normalized(work.get("title")), int(work.get("publication_year") or 0))
+    known = [
+        (str(work.get("title") or ""), int(work.get("publication_year") or 0))
         for work in works
         if _normalized(work.get("title"))
-    }
-    known_titles = {title for title, _year_value in known}
+    ]
     return [
         record
         for record in records
-        if (
-            (_normalized(record.get("title")), int(record.get("publication_year") or 0)) in known
-            or (
+        if any(
+            _title_matches(title, str(record.get("title") or ""))
+            and (
                 not record.get("publication_year")
-                and _normalized(record.get("title")) in known_titles
+                or int(record.get("publication_year") or 0) == publication_year
             )
+            for title, publication_year in known
         )
     ]
 

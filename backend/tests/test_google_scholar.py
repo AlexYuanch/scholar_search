@@ -49,7 +49,7 @@ def test_google_scholar_anchors_author_profile_before_matching_works(monkeypatch
             return FakeResponse({
                 "organic_results": [{
                     "result_id": "anchor",
-                    "title": _work()["title"],
+                    "title": f"January 20-25. {_work()['title']}. Proceedings of CVPR",
                     "link": "https://example.org/imagenet",
                     "publication_info": {
                         "summary": "J Deng, W Dong, R Socher, LJ Li, K Li, L Fei-Fei - CVPR, 2009",
@@ -124,6 +124,32 @@ def test_google_scholar_does_not_accept_name_only_results(monkeypatch):
     assert records == []
     assert audit["status"] == "identity_unresolved"
     assert audit["profilesChecked"] == 0
+
+
+def test_google_scholar_rejects_unrelated_title_with_matching_author(monkeypatch):
+    monkeypatch.setenv("SERPAPI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        google_scholar._SESSION,
+        "get",
+        lambda *_args, **_kwargs: FakeResponse({
+            "organic_results": [{
+                "result_id": "wrong-paper",
+                "title": "A different computer vision paper",
+                "publication_info": {
+                    "summary": "L Fei-Fei - CVPR, 2009",
+                    "authors": [{"name": "L Fei-Fei", "author_id": "correct-profile"}],
+                },
+            }],
+        }),
+    )
+
+    records, audit = google_scholar.verify_author_works(
+        {"display_name": "Fei-Fei Li"},
+        [_work()],
+    )
+
+    assert records == []
+    assert audit["status"] == "identity_unresolved"
 
 
 def test_google_scholar_keeps_exact_paper_author_anchor_without_profile_id(monkeypatch):
