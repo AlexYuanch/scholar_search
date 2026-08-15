@@ -70,7 +70,8 @@ cp .env.example .env
 
 ```bash
 npm install
-python3 -m venv backend/.venv
+# 当前后端依赖要求 Python 3.10+，以下以 python3.13 为例
+python3.13 -m venv backend/.venv
 backend/.venv/bin/pip install -r backend/requirements.txt
 npm run db:up
 npm run db:migrate
@@ -78,6 +79,8 @@ cd backend && .venv/bin/python -m uvicorn main:app --reload --port 5800
 # 另一个终端
 npm run dev
 ```
+
+生产环境必须使用正式域名、HTTPS 和安全 Cookie；不要用公网 HTTP 承载账号密码或用户凭据。
 
 ## 测试
 
@@ -102,4 +105,3 @@ python trace_workflow.py \
 
 - [产品说明](docs/PRODUCT.md)
 - [系统架构](docs/ARCHITECTURE.md)
-- [协作交接](session-handoff.md)
