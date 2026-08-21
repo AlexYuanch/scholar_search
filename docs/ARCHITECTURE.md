@@ -76,8 +76,6 @@ flowchart LR
 
 模型输出不是事实来源。`review_evidence` 仍在载荷格式化前确定性检查指标可复算性、论文链接可追溯性和证据 ID；Agent 审查只能降低置信度或触发模板重建，不能批准确定性门禁拒绝的内容。`agentAnalysis` 只保存 Agent 名称、提供商、模型、层级、回退原因、状态、趋势结论和审查摘要，不保存 key、完整提示词或原始响应。配置 `LONGCAT_API_KEY` 后，每个 Agent 先调用 `LongCat-2.0`（关闭 thinking 以稳定返回结构化正文）；网络、额度、JSON 或输出校验失败后，才进入现有 `LLM_*` DeepSeek Flash/Pro 路径。`LLM_STRONG_DAILY_LIMIT` 仅限制 DeepSeek Pro 调用。
 
-`backend/trace_workflow.py` 可在生产同等环境中直接执行 LangGraph，并将每个节点的脱敏输入摘要、增量输出、模型提供商、状态和耗时写入 JSON。论文只保留数量与最多两个公开样本；凭据、Token、完整提示词和模型原始响应不会进入报告。该工具用于区分数据源、身份裁决、模型调用、并行 Worker 和审查循环的实际耗时，不作为用户画像接口，也不写入业务数据库。
-
 ## 数据模型
 
 | 表 | 作用与关键约束 |
