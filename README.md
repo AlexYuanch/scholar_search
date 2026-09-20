@@ -95,3 +95,10 @@ npm run test:db
 
 - [产品说明](docs/PRODUCT.md)
 - [系统架构](docs/ARCHITECTURE.md)
+
+  ## ⭐ 支持项目
+
+如果 ScholarSearch 对你的科研检索、学者分析或团队协作有所帮助，欢迎给项目一个 **Star ⭐**！
+
+你的支持是我们持续改进的动力，也欢迎通过 **Issue** 或 **Pull Request** 提交建议与贡献。
+
